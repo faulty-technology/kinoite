@@ -31,6 +31,16 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=tmpfs,dst=/tmp \
     /ctx/build.sh
 
+### CHROME PWA FIX
+## Chrome's wrapper resolves its own path via readlink -f, which follows the
+## /opt -> /usr/lib/opt symlink created at deploy time and writes the canonical
+## /usr/lib/opt/... path into PWA .desktop Exec= lines. KDE then fails to launch
+## those apps. Hardcode the wrapper path so Chrome always references /opt/... and
+## KDE can follow the symlink itself.
+RUN sed -i \
+    's|CHROME_WRAPPER="`readlink -f "$0"`"|CHROME_WRAPPER="/opt/google/chrome/google-chrome"|' \
+    /opt/google/chrome/google-chrome
+
 ### LINTING
 ## Verify final image and contents are correct.
 RUN bootc container lint
