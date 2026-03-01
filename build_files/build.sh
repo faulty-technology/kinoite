@@ -71,6 +71,14 @@ cat > /etc/containers/policy.json << 'EOF'
 }
 EOF
 
+# Tell containers/image to look for cosign signatures stored as OCI artifacts
+# in the same registry (the default without this is an old-style lookaside server)
+cat > /etc/containers/registries.d/ghcr.io-faulty-technology-kinoite.yaml << 'EOF'
+docker:
+  ghcr.io/faulty-technology/kinoite:
+    use-sigstore-attachments: true
+EOF
+
 ### Remove third-party repo files — updates come from CI rebuilds, not live dnf
 rm -f \
     /etc/yum.repos.d/1password.repo \
