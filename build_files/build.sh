@@ -69,10 +69,10 @@ cat > /etc/containers/policy.json << 'EOF'
       ],
       "": [{"type": "insecureAcceptAnything"}]
     },
-    "docker-daemon": [{"type": "insecureAcceptAnything"}],
-    "oci": [{"type": "insecureAcceptAnything"}],
-    "oci-archive": [{"type": "insecureAcceptAnything"}],
-    "containers-storage": [{"type": "insecureAcceptAnything"}]
+    "docker-daemon": {"": [{"type": "insecureAcceptAnything"}]},
+    "oci": {"": [{"type": "insecureAcceptAnything"}]},
+    "oci-archive": {"": [{"type": "insecureAcceptAnything"}]},
+    "containers-storage": {"": [{"type": "insecureAcceptAnything"}]}
   }
 }
 EOF
