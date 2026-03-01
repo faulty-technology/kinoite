@@ -1,6 +1,7 @@
 # Allow build scripts to be referenced without being copied into the final image
 FROM scratch AS ctx
 COPY build_files /
+COPY cosign.pub /
 
 # Base Image
 FROM quay.io/fedora/fedora-kinoite:43
