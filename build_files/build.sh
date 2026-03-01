@@ -63,7 +63,8 @@ cat > /etc/containers/policy.json << 'EOF'
       "ghcr.io/faulty-technology/kinoite": [
         {
           "type": "sigstoreSigned",
-          "keyPath": "/etc/pki/containers/faulty-technology-kinoite.pub"
+          "keyPath": "/etc/pki/containers/faulty-technology-kinoite.pub",
+          "signedIdentity": {"type": "matchRepository"}
         }
       ]
     }
