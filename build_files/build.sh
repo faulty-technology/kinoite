@@ -51,6 +51,26 @@ dnf5 install -y \
 systemctl enable tailscaled
 systemctl enable podman.socket
 
+### Configure container signature policy for bootc update verification
+mkdir -p /etc/pki/containers
+cp /ctx/cosign.pub /etc/pki/containers/faulty-technology-kinoite.pub
+
+cat > /etc/containers/policy.json << 'EOF'
+{
+  "default": [{"type": "insecureAcceptAnything"}],
+  "transports": {
+    "docker": {
+      "ghcr.io/faulty-technology/kinoite": [
+        {
+          "type": "sigstoreSigned",
+          "keyPath": "/etc/pki/containers/faulty-technology-kinoite.pub"
+        }
+      ]
+    }
+  }
+}
+EOF
+
 ### Remove third-party repo files — updates come from CI rebuilds, not live dnf
 rm -f \
     /etc/yum.repos.d/1password.repo \
