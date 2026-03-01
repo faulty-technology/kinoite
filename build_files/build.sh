@@ -57,7 +57,7 @@ cp /ctx/cosign.pub /etc/pki/containers/faulty-technology-kinoite.pub
 
 cat > /etc/containers/policy.json << 'EOF'
 {
-  "default": [{"type": "insecureAcceptAnything"}],
+  "default": [{"type": "reject"}],
   "transports": {
     "docker": {
       "ghcr.io/faulty-technology/kinoite": [
@@ -66,8 +66,13 @@ cat > /etc/containers/policy.json << 'EOF'
           "keyPath": "/etc/pki/containers/faulty-technology-kinoite.pub",
           "signedIdentity": {"type": "matchRepository"}
         }
-      ]
-    }
+      ],
+      "": [{"type": "insecureAcceptAnything"}]
+    },
+    "docker-daemon": [{"type": "insecureAcceptAnything"}],
+    "oci": [{"type": "insecureAcceptAnything"}],
+    "oci-archive": [{"type": "insecureAcceptAnything"}],
+    "containers-storage": [{"type": "insecureAcceptAnything"}]
   }
 }
 EOF
