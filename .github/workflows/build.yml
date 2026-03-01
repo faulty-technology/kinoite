@@ -89,34 +89,6 @@ jobs:
           labels: ${{ steps.metadata.outputs.labels }}
           oci: false
 
-      - name: Export image to OCI archive
-        run: |
-          buildah push \
-            ${{ env.IMAGE_NAME }}:${{ env.DEFAULT_TAG }} \
-            oci-archive:/tmp/kinoite.tar:${{ env.DEFAULT_TAG }}
-
-      - name: Generate SBOM
-        uses: anchore/sbom-action@v0
-        with:
-          image: "oci-archive:/tmp/kinoite.tar"
-          artifact-name: "sbom-${{ github.sha }}.spdx.json"
-          dependency-snapshot: true
-
-      - name: Scan image for CVEs
-        id: scan
-        uses: anchore/scan-action@v3
-        with:
-          image: "oci-archive:/tmp/kinoite.tar"
-          fail-build: false
-          severity-cutoff: critical
-          output-format: sarif
-
-      - name: Upload SARIF to Code Scanning
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: ${{ steps.scan.outputs.sarif }}
-
       # These `if` statements are so that pull requests for your custom images do not make it publish any packages under your name without you knowing
       # They also check if the runner is on the default branch so that things like the merge queue (if you enable it), are going to work
       - name: Login to GitHub Container Registry
