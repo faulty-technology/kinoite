@@ -1,6 +1,6 @@
 # kinoite
 
-A custom [bootc](https://github.com/bootc-dev/bootc) image based on vanilla Fedora Kinoite 43, built using [ublue-os/image-template](https://github.com/ublue-os/image-template).
+A custom [bootc](https://github.com/bootc-dev/bootc) image based on [Fedora Kinoite](https://fedoraproject.org/kinoite/) 43, built using [ublue-os/image-template](https://github.com/ublue-os/image-template).
 
 The image is published to `ghcr.io/faulty-technology/kinoite:latest` and rebuilt automatically on push via GitHub Actions.
 
@@ -30,12 +30,20 @@ Third-party repo files are removed after install — updates come from CI image 
 
 ## Rebasing to this image
 
+From a stock Fedora Kinoite system:
+
 ```bash
 # First rebase (unverified, to bootstrap)
 rpm-ostree rebase ostree-unverified-registry:ghcr.io/faulty-technology/kinoite:latest
 
 # After reboot, switch to the signed image
 rpm-ostree rebase ostree-image-signed:docker://ghcr.io/faulty-technology/kinoite:latest
+```
+
+Once on the image, you can also use `bootc switch` for future switches since it's a bootc-compatible image:
+
+```bash
+bootc switch ghcr.io/faulty-technology/kinoite:latest
 ```
 
 ## Building locally
