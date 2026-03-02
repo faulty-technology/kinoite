@@ -89,6 +89,36 @@ jobs:
           labels: ${{ steps.metadata.outputs.labels }}
           oci: false
 
+      - name: Extract RPM database from image
+        run: |
+          CONTAINER=$(buildah from localhost/${{ env.IMAGE_NAME }}:latest)
+          MOUNT=$(buildah mount $CONTAINER)
+          mkdir -p /tmp/rootfs/var/lib
+          cp -r ${MOUNT}/var/lib/rpm /tmp/rootfs/var/lib/rpm
+          buildah unmount $CONTAINER
+          buildah rm $CONTAINER
+
+      - name: Generate SBOM with Syft
+        uses: anchore/sbom-action@v0
+        with:
+          path: /tmp/rootfs
+          output-file: sbom.spdx.json
+          format: spdx-json
+
+      - name: Scan SBOM with Grype
+        uses: anchore/scan-action@v7
+        id: scan
+        with:
+          sbom: sbom.spdx.json
+          fail-build: false
+          output-format: sarif
+
+      - name: Upload SARIF to Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ steps.scan.outputs.sarif }}
+          category: grype
+
       # These `if` statements are so that pull requests for your custom images do not make it publish any packages under your name without you knowing
       # They also check if the runner is on the default branch so that things like the merge queue (if you enable it), are going to work
       - name: Login to GitHub Container Registry
