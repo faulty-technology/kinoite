@@ -1,0 +1,53 @@
+---
+name: SBOM and vulnerability scan
+on:
+  workflow_run:
+    workflows: ["Build container image"]
+    types:
+      - completed
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"
+  IMAGE_NAME: "${{ github.event.repository.name }}"
+
+jobs:
+  scan:
+    name: Generate SBOM and scan for vulnerabilities
+    runs-on: ubuntu-24.04
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+
+    permissions:
+      security-events: write
+
+    steps:
+      - name: Prepare environment
+        run: |
+          echo "IMAGE_REGISTRY=${IMAGE_REGISTRY,,}" >> ${GITHUB_ENV}
+          echo "IMAGE_NAME=${IMAGE_NAME,,}" >> ${GITHUB_ENV}
+
+      - name: Maximize build space
+        uses: ublue-os/remove-unwanted-software@v9
+
+      - name: Generate SBOM with Syft
+        uses: anchore/syft-action@v0
+        with:
+          image: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          output-file: sbom.spdx.json
+          format: spdx-json
+
+      - name: Scan SBOM with Grype
+        uses: anchore/scan-action@v6
+        id: scan
+        with:
+          sbom: sbom.spdx.json
+          fail-build: false
+          output-format: sarif
+
+      - name: Upload SARIF to Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ steps.scan.outputs.sarif }}
+          category: grype
