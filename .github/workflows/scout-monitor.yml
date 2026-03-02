@@ -1,8 +1,14 @@
 ---
 name: Docker Scout CVE monitor
 on:
+  workflow_run:
+    workflows: ["Build container image"]
+    types:
+      - completed
+    branches:
+      - main
   schedule:
-    - cron: "05 14 * * *" # 14:05 UTC daily (offset from build to allow Scout indexing)
+    - cron: "05 14 * * *" # 14:05 UTC daily (catches CVEs between builds)
   workflow_dispatch:
 
 env:
@@ -12,6 +18,7 @@ jobs:
   scout:
     name: Scan with Docker Scout
     runs-on: ubuntu-24.04
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
 
     permissions:
       security-events: write
