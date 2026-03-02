@@ -32,14 +32,14 @@ jobs:
         uses: ublue-os/remove-unwanted-software@v9
 
       - name: Generate SBOM with Syft
-        uses: anchore/syft-action@v0
+        uses: anchore/sbom-action@v0
         with:
           image: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:latest
           output-file: sbom.spdx.json
           format: spdx-json
 
       - name: Scan SBOM with Grype
-        uses: anchore/scan-action@v6
+        uses: anchore/scan-action@v7
         id: scan
         with:
           sbom: sbom.spdx.json
