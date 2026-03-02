@@ -99,6 +99,8 @@ jobs:
             buildah unmount $CONTAINER
             buildah rm $CONTAINER
           '
+          echo "RPM database files:"
+          find /tmp/rootfs -type f | head -20
 
       - name: Generate SBOM with Syft
         uses: anchore/sbom-action@v0
@@ -106,6 +108,14 @@ jobs:
           path: /tmp/rootfs
           output-file: sbom.spdx.json
           format: spdx-json
+          upload-artifact: false
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-spdx
+          path: sbom.spdx.json
+          retention-days: 30
 
       - name: Scan SBOM with Grype
         uses: anchore/scan-action@v7
