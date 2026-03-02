@@ -91,12 +91,14 @@ jobs:
 
       - name: Extract RPM database from image
         run: |
-          CONTAINER=$(buildah from localhost/${{ env.IMAGE_NAME }}:latest)
-          MOUNT=$(buildah mount $CONTAINER)
           mkdir -p /tmp/rootfs/var/lib
-          cp -r ${MOUNT}/var/lib/rpm /tmp/rootfs/var/lib/rpm
-          buildah unmount $CONTAINER
-          buildah rm $CONTAINER
+          buildah unshare bash -c '
+            CONTAINER=$(buildah from localhost/${{ env.IMAGE_NAME }}:latest)
+            MOUNT=$(buildah mount $CONTAINER)
+            cp -r "${MOUNT}/var/lib/rpm" /tmp/rootfs/var/lib/rpm
+            buildah unmount $CONTAINER
+            buildah rm $CONTAINER
+          '
 
       - name: Generate SBOM with Syft
         uses: anchore/sbom-action@v0
