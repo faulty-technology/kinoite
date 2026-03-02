@@ -1,0 +1,41 @@
+---
+name: Docker Scout CVE monitor
+on:
+  schedule:
+    - cron: "05 14 * * *" # 14:05 UTC daily (offset from build to allow Scout indexing)
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: "${{ github.event.repository.name }}"
+
+jobs:
+  scout:
+    name: Scan with Docker Scout
+    runs-on: ubuntu-24.04
+
+    permissions:
+      security-events: write
+
+    steps:
+      - name: Prepare environment
+        run: echo "IMAGE_NAME=${IMAGE_NAME,,}" >> ${GITHUB_ENV}
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Analyze with Docker Scout
+        uses: docker/scout-action@v1
+        with:
+          command: cves
+          image: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:latest
+          sarif-file: scout.sarif
+          summary: true
+
+      - name: Upload SARIF to Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: scout.sarif
+          category: docker-scout
