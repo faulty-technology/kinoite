@@ -55,6 +55,7 @@ dnf5 install -y \
 groupdel onepassword
 groupadd --system onepassword
 chgrp onepassword /opt/1Password/1Password-BrowserSupport
+chmod g+s /opt/1Password/1Password-BrowserSupport
 
 ### Enable systemd units
 systemctl enable tailscaled
