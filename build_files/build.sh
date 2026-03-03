@@ -47,6 +47,15 @@ dnf5 install -y \
     powertop \
     tailscale
 
+### Fix 1Password browser integration group GID collision
+# after-install.sh runs groupadd without --system, so in the container build it gets
+# GID 1000+ which collides with the real user's primary GID on deployment. The OSTree
+# /etc/group merge then drops the entry, leaving 1Password-BrowserSupport with the
+# wrong group and breaking the Chrome extension integration.
+groupdel onepassword
+groupadd --system onepassword
+chgrp onepassword /opt/1Password/1Password-BrowserSupport
+
 ### Enable systemd units
 systemctl enable tailscaled
 systemctl enable podman.socket
