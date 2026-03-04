@@ -97,7 +97,8 @@ jobs:
           buildah unshare bash -c '
             CONTAINER=$(buildah from localhost/${{ env.IMAGE_NAME }}:latest)
             MOUNT=$(buildah mount $CONTAINER)
-            syft dir:"${MOUNT}" -o spdx-json > sbom.spdx.json
+            ln -s "${MOUNT}" /tmp/scan-root
+            syft dir:/tmp/scan-root --source-name "${{ env.IMAGE_NAME }}" --source-version "${{ env.DEFAULT_TAG }}" -o spdx-json > sbom.spdx.json
             buildah unmount $CONTAINER
             buildah rm $CONTAINER
           '
