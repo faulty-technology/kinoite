@@ -32,17 +32,6 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=tmpfs,dst=/tmp \
     /ctx/build.sh
 
-### CHROME FIXES
-## 1. PWA FIX: Hardcode CHROME_WRAPPER so Chrome doesn't use readlink -f, which
-##    follows /opt -> /usr/lib/opt at deploy time and writes the wrong path into
-##    PWA .desktop Exec= lines causing KDE to fail launching them.
-## 2. TOUCHPAD NAVIGATION: Inject flag via set -- so it applies to every Chrome
-##    invocation (main browser and all PWAs) regardless of which is opened first.
-RUN sed -i \
-    -e 's|CHROME_WRAPPER="`readlink -f "$0"`"|CHROME_WRAPPER="/opt/google/chrome/google-chrome"|' \
-    -e '/^HERE=/a set -- --enable-features=TouchpadOverscrollHistoryNavigation "$@"' \
-    /opt/google/chrome/google-chrome
-
 ### LINTING
 ## Verify final image and contents are correct.
 RUN bootc container lint

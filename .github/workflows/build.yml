@@ -89,37 +89,55 @@ jobs:
           labels: ${{ steps.metadata.outputs.labels }}
           oci: false
 
-      - name: Install Syft
-        uses: anchore/sbom-action/download-syft@v0
-
-      - name: Generate SBOM from mounted image
+      - name: Generate additive SBOM
         run: |
           buildah unshare bash -c '
             CONTAINER=$(buildah from localhost/${{ env.IMAGE_NAME }}:latest)
             MOUNT=$(buildah mount $CONTAINER)
-            ln -s "${MOUNT}" /tmp/scan-root
-            syft dir:/tmp/scan-root --override-default-catalogers rpm-db-cataloger --source-name "${{ env.IMAGE_NAME }}" --source-version "${{ env.DEFAULT_TAG }}" -o spdx-json > sbom.spdx.json
+            cp "$MOUNT/usr/share/kinoite/additive-sbom.tsv" additive-packages.tsv
             buildah unmount $CONTAINER
             buildah rm $CONTAINER
           '
+          python3 -c "
+          import json
+          packages = []
+          for line in open('additive-packages.tsv'):
+              name, version, lic = line.strip().split('\t')
+              packages.append({
+                  'SPDXID': f'SPDXRef-{name}',
+                  'name': name,
+                  'versionInfo': version,
+                  'downloadLocation': 'NOASSERTION',
+                  'licenseDeclared': lic
+              })
+          doc = {
+              'spdxVersion': 'SPDX-2.3',
+              'dataLicense': 'CC0-1.0',
+              'SPDXID': 'SPDXRef-DOCUMENT',
+              'name': '${{ env.IMAGE_NAME }}-additive',
+              'documentNamespace': 'https://github.com/${{ github.repository }}/sbom',
+              'packages': packages
+          }
+          json.dump(doc, open('sbom-additive.spdx.json', 'w'), indent=2)
+          "
 
-      - name: Upload SBOM artifact
+      - name: Upload additive SBOM
         uses: actions/upload-artifact@v4
         with:
-          name: sbom-spdx
-          path: sbom.spdx.json
+          name: sbom-additive
+          path: sbom-additive.spdx.json
           retention-days: 30
 
       - name: Submit SBOM to dependency graph
         uses: advanced-security/spdx-dependency-submission-action@v0.1.1
         with:
-          filePath: sbom.spdx.json
+          filePath: sbom-additive.spdx.json
 
-      - name: Scan SBOM with Grype
+      - name: Scan additive SBOM with Grype
         uses: anchore/scan-action@v7
         id: scan
         with:
-          sbom: sbom.spdx.json
+          sbom: sbom-additive.spdx.json
           fail-build: false
           output-format: sarif
 
@@ -127,7 +145,7 @@ jobs:
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: ${{ steps.scan.outputs.sarif }}
-          category: grype
+          category: grype-additive
 
       # These `if` statements are so that pull requests for your custom images do not make it publish any packages under your name without you knowing
       # They also check if the runner is on the default branch so that things like the merge queue (if you enable it), are going to work
