@@ -103,6 +103,7 @@ EOF
 ### Enable systemd units
 systemctl enable tailscaled
 systemctl enable podman.socket
+systemctl enable bootc-fetch-apply-updates.timer
 
 ### Configure container signature policy for bootc update verification
 mkdir -p /etc/pki/containers
