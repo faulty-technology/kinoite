@@ -98,7 +98,7 @@ jobs:
             CONTAINER=$(buildah from localhost/${{ env.IMAGE_NAME }}:latest)
             MOUNT=$(buildah mount $CONTAINER)
             ln -s "${MOUNT}" /tmp/scan-root
-            syft dir:/tmp/scan-root --source-name "${{ env.IMAGE_NAME }}" --source-version "${{ env.DEFAULT_TAG }}" -o spdx-json > sbom.spdx.json
+            syft dir:/tmp/scan-root --select-catalogers rpm-db-cataloger --source-name "${{ env.IMAGE_NAME }}" --source-version "${{ env.DEFAULT_TAG }}" -o spdx-json > sbom.spdx.json
             buildah unmount $CONTAINER
             buildah rm $CONTAINER
           '
@@ -109,6 +109,11 @@ jobs:
           name: sbom-spdx
           path: sbom.spdx.json
           retention-days: 30
+
+      - name: Submit SBOM to dependency graph
+        uses: advanced-security/spdx-dependency-submission-action@v0.1.1
+        with:
+          filePath: sbom.spdx.json
 
       - name: Scan SBOM with Grype
         uses: anchore/scan-action@v7
