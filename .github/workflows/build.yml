@@ -89,17 +89,18 @@ jobs:
           labels: ${{ steps.metadata.outputs.labels }}
           oci: false
 
-      - name: Export image as OCI archive
-        run: |
-          buildah push localhost/${{ env.IMAGE_NAME }}:latest oci-archive:/tmp/image.tar
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@v0
 
-      - name: Generate SBOM with Syft
-        uses: anchore/sbom-action@v0
-        with:
-          image: /tmp/image.tar
-          output-file: sbom.spdx.json
-          format: spdx-json
-          upload-artifact: false
+      - name: Generate SBOM from mounted image
+        run: |
+          buildah unshare bash -c '
+            CONTAINER=$(buildah from localhost/${{ env.IMAGE_NAME }}:latest)
+            MOUNT=$(buildah mount $CONTAINER)
+            syft dir:"${MOUNT}" -o spdx-json > sbom.spdx.json
+            buildah unmount $CONTAINER
+            buildah rm $CONTAINER
+          '
 
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@v4
