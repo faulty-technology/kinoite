@@ -89,23 +89,14 @@ jobs:
           labels: ${{ steps.metadata.outputs.labels }}
           oci: false
 
-      - name: Extract RPM database from image
+      - name: Export image as OCI archive
         run: |
-          mkdir -p /tmp/rootfs/var/lib
-          buildah unshare bash -c '
-            CONTAINER=$(buildah from localhost/${{ env.IMAGE_NAME }}:latest)
-            MOUNT=$(buildah mount $CONTAINER)
-            cp -r "${MOUNT}/var/lib/rpm" /tmp/rootfs/var/lib/rpm
-            buildah unmount $CONTAINER
-            buildah rm $CONTAINER
-          '
-          echo "RPM database files:"
-          find /tmp/rootfs -type f | head -20
+          buildah push localhost/${{ env.IMAGE_NAME }}:latest oci-archive:/tmp/image.tar
 
       - name: Generate SBOM with Syft
         uses: anchore/sbom-action@v0
         with:
-          path: /tmp/rootfs
+          image: /tmp/image.tar
           output-file: sbom.spdx.json
           format: spdx-json
           upload-artifact: false
