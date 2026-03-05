@@ -99,24 +99,44 @@ jobs:
             buildah rm $CONTAINER
           '
           python3 -c "
-          import json
+          import json, urllib.parse
           packages = []
           for line in open('additive-packages.tsv'):
               name, version, lic = line.strip().split('\t')
+              purl = f'pkg:rpm/fedora/{urllib.parse.quote(name, safe=\"\")}@{urllib.parse.quote(version, safe=\"\")}'
               packages.append({
                   'SPDXID': f'SPDXRef-{name}',
                   'name': name,
                   'versionInfo': version,
                   'downloadLocation': 'NOASSERTION',
-                  'licenseDeclared': lic
+                  'filesAnalyzed': False,
+                  'licenseDeclared': lic,
+                  'externalRefs': [{
+                      'referenceCategory': 'PACKAGE-MANAGER',
+                      'referenceType': 'purl',
+                      'referenceLocator': purl
+                  }]
               })
+          root = {
+              'SPDXID': 'SPDXRef-image',
+              'name': '${{ env.IMAGE_NAME }}',
+              'versionInfo': '${{ github.sha }}',
+              'downloadLocation': 'https://github.com/${{ github.repository }}',
+              'filesAnalyzed': False
+          }
           doc = {
               'spdxVersion': 'SPDX-2.3',
               'dataLicense': 'CC0-1.0',
               'SPDXID': 'SPDXRef-DOCUMENT',
               'name': '${{ env.IMAGE_NAME }}-additive',
-              'documentNamespace': 'https://github.com/${{ github.repository }}/sbom',
-              'packages': packages
+              'documentNamespace': 'https://github.com/${{ github.repository }}/sbom/${{ github.sha }}',
+              'packages': [root] + packages,
+              'relationships': [
+                  {'spdxElementId': 'SPDXRef-DOCUMENT', 'relatedSpdxElement': 'SPDXRef-image', 'relationshipType': 'DESCRIBES'}
+              ] + [
+                  {'spdxElementId': 'SPDXRef-image', 'relatedSpdxElement': f'SPDXRef-{p[\"name\"]}', 'relationshipType': 'DEPENDS_ON'}
+                  for p in packages
+              ]
           }
           json.dump(doc, open('sbom-additive.spdx.json', 'w'), indent=2)
           "
