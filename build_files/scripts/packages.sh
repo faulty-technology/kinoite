@@ -1,6 +1,9 @@
 #!/bin/bash
 set -ouex pipefail
 
+### Remove unwanted base image packages
+dnf5 remove -y firefox firefox-langpacks
+
 ### Install standard Fedora packages
 PACKAGES=(
     distrobox
