@@ -148,10 +148,47 @@ jobs:
           path: sbom-additive.spdx.json
           retention-days: 30
 
-      - name: Submit SBOM to dependency graph
-        uses: advanced-security/spdx-dependency-submission-action@v0.1.1
-        with:
-          filePath: sbom-additive.spdx.json
+      - name: Submit dependencies to dependency graph
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -c "
+          import json, urllib.parse, datetime
+          resolved = {}
+          for line in open('additive-packages.tsv'):
+              name, version, lic = line.strip().split('\t')
+              purl = f'pkg:rpm/fedora/{urllib.parse.quote(name, safe=\"\")}@{urllib.parse.quote(version, safe=\"\")}'
+              resolved[name] = {
+                  'package_url': purl,
+                  'relationship': 'direct',
+                  'scope': 'runtime'
+              }
+          snapshot = {
+              'version': 0,
+              'sha': '${{ github.sha }}',
+              'ref': 'refs/heads/${{ github.event.repository.default_branch }}',
+              'scanned': datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+              'job': {
+                  'correlator': 'additive-packages',
+                  'id': '${{ github.run_id }}'
+              },
+              'detector': {
+                  'name': 'kinoite-additive-sbom',
+                  'version': '1.0.0',
+                  'url': 'https://github.com/${{ github.repository }}'
+              },
+              'manifests': {
+                  'additive-packages': {
+                      'name': 'additive-packages',
+                      'file': {'source_location': 'build_files/build.sh'},
+                      'resolved': resolved
+                  }
+              }
+          }
+          json.dump(snapshot, open('dependency-snapshot.json', 'w'), indent=2)
+          "
+          gh api --method POST /repos/${{ github.repository }}/dependency-graph/snapshots \
+            --input dependency-snapshot.json
 
       - name: Scan additive SBOM with Grype
         uses: anchore/scan-action@v7
