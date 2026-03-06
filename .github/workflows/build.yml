@@ -198,6 +198,32 @@ jobs:
           fail-build: false
           output-format: sarif
 
+      - name: Log Grype scan summary
+        run: |
+          echo "::group::Packages scanned"
+          python3 -c "
+          import json
+          sbom = json.load(open('sbom-additive.spdx.json'))
+          pkgs = [p for p in sbom['packages'] if p['SPDXID'] != 'SPDXRef-image']
+          for p in pkgs:
+              print(f\"  {p['name']} {p['versionInfo']}\")
+          print(f\"\nTotal: {len(pkgs)} packages\")
+          "
+          echo "::endgroup::"
+          echo "::group::Grype results"
+          python3 -c "
+          import json
+          sarif = json.load(open('${{ steps.scan.outputs.sarif }}'))
+          results = sarif.get('runs', [{}])[0].get('results', [])
+          if results:
+              for r in results:
+                  print(f\"  {r['ruleId']}: {r['message']['text'][:120]}\")
+              print(f\"\nTotal: {len(results)} vulnerabilities\")
+          else:
+              print('  No vulnerabilities found')
+          "
+          echo "::endgroup::"
+
       - name: Upload SARIF to Code Scanning
         uses: github/codeql-action/upload-sarif@v3
         with:
