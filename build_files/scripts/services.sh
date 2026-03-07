@@ -3,4 +3,4 @@ set -ouex pipefail
 
 ### Enable systemd units
 systemctl enable podman.socket
-systemctl enable bootc-fetch-apply-updates.timer
+systemctl enable bootc-fetch.timer
