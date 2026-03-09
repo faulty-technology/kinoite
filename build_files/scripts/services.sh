@@ -1,14 +1,17 @@
 #!/bin/bash
 set -ouex pipefail
 
-### Override bootc update service to stage only, no auto-reboot
-mkdir -p /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d
-cat > /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/stage-only.conf <<'DROPIN'
-[Service]
-ExecStart=
-ExecStart=/usr/bin/bootc upgrade --quiet
-DROPIN
+### Configure rpm-ostreed to automatically stage updates
+### Discover (plasma-discover-rpm-ostree) queries rpm-ostreed for update status,
+### so letting rpm-ostreed handle staging means Discover will notify when an
+### update is staged and ready to reboot into.
+cat > /etc/rpm-ostreed.conf <<'CONF'
+[Daemon]
+AutomaticUpdatePolicy=stage
+CONF
+
+### Disable the bootc timer — rpm-ostreed handles update staging now
+systemctl disable bootc-fetch-apply-updates.timer
 
 ### Enable systemd units
 systemctl enable podman.socket
-systemctl enable bootc-fetch-apply-updates.timer
