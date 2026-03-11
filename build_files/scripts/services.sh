@@ -1,17 +1,28 @@
 #!/bin/bash
 set -ouex pipefail
 
-### Configure rpm-ostreed to automatically stage updates
-### Discover (plasma-discover-rpm-ostree) queries rpm-ostreed for update status,
-### so letting rpm-ostreed handle staging means Discover will notify when an
-### update is staged and ready to reboot into.
+### 1. Configure rpm-ostreed to stage updates
+# This ensures Discover/Plasma notifies you instead of bootc auto-rebooting.
 cat > /etc/rpm-ostreed.conf <<'CONF'
 [Daemon]
 AutomaticUpdatePolicy=stage
 CONF
 
-### Disable the bootc timer — rpm-ostreed handles update staging now
-systemctl disable bootc-fetch-apply-updates.timer
+### 2. Add the Calendar Timer Override
+# This ensures checks happen every 4 hours and resume after sleep.
+mkdir -p /etc/systemd/system/rpm-ostreed-automatic.timer.d
+cat > /etc/systemd/system/rpm-ostreed-automatic.timer.d/override.conf <<'EOF'
+[Timer]
+OnBootSec=
+OnUnitInactiveSec=
+OnCalendar=00/4:00:00
+Persistent=true
+EOF
 
-### Enable systemd units
+### 3. Manage Systemd Units
+# Use 'enable' only (remove '--now') since systemd isn't running during build.
+systemctl mask bootc-fetch-apply-updates.timer
+systemctl enable rpm-ostreed-automatic.timer
+
+
 systemctl enable podman.socket
