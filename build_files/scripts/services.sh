@@ -19,7 +19,15 @@ OnCalendar=00/4:00:00
 Persistent=true
 EOF
 
-### 3. Manage Systemd Units
+# 3. Service Override: Retry on network failures (the dial ghcr.io error)
+mkdir -p /etc/systemd/system/rpm-ostreed-automatic.service.d
+cat > /etc/systemd/system/rpm-ostreed-automatic.service.d/override.conf <<'EOF'
+[Service]
+Restart=on-failure
+RestartSec=30s
+EOF
+
+### 4. Manage Systemd Units
 # Use 'enable' only (remove '--now') since systemd isn't running during build.
 systemctl mask bootc-fetch-apply-updates.timer
 systemctl enable rpm-ostreed-automatic.timer
