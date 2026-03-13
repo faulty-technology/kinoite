@@ -1,17 +1,16 @@
 #!/bin/bash
 set -ouex pipefail
 
-### 1. Configure rpm-ostreed to stage updates
-# This ensures Discover/Plasma notifies you instead of bootc auto-rebooting.
+### 1. Configure rpm-ostreed for Discover/Plasma update notifications
 cat > /etc/rpm-ostreed.conf <<'CONF'
 [Daemon]
 AutomaticUpdatePolicy=stage
 CONF
 
-### 2. Add the Calendar Timer Override
-# This ensures checks happen every 4 hours and resume after sleep.
-mkdir -p /etc/systemd/system/rpm-ostreed-automatic.timer.d
-cat > /etc/systemd/system/rpm-ostreed-automatic.timer.d/override.conf <<'EOF'
+### 2. Use bootc for actual update fetching/staging (bootc owns the deployment)
+# Override the default timer to check every 4 hours with persistence across sleep.
+mkdir -p /etc/systemd/system/bootc-fetch-apply-updates.timer.d
+cat > /etc/systemd/system/bootc-fetch-apply-updates.timer.d/override.conf <<'EOF'
 [Timer]
 OnBootSec=
 OnUnitInactiveSec=
@@ -19,18 +18,24 @@ OnCalendar=00/4:00:00
 Persistent=true
 EOF
 
-# 3. Service Override: Retry on network failures (the dial ghcr.io error)
-mkdir -p /etc/systemd/system/rpm-ostreed-automatic.service.d
-cat > /etc/systemd/system/rpm-ostreed-automatic.service.d/override.conf <<'EOF'
+# Override the service: stage only (no --apply auto-reboot), wait for DNS, retry on failure.
+mkdir -p /etc/systemd/system/bootc-fetch-apply-updates.service.d
+cat > /etc/systemd/system/bootc-fetch-apply-updates.service.d/override.conf <<'EOF'
+[Unit]
+After=network-online.target
+Wants=network-online.target
+
 [Service]
+ExecStart=
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 15); do getent hosts ghcr.io >/dev/null 2>&1 && exit 0; sleep 2; done'
+ExecStart=/usr/bin/bootc upgrade --quiet
 Restart=on-failure
 RestartSec=30s
 EOF
 
-### 4. Manage Systemd Units
-# Use 'enable' only (remove '--now') since systemd isn't running during build.
-systemctl mask bootc-fetch-apply-updates.timer
-systemctl enable rpm-ostreed-automatic.timer
+### 3. Disable rpm-ostree automatic updates (can't stage when bootc owns the deployment)
+systemctl mask rpm-ostreed-automatic.timer
 
-
+### 4. Enable bootc update timer and other services
+systemctl enable bootc-fetch-apply-updates.timer
 systemctl enable podman.socket
