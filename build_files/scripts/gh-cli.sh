@@ -23,5 +23,5 @@ gpgkey=https://cli.github.com/packages/githubcli-archive-keyring.asc
 EOF
 
 ### Install
-dnf5 install -y gh --repo gh-cli
+dnf5 install -y gh
 echo "gh" >> /usr/share/kinoite/packages
