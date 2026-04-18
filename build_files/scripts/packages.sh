@@ -9,6 +9,8 @@ PACKAGES=(
     distrobox
     intel-media-driver
     lm_sensors
+    tmux
+    neovim
     podman-compose
     powertop
 )
