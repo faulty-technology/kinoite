@@ -1,25 +1,12 @@
 #!/bin/bash
 set -ouex pipefail
 
+. "$(dirname "$0")/lib/verify-key.sh"
+
 ### Add 1Password repository
-# Fetch the signing key and verify its fingerprint before trusting it.
-# If this pin fails, 1Password has rotated their key — verify the new
-# fingerprint against their docs and update below in a PR.
-KEY_URL="https://downloads.1password.com/linux/keys/1password.asc"
-EXPECTED=$(sort <<'EOF'
-3FEF9748469ADBE15DA7CA80AC2D62742012EA22
-EOF
-)
-curl -fsSL "$KEY_URL" -o /tmp/1password.asc
-ACTUAL=$(gpg --show-keys --with-colons /tmp/1password.asc 2>/dev/null | awk -F: '/^fpr:/ {print $10}' | sort)
-if [ "$EXPECTED" != "$ACTUAL" ]; then
-    echo "1Password GPG fingerprint mismatch"
-    echo "Expected: $EXPECTED"
-    echo "Actual:   $ACTUAL"
-    exit 1
-fi
-rpm --import /tmp/1password.asc
-rm -f /tmp/1password.asc
+verify_and_import_key "1Password" \
+    "https://downloads.1password.com/linux/keys/1password.asc" \
+    3FEF9748469ADBE15DA7CA80AC2D62742012EA22
 
 cat > /etc/yum.repos.d/1password.repo << 'EOF'
 [1password]

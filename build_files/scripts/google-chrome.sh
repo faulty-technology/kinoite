@@ -1,32 +1,21 @@
 #!/bin/bash
 set -ouex pipefail
 
+. "$(dirname "$0")/lib/verify-key.sh"
+
 ### Add Google Chrome repository
-# Google's keyring bundles historical signing keys. Pin all current
-# fingerprints — if Google adds or rotates a key, CI will fail loudly
-# and the new fingerprint must be reviewed and added in a PR.
-KEY_URL="https://dl.google.com/linux/linux_signing_key.pub"
-EXPECTED=$(sort <<'EOF'
-EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796
-3B068FB4789ABE4AEFA3BB491397BC53640DB551
-3E50F6D3EC278FDEB655C8CA6494C6D6997C215E
-2F528D36D67B69EDF998D85778BD65473CB3BD13
-8461EFA0E74ABAE010DE66994EB27DB2A3B88B8B
-A5F483CD733A4EBAEA378B2AE88979FB9B30ACF2
-0F06FF86BEEAF4E71866EE5232EE5355A6BC6E42
-0E225917414670F4442C250DFD533C07C264648F
-EOF
-)
-curl -fsSL "$KEY_URL" -o /tmp/google.asc
-ACTUAL=$(gpg --show-keys --with-colons /tmp/google.asc 2>/dev/null | awk -F: '/^fpr:/ {print $10}' | sort)
-if [ "$EXPECTED" != "$ACTUAL" ]; then
-    echo "Google Chrome GPG fingerprint mismatch"
-    echo "Expected:"; echo "$EXPECTED"
-    echo "Actual:";   echo "$ACTUAL"
-    exit 1
-fi
-rpm --import /tmp/google.asc
-rm -f /tmp/google.asc
+# Google's keyring bundles historical signing keys — pin all of them so a
+# rotation or added key fails CI until a human reviews the new fingerprint.
+verify_and_import_key "Google Chrome" \
+    "https://dl.google.com/linux/linux_signing_key.pub" \
+    EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 \
+    3B068FB4789ABE4AEFA3BB491397BC53640DB551 \
+    3E50F6D3EC278FDEB655C8CA6494C6D6997C215E \
+    2F528D36D67B69EDF998D85778BD65473CB3BD13 \
+    8461EFA0E74ABAE010DE66994EB27DB2A3B88B8B \
+    A5F483CD733A4EBAEA378B2AE88979FB9B30ACF2 \
+    0F06FF86BEEAF4E71866EE5232EE5355A6BC6E42 \
+    0E225917414670F4442C250DFD533C07C264648F
 
 cat > /etc/yum.repos.d/google-chrome.repo << 'EOF'
 [google-chrome]

@@ -6,4 +6,5 @@ rm -f \
     /etc/yum.repos.d/1password.repo \
     /etc/yum.repos.d/google-chrome.repo \
     /etc/yum.repos.d/_copr:copr.fedorainfracloud.org:phracek:PyCharm.repo \
-    /etc/yum.repos.d/tailscale.repo
+    /etc/yum.repos.d/tailscale.repo \
+    /etc/yum.repos.d/gh-cli.repo

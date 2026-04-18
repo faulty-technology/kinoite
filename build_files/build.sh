@@ -4,7 +4,7 @@ set -ouex pipefail
 mkdir -p /usr/share/kinoite
 SCRIPT_DIR="$(dirname "$0")/scripts"
 
-for script in rpmfusion 1password google-chrome tailscale packages services signing cleanup; do
+for script in rpmfusion 1password google-chrome tailscale gh-cli packages services signing cleanup; do
     "$SCRIPT_DIR/${script}.sh"
 done
 
