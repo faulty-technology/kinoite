@@ -4,12 +4,12 @@ COPY build_files /
 COPY cosign.pub /
 
 # Base Image
-FROM quay.io/fedora/fedora-kinoite:43
+FROM quay.io/fedora/fedora-kinoite:44
 
 ## Other possible base images:
 # FROM quay.io/fedora/fedora-kinoite:latest  # Always latest stable Kinoite
-# FROM quay.io/fedora/fedora-silverblue:43   # GNOME variant
-# FROM quay.io/fedora/fedora-bootc:43        # Minimal Fedora bootc (no desktop)
+# FROM quay.io/fedora/fedora-silverblue:44  # GNOME variant
+# FROM quay.io/fedora/fedora-bootc:44       # Minimal Fedora bootc (no desktop)
 
 ### [IM]MUTABLE /opt
 ## Some bootable images, like Fedora, have /opt symlinked to /var/opt, in order to
