@@ -39,3 +39,8 @@ systemctl mask rpm-ostreed-automatic.timer
 ### 4. Enable bootc update timer and other services
 systemctl enable bootc-fetch-apply-updates.timer
 systemctl enable podman.socket
+
+### 5. Nix: persistent /nix bind mount + multi-user daemon (units from nix.sh)
+systemctl enable var-nix.service
+systemctl enable nix.mount
+systemctl enable nix-daemon.socket

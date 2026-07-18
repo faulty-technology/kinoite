@@ -9,7 +9,6 @@ PACKAGES=(
     distrobox
     intel-media-driver
     lm_sensors
-    tmux
     podman-compose
     powertop
 )
