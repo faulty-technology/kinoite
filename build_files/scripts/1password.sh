@@ -19,6 +19,10 @@ gpgkey=https://downloads.1password.com/linux/keys/1password.asc
 EOF
 
 ### Install
+# 8.12.28+ %post runs `mkdir -p /usr/local/bin` for the MCP server symlink.
+# /usr/local is a dangling symlink to ../var/usrlocal during the container
+# build, which makes mkdir -p fail — create the target so it resolves.
+mkdir -p /var/usrlocal
 dnf5 install -y 1password
 echo "1password" >> /usr/share/kinoite/packages
 
@@ -37,9 +41,10 @@ echo "1password" >> /usr/share/kinoite/packages
 #    org.freedesktop.policykit.owner empty. A polkit rule restores fingerprint
 #    and browser auto-unlock for any active local user.
 
-# GID for the onepassword group. Must be > 1000 to avoid conflicts with real
+# GIDs for the onepassword groups. Must be > 1000 to avoid conflicts with real
 # user groups. Matches the ublue-os convention.
 GID_ONEPASSWORD=1500
+GID_ONEPASSWORD_MCP=1501
 
 # Relocate 1Password from /opt (composefs) to /usr/lib (ostree-managed).
 # This ensures the setgid bit is properly applied at exec time.
@@ -56,14 +61,27 @@ chmod 4755 /usr/lib/1Password/chrome-sandbox
 chgrp "${GID_ONEPASSWORD}" /usr/lib/1Password/1Password-BrowserSupport
 chmod g+s /usr/lib/1Password/1Password-BrowserSupport
 
-# Ensure onepassword group is created at boot via systemd-sysusers.
-# The group won't survive the ostree /etc merge, so this is essential.
+# MCP server (added in 8.12.28): same SO_PEERCRED verification scheme as
+# BrowserSupport, with its own group. %post symlinks it into /usr/local/bin,
+# which is machine-local state — recreate the symlink in /usr/bin instead and
+# drop the /var/usrlocal content so /var stays pristine in the image.
+if [ -f /usr/lib/1Password/1password-mcp ]; then
+    chgrp "${GID_ONEPASSWORD_MCP}" /usr/lib/1Password/1password-mcp
+    chmod g+s /usr/lib/1Password/1password-mcp
+    ln -sf /usr/lib/1Password/1password-mcp /usr/bin/1password-mcp
+fi
+rm -rf /var/usrlocal
+
+# Ensure onepassword groups are created at boot via systemd-sysusers.
+# The groups won't survive the ostree /etc merge, so this is essential.
 cat > /usr/lib/sysusers.d/onepassword.conf << EOF
 g onepassword ${GID_ONEPASSWORD}
+g onepassword-mcp ${GID_ONEPASSWORD_MCP}
 EOF
 
-# Remove RPM-generated sysusers.d entries that would conflict with our GID.
-rm -f /usr/lib/sysusers.d/30-rpmostree-pkg-group-onepassword.conf
+# Remove RPM-generated sysusers.d entries that would conflict with our GIDs.
+rm -f /usr/lib/sysusers.d/30-rpmostree-pkg-group-onepassword.conf \
+    /usr/lib/sysusers.d/30-rpmostree-pkg-group-onepassword-mcp.conf
 
 # Polkit rule: allow any active local user to authenticate for 1Password actions.
 cat > /etc/polkit-1/rules.d/10-1password.rules << 'EOF'
