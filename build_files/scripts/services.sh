@@ -43,4 +43,5 @@ systemctl enable podman.socket
 ### 5. Nix: persistent /nix bind mount + multi-user daemon (units from nix.sh)
 systemctl enable var-nix.service
 systemctl enable nix.mount
+systemctl enable nix-selinux.service
 systemctl enable nix-daemon.socket
