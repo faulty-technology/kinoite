@@ -9,7 +9,8 @@ set -ouex pipefail
 #   - podman           (base image)
 #   - podman-compose   (north packages.sh)
 #   - distrobox        (north packages.sh)
-#   - /dev/kfd + /dev/dri render-group access (amdgpu.sh udev rule)
+#   - /dev/kfd access via the uaccess udev rule (amdgpu.sh); /dev/dri render
+#     nodes are already covered by systemd's own 70-uaccess.rules
 #
 # TODO(hardware): pick a gfx1201-capable ROCm 7.2+ container image, confirm
 # rootless podman can pass through /dev/kfd, then add a lemonade Quadlet
@@ -24,8 +25,10 @@ install -Dm0644 /dev/stdin /usr/share/kinoite/north-llm-TODO.md << 'EOF'
 # kinoite-north: local LLM (containerized ROCm) — TODO
 
 ROCm/lemonade run in containers, not on the host. Enabling bits shipped:
-podman, podman-compose, distrobox, and a udev rule granting the `render` group
-access to /dev/kfd + /dev/dri (add your user: `usermod -aG render,video <user>`).
+podman, podman-compose, distrobox, and a udev rule tagging /dev/kfd for
+`uaccess` so logind ACLs it to the active seat user. No group membership needed
+for a local login; headless/SSH use has no active seat, so that case still
+needs `usermod -aG render,video <user>`.
 
 Pending: choose a gfx1201-capable ROCm 7.2+ container image, verify rootless
 /dev/kfd passthrough, and add a Quadlet `.container` unit for lemonade (enable

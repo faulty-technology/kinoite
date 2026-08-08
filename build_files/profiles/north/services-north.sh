@@ -4,14 +4,10 @@ set -ouex pipefail
 # north-only service enablement (shared services are handled by services.sh).
 
 ### Sunshine streaming host
-# Sunshine ships a systemd *user* unit (it needs the graphical session). Enable
-# it globally so it starts for the logged-in user on first boot. Pairing, the
-# kwin capture-method setting, and the virtual-display prep commands are per-user
-# first-login steps (see sunshine.sh / README).
+# Sunshine ships a systemd *user* unit; enable it globally so it starts for the
+# logged-in user. Pairing and the kwin capture setting are per-user first-login
+# steps (see sunshine.sh / README).
 #
-# The unit MUST be referenced by its real filename. Upstream declares
-# `Alias=sunshine.service` in [Install], but that alias symlink is only created
-# *by* enabling — `systemctl enable` resolves its argument against the unit
-# search path first, so `enable sunshine.service` fails with "unit does not
-# exist" and takes the build down with it.
+# Must use the real filename: `sunshine.service` is only an [Install] Alias=,
+# which doesn't exist until the real unit is enabled — enabling the alias fails.
 systemctl --global enable app-dev.lizardbyte.app.Sunshine.service

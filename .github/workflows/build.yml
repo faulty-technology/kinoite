@@ -23,10 +23,9 @@ jobs:
     name: Build and push image
     runs-on: ubuntu-24.04
 
-    # One build per image variant. `image` drives the output tag, the
-    # signature-policy repo path (passed as the IMAGE_NAME build-arg, which
-    # signing.sh reads), and per-image artifact naming below. `profile` is only
-    # used to point the dependency-graph snapshot at the right orchestrator.
+    # One build per image variant. `image` drives the output tag, the signature
+    # policy repo path, and per-image artifact naming; `profile` only points the
+    # dependency-graph snapshot at the right orchestrator.
     strategy:
       fail-fast: false
       matrix:
@@ -54,9 +53,7 @@ jobs:
     steps:
       - name: Prepare environment
         run: |
-          # Lowercase the registry uri. The image name needs no such step: it
-          # comes from the matrix already lowercase, and steps reference the
-          # matrix context directly instead of round-tripping via GITHUB_ENV.
+          # Lowercase the registry uri (the image name is already lowercase).
           echo "IMAGE_REGISTRY=${IMAGE_REGISTRY,,}" >> ${GITHUB_ENV}
 
       # These stage versions are pinned by https://github.com/renovatebot/renovate
@@ -106,10 +103,9 @@ jobs:
           image: ${{ matrix.image }}
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
-          # Passed explicitly rather than relying on each Containerfile's ARG
-          # default: signing.sh bakes IMAGE_NAME into policy.json, and that
-          # policy defaults to "reject". A silent drift between the matrix and
-          # the ARG default would produce an image that refuses its own updates.
+          # signing.sh bakes this into policy.json; if it ever disagreed with the
+          # matrix, the image would reject its own updates. Don't rely on the
+          # Containerfile ARG default.
           build-args: |
             IMAGE_NAME=${{ matrix.image }}
           oci: false
@@ -303,12 +299,8 @@ jobs:
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
-      # Publishes sbom-additive.spdx.json to the registry as a *signed* in-toto
-      # attestation. This replaces the old `cosign attach sbom` step, which was
-      # deprecated upstream in Feb 2024 and — by its own warning — attached the
-      # SBOM unsigned. Retrieve with:
-      #   gh attestation verify oci://ghcr.io/faulty-technology/kinoite:latest \
-      #     --owner faulty-technology --predicate-type https://spdx.dev/Document/v2.3
+      # Retrieve with: gh attestation verify oci://ghcr.io/faulty-technology/kinoite:latest \
+      #   --owner faulty-technology --predicate-type https://spdx.dev/Document/v2.3
       - name: Attest SBOM
         uses: actions/attest-sbom@v4
         if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)

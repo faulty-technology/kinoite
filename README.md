@@ -41,14 +41,14 @@ Third-party repo files are removed after install — updates come from CI image 
 - `powertop` — laptop power tuning
 
 ### Battlestation image (`kinoite-north`) extras
-- **AMD / RDNA4 (R9700, gfx1201):** `amd-gpu-firmware`, `mesa-vulkan-drivers`, and a udev rule granting the `render` group access to `/dev/kfd` + `/dev/dri` for containerized ROCm. **No host ROCm** — ROCm 7.2+ (required for gfx1201) runs in containers so it tracks independently of Fedora 44.
+- **AMD / RDNA4 (R9700, gfx1201):** `amd-gpu-firmware`, `mesa-vulkan-drivers`, and a udev rule tagging `/dev/kfd` for `uaccess` (with `render`-group fallback) so containerized ROCm can reach the compute node. **No host ROCm** — ROCm 7.2+ (required for gfx1201) runs in containers so it tracks independently of Fedora 44.
 - **Gaming (lean core):** `steam`, `gamescope`, `gamemode`, `mangohud`. Everything else (emulators, Lutris, ...) is added as-needed via Flatpak/distrobox.
 - **Streaming:** `Sunshine` (via LizardByte beta COPR, key fingerprint-pinned) enabled as a user service, plus `krfb` + `kscreen` for a KDE Wayland virtual monitor — a no-dummy-plug virtual display (the Apollo-equivalent). Helper: `/usr/libexec/sunshine-virtual-display`.
 - **AMD tunings:** `vm.max_map_count=2147483642` sysctl (Proton games + LLM mmap), the `amdgpu.ppfeaturemask=0xffffffff` kernel arg baked via bootc `kargs.d` (unlocks power/clock/fan controls), and `lact` (LACT — power caps, fan curves, monitoring) with its `lactd` daemon enabled.
 - **Motherboard (ASUS ProArt B850-Creator WiFi Neo):** `acpi_enforce_resources=lax` kernel arg + auto-loaded `nct6775` so `lm_sensors`/fan tools see the Nuvoton NCT6701D fan RPM + voltages, plus `coolercontrol` / `coolercontrold` (system/CPU/case fan curves) with the daemon enabled. Wi-Fi 7 (RTL8922AE), dual 5GbE (RTL8126), and audio work in-kernel — no baking needed.
 
 > **First-login setup for `kinoite-north`:**
-> - Add your user to the GPU groups (machine-local, can't ship in the image): `sudo usermod -aG render,video $USER` then re-login.
+> - GPU access should need no setup: systemd ACLs the render nodes to the active seat user, and the shipped `70-kfd.rules` extends the same `uaccess` treatment to `/dev/kfd`. If a container can't reach `/dev/kfd` — or you're driving the box headless over SSH, where there's no active seat to grant an ACL — fall back to `sudo usermod -aG render,video $USER` and re-login.
 > - Sunshine: complete pairing, and set **Configuration → Advanced → Force Capture Method → kwin** (the default `kms` capture can't see the krfb virtual monitor). Wire `/usr/libexec/sunshine-virtual-display up|down` into Sunshine's Command Preparation to bring the virtual display up per-connection.
 > - Sunshine ports: the RPM ships no firewalld service file, so unless every client reaches the box over Tailscale, open them once: `sudo firewall-cmd --permanent --add-port=47984-47990/tcp --add-port=48010/tcp --add-port=47998-48000/udp --add-port=48002/udp --add-port=48010/udp && sudo firewall-cmd --reload`
 > - Confirm the powerplay karg applied: `cat /proc/cmdline | grep ppfeaturemask`. If the first `rpm-ostree rebase` didn't pick it up from `kargs.d`, apply once: `sudo rpm-ostree kargs --append=amdgpu.ppfeaturemask=0xffffffff` (image updates keep it afterward). Then open LACT to set power/fan.

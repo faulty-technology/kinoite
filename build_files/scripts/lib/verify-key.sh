@@ -6,14 +6,9 @@
 # rotation or added subkeys will fail the build — review the new fingerprint and
 # update the caller in a PR.
 #
-# On success the verified key is also installed to
-# /etc/pki/rpm-gpg/RPM-GPG-KEY-<slug> so the matching .repo file can point
-# `gpgkey=` at that file:// path instead of the vendor URL. With a URL there,
-# `dnf5 -y` would silently fetch and auto-import whatever key the vendor serves
-# if a package were signed by something not already in the rpmdb — routing
-# around this pin. A file:// key leaves dnf no unpinned key to reach for, and
-# still satisfies repo_gpgcheck=1 (which verifies repomd.xml against the
-# repo's configured key, not the rpmdb).
+# The verified key is installed to /etc/pki/rpm-gpg/RPM-GPG-KEY-<slug>, and each
+# .repo file must point `gpgkey=` at that path. A vendor URL there would let
+# `dnf5 -y` auto-import an unpinned key, defeating this check — keep it file://.
 
 verify_and_import_key() {
     local slug="$1" name="$2" url="$3"

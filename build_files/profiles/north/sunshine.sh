@@ -59,9 +59,7 @@ cat > /usr/libexec/sunshine-virtual-display << 'EOF'
 #   Undo: /usr/libexec/sunshine-virtual-display down
 set -euo pipefail
 VM_NAME="sunshine-vm"
-# Per-user runtime dir, not /tmp: a fixed name in a world-writable directory is
-# a predictable path we later feed straight to kill(1), and XDG_RUNTIME_DIR is
-# also immune to the two invocations disagreeing about PrivateTmp.
+# Not /tmp: a fixed name there is a predictable path we feed straight to kill(1).
 PIDFILE="${XDG_RUNTIME_DIR:-/tmp}/${VM_NAME}.pid"
 case "${1:-}" in
     up)

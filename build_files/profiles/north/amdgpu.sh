@@ -21,15 +21,12 @@ dnf5 install -y "${PACKAGES[@]}"
 printf '%s\n' "${PACKAGES[@]}" >> /usr/share/kinoite/packages
 
 ### Compute device access for containerized ROCm
-# ROCm ships no host packages here, so /dev/kfd would be root-only. Bake the
-# standard ROCm udev rule so the compute (/dev/kfd) and render (/dev/dri/renderD*)
-# nodes are owned by the `render` group. The `render` and `video` groups already
-# exist in the base image; the login user must still be added to them — that is
-# machine-local state and cannot ship in the image, so it is a documented
-# post-rebase step (`usermod -aG render,video <user>`; see README).
+# Only /dev/kfd needs a rule — systemd's 70-uaccess.rules already tags the DRM
+# render nodes, so logind ACLs those to the active seat user. uaccess grants
+# nothing without an active seat, so GROUP="render" stays as the headless path.
+#
+# TODO(hardware): confirm uaccess lands on /dev/kfd — it's a non-DRM device, so
+# seat assignment is the open question. See notes/kinoite-north-validation.md.
 cat > /usr/lib/udev/rules.d/70-kfd.rules << 'EOF'
-# AMD KFD (ROCm compute) — grant the render group access to the compute node.
-KERNEL=="kfd", GROUP="render", MODE="0660"
-# DRM render nodes for GPU compute/offload.
-SUBSYSTEM=="drm", KERNEL=="renderD*", GROUP="render", MODE="0660"
+KERNEL=="kfd", TAG+="uaccess", GROUP="render", MODE="0660"
 EOF

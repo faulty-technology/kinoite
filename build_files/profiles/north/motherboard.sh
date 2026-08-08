@@ -49,10 +49,8 @@ enabled=1
 enabled_metadata=1
 EOF
 
-# coolercontrold (which owns coolercontrold.service) is only a *Recommends* of
-# the coolercontrol GUI — it lands today solely because dnf5 defaults to
-# install_weak_deps=True. Name it explicitly so the `systemctl enable` below
-# can't be broken by a weak-dep policy change, and so it shows up in the SBOM.
+# coolercontrold owns coolercontrold.service but is only a Recommends of the
+# GUI — name it explicitly so the enable below can't break on a weak-dep change.
 PACKAGES=(
     coolercontrol
     coolercontrold

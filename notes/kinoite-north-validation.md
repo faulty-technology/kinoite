@@ -50,8 +50,14 @@ ASUS ProArt B850-Creator WiFi Neo, Nuvoton NCT6701D Super I/O.
 ## 5. Containerized ROCm + lemonade — `build_files/profiles/north/llm.sh`
 - [ ] Pick a gfx1201-capable ROCm **7.2+** container image (Fedora 44's host ROCm
       is too old — this is why ROCm stays containerized).
-- [ ] Rootless podman passes through `/dev/kfd` + `/dev/dri` (login user in
-      `render,video`; see the `70-kfd.rules` udev rule in `amdgpu.sh`).
+- [ ] `TAG+="uaccess"` actually lands on `/dev/kfd` — it's a non-DRM device, so
+      whether logind assigns it to a seat is the open question. Check with
+      `getfacl /dev/kfd` while logged in locally: the login user should appear
+      in the ACL without being in `render`. If it does not, the
+      `usermod -aG render,video` fallback becomes mandatory again (and it stays
+      mandatory for headless/SSH use either way — no active seat, no ACL).
+- [ ] Rootless podman passes through `/dev/kfd` + `/dev/dri`
+      (see the `70-kfd.rules` udev rule in `amdgpu.sh`).
 - [ ] lemonade runs against the R9700 in a container.
 - [ ] Codify the working setup as a Quadlet `.container` unit baked into the image
       and enabled from `services-north.sh` (replaces the current no-op in `llm.sh`).
