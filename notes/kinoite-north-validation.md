@@ -6,13 +6,18 @@ but these should be verified before treating it as production. Code that depends
 one of these carries a `TODO(hardware):` comment pointing here.
 
 ## 1. R9700 (RDNA4) driver currency — `build_files/profiles/north/amdgpu.sh`
+
 - [ ] Boots to KDE Wayland with working display on the R9700.
-- [ ] `amdgpu` module loaded; both GPUs enumerate (`lspci`, `/sys/class/drm`).
+- [ ] `amdgpu` module loaded; both GPUs enumerate (`amd-smi list`, `lspci`).
+- [ ] `amd-smi monitor` reports temp/power/VRAM for both cards. Fedora ships
+      amdsmi 7.1.1, so confirm it recognizes gfx1201 rather than erroring — if
+      it doesn't, the ROCm container's own amd-smi is the fallback.
 - [ ] Vulkan works: `vulkaninfo` / `glxinfo` report the RDNA4 GPU(s).
 - Fallback if Fedora 44's kernel/linux-firmware/mesa are too old: a newer-kernel
   COPR, or a `linux-firmware` override for the gfx1201 microcode.
 
 ## 2. Virtual display, no dummy plug — `build_files/profiles/north/sunshine.sh`
+
 - [ ] `krfb-virtualmonitor` creates a virtual output on RDNA4/Wayland.
 - [ ] Sunshine capture set to **kwin** (default `kms` can't see the virtual monitor).
 - [ ] A Moonlight/Artemis client connects and the display scales to the client
@@ -21,6 +26,7 @@ one of these carries a `TODO(hardware):` comment pointing here.
       Command Preparation brings the display up per-connection and tears it down.
 
 ## 3. Sunshine service + firewall — `build_files/profiles/north/services-north.sh`
+
 - [ ] `systemctl --user status app-dev.lizardbyte.app.Sunshine.service` is running
       after first login (enabled `--global`, `WantedBy=graphical-session.target`).
       Note the unit's real filename — `sunshine.service` is only an `Alias=`, which
@@ -28,8 +34,8 @@ one of these carries a `TODO(hardware):` comment pointing here.
 - [ ] Ports reachable: the RPM ships **no** firewalld service file, so unless the
       only clients are on Tailscale these need opening —
       `sudo firewall-cmd --permanent --add-port=47984-47990/tcp \
-       --add-port=48010/tcp --add-port=47998-48000/udp --add-port=48002/udp \
-       --add-port=48010/udp && sudo firewall-cmd --reload`
+     --add-port=48010/tcp --add-port=47998-48000/udp --add-port=48002/udp \
+     --add-port=48010/udp && sudo firewall-cmd --reload`
 - [ ] The LizardByte **beta** COPR has a `fedora-44` build of `Sunshine`
       (stable frequently lags a new Fedora release; that's why we use beta).
 - [ ] If the build fails on a GPG mismatch, re-verify every pinned fingerprint with
@@ -37,7 +43,9 @@ one of these carries a `TODO(hardware):` comment pointing here.
       vendor keys and exits nonzero on drift).
 
 ## 4. Motherboard sensors — `build_files/profiles/north/motherboard.sh`
+
 ASUS ProArt B850-Creator WiFi Neo, Nuvoton NCT6701D Super I/O.
+
 - [ ] `sensors` shows `nct6775`/`nct6799` fan RPM + voltages (needs the
       `acpi_enforce_resources=lax` karg to be active — check `/proc/cmdline`).
 - [ ] CoolerControl (`coolercontrold` running) sees the mobo/CPU/case fans and can
@@ -48,6 +56,7 @@ ASUS ProArt B850-Creator WiFi Neo, Nuvoton NCT6701D Super I/O.
       `r8169`/RTL8126 links up, audio works.
 
 ## 5. Containerized ROCm + lemonade — `build_files/profiles/north/llm.sh`
+
 - [ ] Pick a gfx1201-capable ROCm **7.2+** container image (Fedora 44's host ROCm
       is too old — this is why ROCm stays containerized).
 - [ ] `TAG+="uaccess"` actually lands on `/dev/kfd` — it's a non-DRM device, so

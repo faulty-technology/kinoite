@@ -12,9 +12,10 @@ set -ouex pipefail
 # enough to drive the R9700 (RDNA4/gfx1201) and enumerate both GPUs. Fallback:
 # newer-kernel COPR or a linux-firmware override. See notes/kinoite-north-validation.md.
 
-### GPU firmware (amdgpu microcode; subpackage of linux-firmware)
+### GPU firmware (amdgpu microcode; subpackage of linux-firmware) + monitoring
 PACKAGES=(
     amd-gpu-firmware
+    amdsmi
     mesa-vulkan-drivers
 )
 dnf5 install -y "${PACKAGES[@]}"
