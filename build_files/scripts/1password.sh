@@ -4,7 +4,7 @@ set -ouex pipefail
 . "$(dirname "$0")/lib/verify-key.sh"
 
 ### Add 1Password repository
-verify_and_import_key "1Password" \
+verify_and_import_key "1password" "1Password" \
     "https://downloads.1password.com/linux/keys/1password.asc" \
     3FEF9748469ADBE15DA7CA80AC2D62742012EA22
 
@@ -15,7 +15,7 @@ baseurl=https://downloads.1password.com/linux/rpm/stable/$basearch
 enabled=1
 gpgcheck=1
 repo_gpgcheck=1
-gpgkey=https://downloads.1password.com/linux/keys/1password.asc
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-1password
 EOF
 
 ### Install

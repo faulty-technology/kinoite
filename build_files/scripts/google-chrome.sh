@@ -6,7 +6,7 @@ set -ouex pipefail
 ### Add Google Chrome repository
 # Google's keyring bundles historical signing keys — pin all of them so a
 # rotation or added key fails CI until a human reviews the new fingerprint.
-verify_and_import_key "Google Chrome" \
+verify_and_import_key "google-chrome" "Google Chrome" \
     "https://dl.google.com/linux/linux_signing_key.pub" \
     0E225917414670F4442C250DFD533C07C264648F \
     0F06FF86BEEAF4E71866EE5232EE5355A6BC6E42 \
@@ -24,7 +24,7 @@ name=google-chrome
 baseurl=https://dl.google.com/linux/chrome/rpm/stable/$basearch
 enabled=1
 gpgcheck=1
-gpgkey=https://dl.google.com/linux/linux_signing_key.pub
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-google-chrome
 EOF
 
 ### Install

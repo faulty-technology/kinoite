@@ -1,26 +1,29 @@
 # kinoite
 
-A custom [bootc](https://github.com/bootc-dev/bootc) image based on [Fedora Kinoite](https://fedoraproject.org/kinoite/) 44, built using [ublue-os/image-template](https://github.com/ublue-os/image-template).
+Custom [bootc](https://github.com/bootc-dev/bootc) images based on [Fedora Kinoite](https://fedoraproject.org/kinoite/) 44, built using [ublue-os/image-template](https://github.com/ublue-os/image-template).
 
-The image is published to `ghcr.io/faulty-technology/kinoite:latest` and rebuilt automatically on push via GitHub Actions.
+This repo builds **two images** from one shared codebase:
+
+| Image | Target machine | Role |
+|-------|----------------|------|
+| `ghcr.io/faulty-technology/kinoite` | laptop | dev / daily driver |
+| `ghcr.io/faulty-technology/kinoite-north` | AMD 9900X + dual Radeon AI PRO R9700 (Fractal North XL) | gaming + local LLM |
+
+Both share the same baseline (1Password, Chrome, Tailscale, Nix, font fixes, signed bootc auto-updates); `kinoite-north` layers on AMD/RDNA4 enablement, a lean gaming core, and Sunshine streaming. Both are rebuilt automatically on push via GitHub Actions.
 
 ## What's included
 
-On top of the base Fedora Kinoite image:
+### Shared baseline (both images)
 
 **Packages**
 - `1password` — password manager (via official 1Password repo)
 - `distrobox` — container-based development environments
 - `google-chrome-stable` — browser (via Google repo)
-- `intel-media-driver` — hardware video acceleration
 - `lm_sensors` — hardware monitoring
 - `podman-compose` — Docker Compose-compatible tooling
-- `powertop` — power usage analysis
 - `tailscale` — VPN mesh network (via Tailscale repo)
 - `rpmfusion-free-release` / `rpmfusion-nonfree-release` — RPM Fusion repos
 - `nix` / `nix-daemon` — [Nix](https://nixos.org/) in multi-user mode (modern CLI + flakes; no legacy `nix-*` commands). User packages are managed declaratively via a separate home-manager flake; the store persists in `/var/nix`, bind-mounted onto `/nix` at boot.
-
-Third-party repo files are removed after install — updates come from CI image rebuilds rather than live `dnf` updates.
 
 **Enabled services**
 - `tailscaled`
@@ -31,9 +34,28 @@ Third-party repo files are removed after install — updates come from CI image 
 - `/opt` is made immutable (unlinked from `/var/opt`) so packages like Google Chrome persist correctly across deploys.
 - Font mtimes are normalized to epoch and system fontconfig caches rebuilt at image build time, so caches validate on the deployed (mtime-0) ostree filesystem instead of going stale per-user.
 
-## Rebasing to this image
+Third-party repo files are removed after install — updates come from CI image rebuilds rather than live `dnf` updates.
 
-From a stock Fedora Kinoite system:
+### Laptop image (`kinoite`) extras
+- `intel-media-driver` — Intel hardware video acceleration
+- `powertop` — laptop power tuning
+
+### Battlestation image (`kinoite-north`) extras
+- **AMD / RDNA4 (R9700, gfx1201):** `amd-gpu-firmware`, `mesa-vulkan-drivers`, and a udev rule granting the `render` group access to `/dev/kfd` + `/dev/dri` for containerized ROCm. **No host ROCm** — ROCm 7.2+ (required for gfx1201) runs in containers so it tracks independently of Fedora 44.
+- **Gaming (lean core):** `steam`, `gamescope`, `gamemode`, `mangohud`. Everything else (emulators, Lutris, ...) is added as-needed via Flatpak/distrobox.
+- **Streaming:** `Sunshine` (via LizardByte beta COPR, key fingerprint-pinned) enabled as a user service, plus `krfb` + `kscreen` for a KDE Wayland virtual monitor — a no-dummy-plug virtual display (the Apollo-equivalent). Helper: `/usr/libexec/sunshine-virtual-display`.
+- **AMD tunings:** `vm.max_map_count=2147483642` sysctl (Proton games + LLM mmap), the `amdgpu.ppfeaturemask=0xffffffff` kernel arg baked via bootc `kargs.d` (unlocks power/clock/fan controls), and `lact` (LACT — power caps, fan curves, monitoring) with its `lactd` daemon enabled.
+- **Motherboard (ASUS ProArt B850-Creator WiFi Neo):** `acpi_enforce_resources=lax` kernel arg + auto-loaded `nct6775` so `lm_sensors`/fan tools see the Nuvoton NCT6701D fan RPM + voltages, plus `coolercontrol` / `coolercontrold` (system/CPU/case fan curves) with the daemon enabled. Wi-Fi 7 (RTL8922AE), dual 5GbE (RTL8126), and audio work in-kernel — no baking needed.
+
+> **First-login setup for `kinoite-north`:**
+> - Add your user to the GPU groups (machine-local, can't ship in the image): `sudo usermod -aG render,video $USER` then re-login.
+> - Sunshine: complete pairing, and set **Configuration → Advanced → Force Capture Method → kwin** (the default `kms` capture can't see the krfb virtual monitor). Wire `/usr/libexec/sunshine-virtual-display up|down` into Sunshine's Command Preparation to bring the virtual display up per-connection.
+> - Sunshine ports: the RPM ships no firewalld service file, so unless every client reaches the box over Tailscale, open them once: `sudo firewall-cmd --permanent --add-port=47984-47990/tcp --add-port=48010/tcp --add-port=47998-48000/udp --add-port=48002/udp --add-port=48010/udp && sudo firewall-cmd --reload`
+> - Confirm the powerplay karg applied: `cat /proc/cmdline | grep ppfeaturemask`. If the first `rpm-ostree rebase` didn't pick it up from `kargs.d`, apply once: `sudo rpm-ostree kargs --append=amdgpu.ppfeaturemask=0xffffffff` (image updates keep it afterward). Then open LACT to set power/fan.
+
+## Rebasing to an image
+
+From a stock Fedora Kinoite system (swap `kinoite` for `kinoite-north` for the battlestation):
 
 ```bash
 # First rebase (unverified, to bootstrap)
@@ -43,7 +65,7 @@ rpm-ostree rebase ostree-unverified-registry:ghcr.io/faulty-technology/kinoite:l
 rpm-ostree rebase ostree-image-signed:docker://ghcr.io/faulty-technology/kinoite:latest
 ```
 
-Once on the image, you can also use `bootc switch` for future switches since it's a bootc-compatible image:
+Once on the image, you can also use `bootc switch` for future switches:
 
 ```bash
 bootc switch ghcr.io/faulty-technology/kinoite:latest
@@ -51,14 +73,22 @@ bootc switch ghcr.io/faulty-technology/kinoite:latest
 
 ## Building
 
-Images are built, signed, and pushed by GitHub Actions on every push to `main`.
-For a one-off local build: `podman build -t kinoite .`
+Images are built, signed, and pushed by GitHub Actions on every push to `main` (a matrix over both images). For a one-off local build:
+
+```bash
+podman build -t kinoite -f Containerfile .
+podman build -t kinoite-north -f Containerfile.north .
+```
 
 ## Repository layout
 
 | Path | Description |
 |------|-------------|
-| `Containerfile` | Image definition; sets base image and runs `build.sh` |
-| `build_files/build.sh` | Package installs, repo setup, and service enables |
-| `.github/workflows/build.yml` | CI: builds, pushes, and signs the image by digest |
-| `cosign.pub` | Public key for verifying signed image pushes |
+| `Containerfile` | Laptop image; runs `build_files/profiles/base/build.sh` |
+| `Containerfile.north` | Battlestation image; runs `build_files/profiles/north/build.sh` |
+| `build_files/scripts/` | Shared, image-agnostic scripts (repos, Nix, fonts, signing, cleanup) |
+| `build_files/scripts/signing.sh` | Signature policy, parameterized by `IMAGE_NAME` per image |
+| `build_files/profiles/base/` | Laptop-specific package set |
+| `build_files/profiles/north/` | AMD/RDNA4, gaming, Sunshine, and LLM-enablement scripts |
+| `.github/workflows/build.yml` | CI: matrix-builds, pushes, and signs both images by digest |
+| `cosign.pub` | Public key for verifying signed image pushes (shared by both images) |
