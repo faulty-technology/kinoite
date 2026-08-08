@@ -294,13 +294,6 @@ jobs:
           COSIGN_EXPERIMENTAL: false
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
 
-      # Retrieve with: cosign download sbom ghcr.io/faulty-technology/kinoite:latest
-      - name: Attach SBOM to image
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-        run: |
-          IMAGE_FULL="${{ env.IMAGE_REGISTRY }}/${{ matrix.image }}"
-          cosign attach sbom --sbom sbom-additive.spdx.json "${IMAGE_FULL}@${{ steps.push.outputs.digest }}"
-
       # Verify with: gh attestation verify oci://ghcr.io/faulty-technology/kinoite:latest --owner faulty-technology
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v4
@@ -310,6 +303,12 @@ jobs:
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
+      # Publishes sbom-additive.spdx.json to the registry as a *signed* in-toto
+      # attestation. This replaces the old `cosign attach sbom` step, which was
+      # deprecated upstream in Feb 2024 and — by its own warning — attached the
+      # SBOM unsigned. Retrieve with:
+      #   gh attestation verify oci://ghcr.io/faulty-technology/kinoite:latest \
+      #     --owner faulty-technology --predicate-type https://spdx.dev/Document/v2.3
       - name: Attest SBOM
         uses: actions/attest-sbom@v4
         if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
