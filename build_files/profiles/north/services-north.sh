@@ -8,6 +8,7 @@ set -ouex pipefail
 # logged-in user. Pairing and the kwin capture setting are per-user first-login
 # steps (see sunshine.sh / README).
 #
-# Must use the real filename: `sunshine.service` is only an [Install] Alias=,
-# which doesn't exist until the real unit is enabled — enabling the alias fails.
+# Use the canonical unit name. pvermeer's package also ships a sunshine.service
+# compat symlink, but upstream only declares it as an [Install] Alias= — which
+# doesn't exist until the real unit is enabled, so enabling the alias fails.
 systemctl --global enable app-dev.lizardbyte.app.Sunshine.service

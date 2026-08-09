@@ -16,6 +16,7 @@ mkdir -p /usr/share/kinoite
 
 # Shared repos + third-party apps (repo files removed again in cleanup.sh)
 "$SHARED/rpmfusion.sh"
+"$SHARED/codecs.sh"
 "$SHARED/1password.sh"
 "$SHARED/google-chrome.sh"
 "$SHARED/tailscale.sh"

@@ -4,41 +4,45 @@ set -ouex pipefail
 . "$(cd "$(dirname "$0")/../../scripts" && pwd)/lib/verify-key.sh"
 
 # Sunshine game-streaming host + KDE Wayland virtual display (the Apollo-equivalent
-# "no dummy plug" setup). Sunshine is distributed for Fedora via the LizardByte
-# COPR. We use the *beta* COPR because LizardByte stable releases are not aligned
-# with Fedora releases and often lag a new Fedora version (stable is frequently
-# missing for the newest Fedora — beta is the recommended path).
+# "no dummy plug" setup).
+#
+# Sourced from pvermeer/sunshine rather than LizardByte's own COPR: it targets
+# Fedora Atomic explicitly, carries spec fixes for the build issues that made
+# Bazzite drop its native Sunshine, and LizardByte's `stable` COPR is not
+# actually maintained by LizardByte. Package is lowercase `sunshine` (stable);
+# `sunshine-beta` tracks the weekly pre-release.
+#
+# Clipboard sync is not part of this — that's KDE Connect. Sunshine has never
+# shipped it.
 #
 # TODO(hardware): validate krfb-virtualmonitor drives a client-scaled virtual
-# monitor into Sunshine on RDNA4/Wayland, and confirm the beta COPR has an fc44
-# build (re-verify the pinned key via lib/check-keys.sh if the build fails on a
-# GPG mismatch). See notes/kinoite-north-validation.md.
+# monitor into Sunshine on RDNA4/Wayland. See notes/kinoite-north-validation.md.
 
-### Add the LizardByte beta COPR (repo written inline; key fingerprint-pinned)
-verify_and_import_key "lizardbyte-beta" "LizardByte (Sunshine COPR)" \
-    "https://download.copr.fedorainfracloud.org/results/lizardbyte/beta/pubkey.gpg" \
-    8DBE8112F49BA56B18688093BD3BF808010833A1
+### Add the pvermeer Sunshine COPR (repo written inline; key fingerprint-pinned)
+verify_and_import_key "pvermeer-sunshine" "Sunshine COPR (pvermeer)" \
+    "https://download.copr.fedorainfracloud.org/results/pvermeer/sunshine/pubkey.gpg" \
+    0B420BCBF6AF53246B69BD5E8FAB4A6FEE1312ED
 
-cat > /etc/yum.repos.d/_copr_lizardbyte-beta.repo << 'EOF'
-[copr:copr.fedorainfracloud.org:lizardbyte:beta]
-name=Copr repo for beta owned by lizardbyte
-baseurl=https://download.copr.fedorainfracloud.org/results/lizardbyte/beta/fedora-$releasever-$basearch/
+cat > /etc/yum.repos.d/_copr_pvermeer-sunshine.repo << 'EOF'
+[copr:copr.fedorainfracloud.org:pvermeer:sunshine]
+name=Copr repo for sunshine owned by pvermeer
+baseurl=https://download.copr.fedorainfracloud.org/results/pvermeer/sunshine/fedora-$releasever-$basearch/
 type=rpm-md
 skip_if_unavailable=False
 gpgcheck=1
-gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-lizardbyte-beta
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-pvermeer-sunshine
 repo_gpgcheck=0
 enabled=1
 enabled_metadata=1
 EOF
 
 ### Install Sunshine + the KDE virtual-monitor tooling
-# krfb provides krfb-virtualmonitor; kscreen (kscreen-doctor) tweaks the virtual
-# output's refresh/resolution after it is created.
+# krfb provides /usr/bin/krfb-virtualmonitor. kscreen-doctor, for inspecting or
+# tweaking the virtual output, lives in libkscreen (NOT the kscreen package) and
+# Plasma already pulls that in — nothing to add for it.
 PACKAGES=(
-    Sunshine
+    sunshine
     krfb
-    kscreen
 )
 dnf5 install -y "${PACKAGES[@]}"
 printf '%s\n' "${PACKAGES[@]}" >> /usr/share/kinoite/packages

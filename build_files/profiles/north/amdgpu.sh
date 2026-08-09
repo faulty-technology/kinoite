@@ -13,10 +13,11 @@ set -ouex pipefail
 # newer-kernel COPR or a linux-firmware override. See notes/kinoite-north-validation.md.
 
 ### GPU firmware (amdgpu microcode; subpackage of linux-firmware) + monitoring
+# VAAPI/Vulkan drivers are not listed here — the shared codecs.sh swaps in the
+# freeworld mesa builds, and gaming.sh handles the 32-bit half for Proton.
 PACKAGES=(
     amd-gpu-firmware
     amdsmi
-    mesa-vulkan-drivers
 )
 dnf5 install -y "${PACKAGES[@]}"
 printf '%s\n' "${PACKAGES[@]}" >> /usr/share/kinoite/packages
