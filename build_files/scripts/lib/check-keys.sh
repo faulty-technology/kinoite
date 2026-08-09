@@ -18,13 +18,15 @@ GNUPGHOME="$(mktemp -d)"
 export GNUPGHOME
 trap 'rm -rf "$GNUPGHOME"' EXIT
 
-# Flatten each verify_and_import_key invocation (backslash continuations and
-# all) onto a single "<file>\t<call>" line.
+# Flatten each pinned-key invocation (backslash continuations and all) onto a
+# single "<file>\t<call>" line. Two call forms are pinned:
+#   verify_and_import_key <slug> <name> <url> <fpr>...   — URL is literal
+#   add_copr <slug> <owner/project> <fpr>                — URL is derived
 collect_calls() {
     local f
     while IFS= read -r f; do
         awk -v path="${f#"$REPO_ROOT"/}" '
-            /verify_and_import_key/ && !inblk { inblk = 1; printf "%s\t", path }
+            /verify_and_import_key|add_copr / && !inblk { inblk = 1; printf "%s\t", path }
             inblk {
                 line = $0
                 sub(/\\[[:space:]]*$/, "", line)
@@ -33,7 +35,7 @@ collect_calls() {
                 if ($0 !~ /\\[[:space:]]*$/) { inblk = 0; print "" }
             }
         ' "$f"
-    done < <(grep -rl --include='*.sh' 'verify_and_import_key' "$REPO_ROOT/build_files" \
+    done < <(grep -rlE --include='*.sh' 'verify_and_import_key|add_copr ' "$REPO_ROOT/build_files" \
         | grep -v '/scripts/lib/' | sort)
 }
 
@@ -44,9 +46,17 @@ while IFS=$'\t' read -r file call; do
     [ -n "${call:-}" ] || continue
     checked=$((checked + 1))
 
-    name=$(sed -E 's/.*verify_and_import_key[[:space:]]+"[^"]*"[[:space:]]+"([^"]*)".*/\1/' <<< "$call")
-    url=$(grep -oE 'https://[^" ]+' <<< "$call" | head -1)
     pinned=$(grep -oE '\b[0-9A-F]{40}\b' <<< "$call" | sort)
+
+    if [[ "$call" == *add_copr* ]]; then
+        # add_copr <slug> <owner/project> <fpr> — reconstruct the COPR key URL.
+        project=$(sed -E 's/.*add_copr[[:space:]]+[^[:space:]]+[[:space:]]+([^[:space:]]+).*/\1/' <<< "$call")
+        name="COPR ${project}"
+        url="https://download.copr.fedorainfracloud.org/results/${project}/pubkey.gpg"
+    else
+        name=$(sed -E 's/.*verify_and_import_key[[:space:]]+"[^"]*"[[:space:]]+"([^"]*)".*/\1/' <<< "$call")
+        url=$(grep -oE 'https://[^" ]+' <<< "$call" | head -1)
+    fi
 
     echo "=== ${name} (${file})"
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -ouex pipefail
 
-. "$(cd "$(dirname "$0")/../../scripts" && pwd)/lib/verify-key.sh"
+. "$(cd "$(dirname "$0")/../../scripts" && pwd)/lib/common.sh"
 
 # ASUS ProArt B850-Creator WiFi Neo enablement.
 # Super I/O: Nuvoton NCT6701D | Wi-Fi: RTL8922AE (rtw89) | LAN: dual Realtek 5GbE
@@ -32,31 +32,11 @@ EOF
 ### 2. CoolerControl — GUI fan-curve control for CPU/case/AIO fans
 # The system-fan counterpart to LACT (which handles the GPUs). Reads the sensors
 # unlocked above. Installed from the maintainer's COPR, key fingerprint-pinned.
-verify_and_import_key "codifryed-coolercontrol" "CoolerControl COPR (codifryed)" \
-    "https://download.copr.fedorainfracloud.org/results/codifryed/CoolerControl/pubkey.gpg" \
-    E8AB88BC4834377F98A165F860E6A0997C96AB47
-
-cat > /etc/yum.repos.d/_copr_codifryed-CoolerControl.repo << 'EOF'
-[copr:copr.fedorainfracloud.org:codifryed:CoolerControl]
-name=Copr repo for CoolerControl owned by codifryed
-baseurl=https://download.copr.fedorainfracloud.org/results/codifryed/CoolerControl/fedora-$releasever-$basearch/
-type=rpm-md
-skip_if_unavailable=False
-gpgcheck=1
-gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-codifryed-coolercontrol
-repo_gpgcheck=0
-enabled=1
-enabled_metadata=1
-EOF
+add_copr codifryed-coolercontrol codifryed/CoolerControl E8AB88BC4834377F98A165F860E6A0997C96AB47
 
 # coolercontrold owns coolercontrold.service but is only a Recommends of the
 # GUI — name it explicitly so the enable below can't break on a weak-dep change.
-PACKAGES=(
-    coolercontrol
-    coolercontrold
-)
-dnf5 install -y "${PACKAGES[@]}"
-printf '%s\n' "${PACKAGES[@]}" >> /usr/share/kinoite/packages
+install_pkgs coolercontrol coolercontrold
 
 # Enable the daemon (GUI `coolercontrol` talks to it).
 systemctl enable coolercontrold.service

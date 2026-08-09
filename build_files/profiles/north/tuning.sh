@@ -1,7 +1,7 @@
 #!/bin/bash
 set -ouex pipefail
 
-. "$(cd "$(dirname "$0")/../../scripts" && pwd)/lib/verify-key.sh"
+. "$(cd "$(dirname "$0")/../../scripts" && pwd)/lib/common.sh"
 
 # AMD 9900X (Zen 5) + dual R9700 (RDNA4) tunings for a gaming + local-LLM box.
 
@@ -32,25 +32,9 @@ EOF
 ### 3. LACT — Linux AMDGPU Control Tool (power caps, fan curves, monitoring)
 # Uses the powerplay controls unlocked above. Installed from the maintainer's
 # COPR, key fingerprint-pinned like the other third-party sources.
-verify_and_import_key "ilyaz-lact" "LACT COPR (ilyaz)" \
-    "https://download.copr.fedorainfracloud.org/results/ilyaz/LACT/pubkey.gpg" \
-    DC70DFEA1822B0720140518FA3BA601174A6903B
+add_copr ilyaz-lact ilyaz/LACT DC70DFEA1822B0720140518FA3BA601174A6903B
 
-cat > /etc/yum.repos.d/_copr_ilyaz-LACT.repo << 'EOF'
-[copr:copr.fedorainfracloud.org:ilyaz:LACT]
-name=Copr repo for LACT owned by ilyaz
-baseurl=https://download.copr.fedorainfracloud.org/results/ilyaz/LACT/fedora-$releasever-$basearch/
-type=rpm-md
-skip_if_unavailable=False
-gpgcheck=1
-gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-ilyaz-lact
-repo_gpgcheck=0
-enabled=1
-enabled_metadata=1
-EOF
-
-dnf5 install -y lact
-echo "lact" >> /usr/share/kinoite/packages
+install_pkgs lact
 
 # Enable the daemon (GUI `lact` talks to it). Fan/power editing needs the
 # ppfeaturemask karg above to be active.

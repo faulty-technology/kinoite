@@ -1,6 +1,8 @@
 #!/bin/bash
 set -ouex pipefail
 
+. "$(cd "$(dirname "$0")/../../scripts" && pwd)/lib/common.sh"
+
 # AMD RDNA4 / Radeon AI PRO R9700 (gfx1201) enablement.
 #
 # Host stays lean: NO host ROCm packages — ROCm 7.2+ (required for gfx1201)
@@ -15,12 +17,7 @@ set -ouex pipefail
 ### GPU firmware (amdgpu microcode; subpackage of linux-firmware) + monitoring
 # VAAPI/Vulkan drivers are not listed here — the shared codecs.sh swaps in the
 # freeworld mesa builds, and gaming.sh handles the 32-bit half for Proton.
-PACKAGES=(
-    amd-gpu-firmware
-    amdsmi
-)
-dnf5 install -y "${PACKAGES[@]}"
-printf '%s\n' "${PACKAGES[@]}" >> /usr/share/kinoite/packages
+install_pkgs amd-gpu-firmware amdsmi
 
 ### Compute device access for containerized ROCm
 # Only /dev/kfd needs a rule — systemd's 70-uaccess.rules already tags the DRM

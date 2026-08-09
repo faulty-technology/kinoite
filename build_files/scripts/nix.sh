@@ -1,6 +1,8 @@
 #!/bin/bash
 set -ouex pipefail
 
+. "$(dirname "$0")/lib/common.sh"
+
 ### Nix package manager (multi-user daemon mode, modern CLI only)
 # Fedora 44+ ships native nix RPMs. nix pulls in nix-core (the unified `nix`
 # binary) and nix-system (/nix skeleton + nixbld sysusers); nix-daemon adds the
@@ -10,7 +12,7 @@ set -ouex pipefail
 #
 # /nix integration on a bootc image adapted from https://github.com/fu5ha/winter
 dnf5 install -y --setopt=install_weak_deps=False nix nix-daemon
-printf '%s\n' nix nix-daemon >> /usr/share/kinoite/packages
+record_pkgs nix nix-daemon
 
 # The image's /nix is read-only at runtime; bind-mount a persistent backing
 # directory from /var over it. The backing dir must exist before nix.mount

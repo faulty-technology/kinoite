@@ -1,7 +1,7 @@
 #!/bin/bash
 set -ouex pipefail
 
-. "$(cd "$(dirname "$0")/../../scripts" && pwd)/lib/verify-key.sh"
+. "$(cd "$(dirname "$0")/../../scripts" && pwd)/lib/common.sh"
 
 # Sunshine game-streaming host + KDE Wayland virtual display (the Apollo-equivalent
 # "no dummy plug" setup).
@@ -18,34 +18,13 @@ set -ouex pipefail
 # TODO(hardware): validate krfb-virtualmonitor drives a client-scaled virtual
 # monitor into Sunshine on RDNA4/Wayland. See notes/kinoite-north-validation.md.
 
-### Add the pvermeer Sunshine COPR (repo written inline; key fingerprint-pinned)
-verify_and_import_key "pvermeer-sunshine" "Sunshine COPR (pvermeer)" \
-    "https://download.copr.fedorainfracloud.org/results/pvermeer/sunshine/pubkey.gpg" \
-    0B420BCBF6AF53246B69BD5E8FAB4A6FEE1312ED
-
-cat > /etc/yum.repos.d/_copr_pvermeer-sunshine.repo << 'EOF'
-[copr:copr.fedorainfracloud.org:pvermeer:sunshine]
-name=Copr repo for sunshine owned by pvermeer
-baseurl=https://download.copr.fedorainfracloud.org/results/pvermeer/sunshine/fedora-$releasever-$basearch/
-type=rpm-md
-skip_if_unavailable=False
-gpgcheck=1
-gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-pvermeer-sunshine
-repo_gpgcheck=0
-enabled=1
-enabled_metadata=1
-EOF
+add_copr pvermeer-sunshine pvermeer/sunshine 0B420BCBF6AF53246B69BD5E8FAB4A6FEE1312ED
 
 ### Install Sunshine + the KDE virtual-monitor tooling
 # krfb provides /usr/bin/krfb-virtualmonitor. kscreen-doctor, for inspecting or
 # tweaking the virtual output, lives in libkscreen (NOT the kscreen package) and
 # Plasma already pulls that in — nothing to add for it.
-PACKAGES=(
-    sunshine
-    krfb
-)
-dnf5 install -y "${PACKAGES[@]}"
-printf '%s\n' "${PACKAGES[@]}" >> /usr/share/kinoite/packages
+install_pkgs sunshine krfb
 
 ### Virtual-display helper
 # Sunshine's default kms capture cannot see a krfb virtual monitor — capture must

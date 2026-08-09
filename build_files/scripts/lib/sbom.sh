@@ -11,7 +11,7 @@
 # emit a duplicate SPDXID. Keep one row per name, preferring the 64-bit build.
 bake_sbom() {
     rpm -q --queryformat "%{NAME}\t%{VERSION}-%{RELEASE}\t%{LICENSE}\t%{ARCH}\n" \
-        $(cat /usr/share/kinoite/packages) \
+        $(sort -u "$MANIFEST") \
         | sort -t$'\t' -k1,1 -k4,4r \
         | awk -F'\t' '!seen[$1]++ { print $1 "\t" $2 "\t" $3 }' \
         > /usr/share/kinoite/additive-sbom.tsv

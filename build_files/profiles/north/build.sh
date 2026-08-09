@@ -12,7 +12,7 @@ set -ouex pipefail
 PROFILE_DIR="$(cd "$(dirname "$0")" && pwd)"
 SHARED="$(cd "$PROFILE_DIR/../../scripts" && pwd)"
 
-mkdir -p /usr/share/kinoite
+. "$SHARED/lib/common.sh"
 
 # Shared repos + third-party apps (repo files removed again in cleanup.sh)
 "$SHARED/rpmfusion.sh"
@@ -39,5 +39,4 @@ mkdir -p /usr/share/kinoite
 "$SHARED/cleanup.sh"
 
 # Bake additive SBOM data into the image
-. "$SHARED/lib/sbom.sh"
 bake_sbom

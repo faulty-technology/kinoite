@@ -92,7 +92,8 @@ podman build -t kinoite-north -f Containerfile.north .
 | -------------------------------- | -------------------------------------------------------------------- |
 | `Containerfile`                  | Laptop image; runs `build_files/profiles/base/build.sh`              |
 | `Containerfile.north`            | Battlestation image; runs `build_files/profiles/north/build.sh`      |
-| `build_files/scripts/`           | Shared, image-agnostic scripts (repos, Nix, fonts, signing, cleanup) |
+| `build_files/scripts/`           | Shared, image-agnostic scripts (repos, codecs, Nix, fonts, signing, cleanup) |
+| `build_files/scripts/lib/`       | Sourced helpers: `install_pkgs` (install + SBOM manifest in one call), `add_copr` (pin key, write repo, register cleanup), `check-keys.sh` |
 | `build_files/scripts/signing.sh` | Signature policy, parameterized by `IMAGE_NAME` per image            |
 | `build_files/profiles/base/`     | Laptop-specific package set                                          |
 | `build_files/profiles/north/`    | AMD/RDNA4, gaming, Sunshine, and LLM-enablement scripts              |

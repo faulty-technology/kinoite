@@ -1,13 +1,14 @@
 #!/bin/bash
 set -ouex pipefail
 
-. "$(dirname "$0")/lib/verify-key.sh"
+. "$(dirname "$0")/lib/common.sh"
 
 ### Add 1Password repository
 verify_and_import_key "1password" "1Password" \
     "https://downloads.1password.com/linux/keys/1password.asc" \
     3FEF9748469ADBE15DA7CA80AC2D62742012EA22
 
+register_repo_file /etc/yum.repos.d/1password.repo
 cat > /etc/yum.repos.d/1password.repo << 'EOF'
 [1password]
 name=1Password Stable Channel
@@ -23,8 +24,7 @@ EOF
 # /usr/local is a dangling symlink to ../var/usrlocal during the container
 # build, which makes mkdir -p fail — create the target so it resolves.
 mkdir -p /var/usrlocal
-dnf5 install -y 1password
-echo "1password" >> /usr/share/kinoite/packages
+install_pkgs 1password
 
 ### Fix 1Password for immutable image builds
 # Based on ublue-os/BlueBuild approach.

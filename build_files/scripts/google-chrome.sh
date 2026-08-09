@@ -1,7 +1,7 @@
 #!/bin/bash
 set -ouex pipefail
 
-. "$(dirname "$0")/lib/verify-key.sh"
+. "$(dirname "$0")/lib/common.sh"
 
 ### Add Google Chrome repository
 # Google's keyring bundles historical signing keys — pin all of them so a
@@ -18,6 +18,7 @@ verify_and_import_key "google-chrome" "Google Chrome" \
     B8DBE9CCAF2116F84A084BD61D09C015006FEAB8 \
     EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796
 
+register_repo_file /etc/yum.repos.d/google-chrome.repo
 cat > /etc/yum.repos.d/google-chrome.repo << 'EOF'
 [google-chrome]
 name=google-chrome
@@ -28,8 +29,7 @@ gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-google-chrome
 EOF
 
 ### Install
-dnf5 install -y google-chrome-stable
-echo "google-chrome-stable" >> /usr/share/kinoite/packages
+install_pkgs google-chrome-stable
 
 ### Chrome fixes
 # 1. PWA FIX: Hardcode CHROME_WRAPPER so Chrome doesn't use readlink -f, which
