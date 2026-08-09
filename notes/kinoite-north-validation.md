@@ -50,8 +50,10 @@ one of these carries a `TODO(hardware):` comment pointing here.
       The Arch-only `CAP_SYS_NICE` bug that broke kwin capture there (upstream
       #5212, fixed after 2026.516) does not apply: Fedora's kwin package sets
       `%caps(cap_sys_nice=ep)` on `kwin_wayland`.
-- [ ] Verify the seeding landed: `grep -E 'capture|output_name'
-      ~/.config/sunshine/sunshine.conf` after the first service start.
+- [ ] Verify the seeding landed: `grep -E 'capture|output_name|global_prep_cmd'
+      ~/.config/sunshine/sunshine.conf` after the first service start. Seeding
+      only adds *absent* keys, so a config that already set one keeps it — if the
+      prep commands were wired by hand earlier, `global_prep_cmd` stays as-is.
 - [ ] **Confirm the output name Sunshine actually sees.** `output_name` has to
       match exactly or capture silently takes the first-enumerated output. The
       authority is Sunshine's own log line `[kwingrab] Found output: <name>` —
@@ -77,9 +79,13 @@ one of these carries a `TODO(hardware):` comment pointing here.
       app-dev.lizardbyte.app.Sunshine.service` mid-stream and confirm the
       `ExecStopPost` teardown removes the virtual monitor and restores the
       previous primary output.
-- [ ] Optional, only if headless streaming is wanted: `SUNSHINE_VD_EXCLUSIVE=1`
-      in the service environment disables the physical outputs for the duration.
-      Test the teardown path *first* — a failure here means a black desk.
+- [ ] Window placement. Primary only governs *new* windows, so an
+      already-running Steam stays on the desk and may launch games there. The fix
+      is `up --exclusive` (per-app Do command, or globally): disabling the
+      physical outputs makes KWin migrate their windows onto the virtual display.
+      Unverified on hardware — check both directions, particularly whether the
+      desk's window layout survives the outputs coming back on teardown, and test
+      the teardown path first, since a failure here means a black desk.
 
 ## 3. Sunshine service — `build_files/profiles/north/services-north.sh`
 

@@ -12,8 +12,9 @@ set -ouex pipefail
 #   capture = kwin  — kms enumerates DRM connectors only, so it discards the
 #                     virtual monitor and silently streams the physical panel
 #   output_name     — kwin capture takes the first output otherwise
-#   the prep script — creates the monitor at the client's geometry
-# The first two are per-user Web UI config, so they get seeded, not baked.
+#   global_prep_cmd — creates the monitor at the client's geometry
+# All three are per-user Web UI config, so they get seeded, not baked. Pairing is
+# then the only first-login step.
 #
 # Clipboard is KDE Connect's job — Sunshine has never shipped it.
 
@@ -56,6 +57,8 @@ seed() {
 
 seed capture kwin
 seed output_name Virtual-sunshine-vm
+# Runs for every app, so the virtual monitor exists before capture starts.
+seed global_prep_cmd '[{"do":"/usr/libexec/sunshine-virtual-display up","undo":"/usr/libexec/sunshine-virtual-display down","elevated":false}]'
 EOF
 chmod +x /usr/libexec/sunshine-config-defaults
 
@@ -63,12 +66,18 @@ chmod +x /usr/libexec/sunshine-config-defaults
 cat > /usr/libexec/sunshine-virtual-display << 'EOF'
 #!/bin/bash
 # KDE Wayland virtual monitor for Sunshine streaming (no dummy plug).
-# Usage: sunshine-virtual-display up|down [WIDTH HEIGHT [FPS]]
+# Usage: sunshine-virtual-display up [--exclusive] [WIDTH HEIGHT [FPS]]
+#        sunshine-virtual-display down
 # Sunshine → Configuration → General → Command Preparation:
 #   Do: `... up`   Undo: `... down`
 #
 # Geometry comes from SUNSHINE_CLIENT_{WIDTH,HEIGHT,FPS}; args are for testing.
-# SUNSHINE_VD_EXCLUSIVE=1 also disables the physical outputs (headless mode).
+#
+# --exclusive (or SUNSHINE_VD_EXCLUSIVE=1) disables the physical outputs for the
+# stream. Without it only new windows land on the virtual display, since primary
+# is all KWin honours; disabling an output is what makes KWin migrate windows
+# already running on it. Per-app is the point of the flag: Sunshine parses prep
+# commands without a shell, so an env var can't be set from an app entry.
 
 set -euo pipefail
 VM_NAME="sunshine-vm"
@@ -142,9 +151,15 @@ teardown() {
 
 case "${1:-}" in
     up)
-        W="${2:-${SUNSHINE_CLIENT_WIDTH:-}}"
-        H="${3:-${SUNSHINE_CLIENT_HEIGHT:-}}"
-        FPS="${4:-${SUNSHINE_CLIENT_FPS:-}}"
+        shift
+        exclusive="${SUNSHINE_VD_EXCLUSIVE:-0}"
+        if [ "${1:-}" = "--exclusive" ]; then
+            exclusive=1
+            shift
+        fi
+        W="${1:-${SUNSHINE_CLIENT_WIDTH:-}}"
+        H="${2:-${SUNSHINE_CLIENT_HEIGHT:-}}"
+        FPS="${3:-${SUNSHINE_CLIENT_FPS:-}}"
         FPS="${FPS%.*}"
         if ! is_dim "$W" 640 7680 || ! is_dim "$H" 360 4320; then
             log "bad geometry [${W}x${H}], using 2560x1440"
@@ -209,7 +224,7 @@ case "${1:-}" in
         fi
 
         # Last: nothing that can fail should run while the desk is dark.
-        if [ "${SUNSHINE_VD_EXCLUSIVE:-0}" = 1 ]; then
+        if [ "$exclusive" = 1 ]; then
             : > "$DISABLEDFILE"
             for out in $(enabled_outputs); do
                 if [ "$out" != "$OUTPUT" ]; then
@@ -226,7 +241,7 @@ case "${1:-}" in
         teardown
         ;;
     *)
-        echo "usage: $0 up|down [WIDTH HEIGHT [FPS]]" >&2; exit 2 ;;
+        echo "usage: $0 up [--exclusive] [WIDTH HEIGHT [FPS]] | down" >&2; exit 2 ;;
 esac
 EOF
 chmod +x /usr/libexec/sunshine-virtual-display
