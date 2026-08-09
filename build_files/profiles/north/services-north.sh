@@ -5,8 +5,9 @@ set -ouex pipefail
 
 ### Sunshine streaming host
 # Sunshine ships a systemd *user* unit; enable it globally so it starts for the
-# logged-in user. Pairing and the kwin capture setting are per-user first-login
-# steps (see sunshine.sh / README).
+# logged-in user. sunshine.sh drops in the ExecStartPre that seeds the capture
+# settings and the ExecStopPost that tears the virtual monitor down; pairing and
+# wiring the prep commands stay per-user first-login steps (see README).
 #
 # Use the canonical unit name. pvermeer's package also ships a sunshine.service
 # compat symlink, but upstream only declares it as an [Install] Alias= — which

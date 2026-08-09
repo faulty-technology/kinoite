@@ -3,96 +3,240 @@ set -ouex pipefail
 
 . "$(cd "$(dirname "$0")/../../scripts" && pwd)/lib/common.sh"
 
-# Sunshine game-streaming host + KDE Wayland virtual display (the Apollo-equivalent
-# "no dummy plug" setup).
+# Sunshine game-streaming host + KDE Wayland virtual display (no dummy plug).
 #
-# Sourced from pvermeer/sunshine rather than LizardByte's own COPR: it targets
-# Fedora Atomic explicitly, carries spec fixes for the build issues that made
-# Bazzite drop its native Sunshine, and LizardByte's `stable` COPR is not
-# actually maintained by LizardByte. Package is lowercase `sunshine` (stable);
-# `sunshine-beta` tracks the weekly pre-release.
+# COPR: pvermeer/sunshine — targets Fedora Atomic, carries the spec fixes
+# LizardByte's own (unmaintained) `stable` COPR lacks. `sunshine-beta` is weekly.
 #
-# Clipboard sync is not part of this — that's KDE Connect. Sunshine has never
-# shipped it.
+# Streaming the virtual monitor takes all three of:
+#   capture = kwin  — kms enumerates DRM connectors only, so it discards the
+#                     virtual monitor and silently streams the physical panel
+#   output_name     — kwin capture takes the first output otherwise
+#   the prep script — creates the monitor at the client's geometry
+# The first two are per-user Web UI config, so they get seeded, not baked.
 #
-# TODO(hardware): validate krfb-virtualmonitor drives a client-scaled virtual
-# monitor into Sunshine on RDNA4/Wayland. See notes/kinoite-north-validation.md.
+# Clipboard is KDE Connect's job — Sunshine has never shipped it.
 
 add_copr pvermeer-sunshine pvermeer/sunshine 0B420BCBF6AF53246B69BD5E8FAB4A6FEE1312ED
 
-### Install Sunshine + the KDE virtual-monitor tooling
-# krfb provides /usr/bin/krfb-virtualmonitor. kscreen-doctor, for inspecting or
-# tweaking the virtual output, lives in libkscreen (NOT the kscreen package) and
-# Plasma already pulls that in — nothing to add for it.
+### Sunshine + KDE virtual-monitor tooling
+# kscreen-doctor comes from libkscreen, which Plasma already pulls in. Assert
+# both binaries: a missing one should fail the build, not a stream.
 install_pkgs sunshine krfb
 
+for bin in krfb-virtualmonitor kscreen-doctor; do
+    command -v "$bin" >/dev/null || { echo "sunshine.sh: missing $bin" >&2; exit 1; }
+done
+
+# KWin gates the screencast protocol on a desktop file claiming it for the
+# binary. Absent => built without SUNSHINE_ENABLE_KWIN, and Sunshine falls back
+# to writing a temporary one at runtime (3s stall, needs a restart).
+test -f /usr/share/applications/dev.lizardbyte.app.Sunshine.kwin.desktop || {
+    echo "sunshine.sh: KWin permission desktop file missing — built without SUNSHINE_ENABLE_KWIN?" >&2
+    exit 1
+}
+
+### Config seeding (runs from ExecStartPre)
+# The Web UI owns this file, so only ever add missing keys — UI settings win.
+cat > /usr/libexec/sunshine-config-defaults << 'EOF'
+#!/bin/bash
+set -euo pipefail
+
+CONF="${XDG_CONFIG_HOME:-$HOME/.config}/sunshine/sunshine.conf"
+mkdir -p "$(dirname "$CONF")"
+touch "$CONF"
+
+seed() {
+    if grep -qE "^[[:space:]]*$1[[:space:]]*=" "$CONF"; then
+        return 0
+    fi
+    printf '%s = %s\n' "$1" "$2" >> "$CONF"
+    echo "sunshine-config-defaults: seeded $1 = $2"
+}
+
+seed capture kwin
+seed output_name Virtual-sunshine-vm
+EOF
+chmod +x /usr/libexec/sunshine-config-defaults
+
 ### Virtual-display helper
-# Sunshine's default kms capture cannot see a krfb virtual monitor — capture must
-# be forced to "kwin" (Sunshine Web UI → Configuration → Advanced → Force Capture
-# Method → kwin). That is per-user app config, so it is a documented first-login
-# step rather than baked. This helper spins up a right-sized virtual monitor and
-# is intended to be wired into Sunshine's "Command Preparations" (do/undo) so a
-# client connection brings the display up and tears it down on disconnect.
 cat > /usr/libexec/sunshine-virtual-display << 'EOF'
 #!/bin/bash
-# Bring up a KDE Wayland virtual monitor for Sunshine streaming (no dummy plug).
-# Usage: sunshine-virtual-display up|down [WIDTH HEIGHT]
-# Wire into Sunshine: Configuration → General → Command Preparation
-#   Do:   /usr/libexec/sunshine-virtual-display up
-#   Undo: /usr/libexec/sunshine-virtual-display down
+# KDE Wayland virtual monitor for Sunshine streaming (no dummy plug).
+# Usage: sunshine-virtual-display up|down [WIDTH HEIGHT [FPS]]
+# Sunshine → Configuration → General → Command Preparation:
+#   Do: `... up`   Undo: `... down`
+#
+# Geometry comes from SUNSHINE_CLIENT_{WIDTH,HEIGHT,FPS}; args are for testing.
+# SUNSHINE_VD_EXCLUSIVE=1 also disables the physical outputs (headless mode).
 
 set -euo pipefail
 VM_NAME="sunshine-vm"
-# Not /tmp: a fixed name there is a predictable path we feed straight to kill(1).
-PIDFILE="${XDG_RUNTIME_DIR:-/tmp}/${VM_NAME}.pid"
+OUTPUT="Virtual-${VM_NAME}"
+# Not /tmp: a fixed name there is a predictable path into kill(1).
+RUNDIR="${XDG_RUNTIME_DIR:-/tmp}"
+PIDFILE="${RUNDIR}/${VM_NAME}.pid"
+DISABLEDFILE="${RUNDIR}/${VM_NAME}.disabled-outputs"
+PRIMARYFILE="${RUNDIR}/${VM_NAME}.prev-primary"
+CONF="${XDG_CONFIG_HOME:-$HOME/.config}/sunshine/sunshine.conf"
+
+log() { echo "sunshine-virtual-display: $*" >&2; }
 
 is_dim() {
     case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac
     [ "$1" -ge "$2" ] && [ "$1" -le "$3" ]
 }
 
+# kscreen-doctor colours its output even when piped.
+outputs_state() {
+    kscreen-doctor -o 2>/dev/null | sed -e 's/\x1b\[[0-9;]*m//g'
+}
+
+# "Output: <id> <name> <uuid>" header plus its indented properties.
+output_block() {
+    outputs_state | awk -v want="$OUTPUT" '
+        /^Output:/ { inblock = ($3 == want) }
+        inblock
+    '
+}
+
+enabled_outputs() {
+    outputs_state | awk '
+        /^Output:/ { name = $3; next }
+        name != "" && $1 == "enabled" { print name; name = "" }
+    '
+}
+
+primary_output() {
+    outputs_state | awk '
+        /^Output:/ { name = $3; next }
+        name != "" && $1 == "priority" && $2 == "1" { print name; exit }
+    '
+}
+
+teardown() {
+    # Physical outputs first: dropping the virtual one while it's the only
+    # enabled output leaves KWin nowhere to put the desktop.
+    if [ -s "$DISABLEDFILE" ]; then
+        while read -r out; do
+            kscreen-doctor "output.${out}.enable" || log "could not re-enable ${out}"
+        done < "$DISABLEDFILE"
+    fi
+    if [ -s "$PRIMARYFILE" ]; then
+        prev=$(cat "$PRIMARYFILE")
+        if [ -n "$prev" ] && [ "$prev" != "$OUTPUT" ]; then
+            kscreen-doctor "output.${prev}.priority.1" || log "could not restore ${prev} as primary"
+        fi
+    fi
+    rm -f "$DISABLEDFILE" "$PRIMARYFILE"
+
+    if [ -s "$PIDFILE" ]; then
+        pid=$(cat "$PIDFILE")
+        # PIDs get recycled — only signal it if it's still krfb.
+        case "$(cat "/proc/$pid/comm" 2>/dev/null || true)" in
+            krfb-virtualmo*) kill "$pid" 2>/dev/null || true ;;
+        esac
+    fi
+    rm -f "$PIDFILE"
+}
+
 case "${1:-}" in
     up)
         W="${2:-${SUNSHINE_CLIENT_WIDTH:-}}"
         H="${3:-${SUNSHINE_CLIENT_HEIGHT:-}}"
+        FPS="${4:-${SUNSHINE_CLIENT_FPS:-}}"
+        FPS="${FPS%.*}"
         if ! is_dim "$W" 640 7680 || ! is_dim "$H" 360 4320; then
-            echo "sunshine-virtual-display: bad geometry [${W}x${H}], using 2560x1440" >&2
+            log "bad geometry [${W}x${H}], using 2560x1440"
             W=2560; H=1440
         fi
-        # --password/--port are required by krfb-virtualmonitor even though the
-        # VNC side goes unused here (Sunshine captures via kwin, not VNC).
+        if ! is_dim "$FPS" 24 480; then
+            FPS=60
+        fi
+
+        # Clear any monitor left by a session that never ran its undo.
+        teardown
+        # Saved before anything changes, so teardown can put it back.
+        primary_output > "$PRIMARYFILE" || true
+
+        # --password/--port are mandatory args; the VNC side goes unused.
         krfb-virtualmonitor --name "$VM_NAME" --resolution "${W}x${H}" \
             --password sunshine --port 5905 &
         pid=$!
         echo "$pid" > "$PIDFILE"
-        # Backgrounding krfb means a failed launch otherwise looks identical to a
-        # good one, and Sunshine starts capturing a display that never arrived.
+        # Backgrounded, so a failed launch otherwise looks just like a good one.
+        ready=false
         for _ in $(seq 50); do
-            if kscreen-doctor -o 2>/dev/null | grep -q "Virtual-${VM_NAME}"; then
-                exit 0
+            if [ -n "$(output_block)" ]; then
+                ready=true
+                break
             fi
             if ! kill -0 "$pid" 2>/dev/null; then
-                echo "sunshine-virtual-display: krfb-virtualmonitor exited" >&2
-                rm -f "$PIDFILE"
+                log "krfb-virtualmonitor exited"
+                teardown
                 exit 1
             fi
             sleep 0.1
         done
-        echo "sunshine-virtual-display: timed out waiting for ${VM_NAME}" >&2
-        exit 1
+        if [ "$ready" != true ]; then
+            log "timed out waiting for ${OUTPUT}"
+            teardown
+            exit 1
+        fi
+
+        # krfb has no refresh-rate flag — the monitor always arrives at 60Hz.
+        # addCustomMode registers (mHz, dot-separated) and appends blindly; mode
+        # applies it (WxH@rate, rounded).
+        if ! output_block | grep -q "${W}x${H}@${FPS}\."; then
+            kscreen-doctor "output.${OUTPUT}.addCustomMode.${W}.${H}.$((FPS * 1000)).full" \
+                || log "addCustomMode ${W}x${H}@${FPS} failed"
+        fi
+        kscreen-doctor "output.${OUTPUT}.mode.${W}x${H}@${FPS}" \
+            || log "could not apply ${W}x${H}@${FPS} — staying at the default mode"
+
+        # Primary, so Big Picture and games open on the streamed monitor.
+        kscreen-doctor "output.${OUTPUT}.enable" "output.${OUTPUT}.priority.1" \
+            || log "could not make ${OUTPUT} primary"
+
+        # A mismatch streams the desk with no error anywhere — say so in
+        # Sunshine's own log, which is where this stderr lands.
+        if ! grep -qE '^[[:space:]]*capture[[:space:]]*=[[:space:]]*kwin' "$CONF" 2>/dev/null; then
+            log "WARNING: capture is not kwin in ${CONF} — kms cannot see ${OUTPUT}"
+        fi
+        configured=$(sed -n 's/^[[:space:]]*output_name[[:space:]]*=[[:space:]]*//p' "$CONF" 2>/dev/null | tail -1)
+        if [ "${configured:-}" != "$OUTPUT" ]; then
+            log "WARNING: output_name is [${configured:-unset}], expected [${OUTPUT}] — Sunshine will capture whichever output enumerates first"
+        fi
+
+        # Last: nothing that can fail should run while the desk is dark.
+        if [ "${SUNSHINE_VD_EXCLUSIVE:-0}" = 1 ]; then
+            : > "$DISABLEDFILE"
+            for out in $(enabled_outputs); do
+                if [ "$out" != "$OUTPUT" ]; then
+                    if kscreen-doctor "output.${out}.disable"; then
+                        echo "$out" >> "$DISABLEDFILE"
+                    else
+                        log "could not disable ${out}"
+                    fi
+                fi
+            done
+        fi
         ;;
     down)
-        if [ -s "$PIDFILE" ]; then
-            pid=$(cat "$PIDFILE")
-            # Only signal it if it's still the virtual monitor — PIDs get recycled.
-            case "$(cat "/proc/$pid/comm" 2>/dev/null || true)" in
-                krfb-virtualmo*) kill "$pid" 2>/dev/null || true ;;
-            esac
-        fi
-        rm -f "$PIDFILE"
+        teardown
         ;;
     *)
-        echo "usage: $0 up|down [WIDTH HEIGHT]" >&2; exit 2 ;;
+        echo "usage: $0 up|down [WIDTH HEIGHT [FPS]]" >&2; exit 2 ;;
 esac
 EOF
 chmod +x /usr/libexec/sunshine-virtual-display
+
+### Service drop-in
+# ExecStopPost, not just Sunshine's undo command: undo only runs on a clean app
+# exit, so a crash would strand the monitor — and in exclusive mode, dark panels.
+mkdir -p /usr/lib/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d
+cat > /usr/lib/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/10-kinoite-north.conf << 'EOF'
+[Service]
+ExecStartPre=-/usr/libexec/sunshine-config-defaults
+ExecStopPost=-/usr/libexec/sunshine-virtual-display down
+EOF

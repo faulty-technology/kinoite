@@ -40,15 +40,46 @@ one of these carries a `TODO(hardware):` comment pointing here.
 - [x] `krfb-virtualmonitor` creates a virtual output on RDNA4/Wayland — confirmed
       2026-08-08: `Virtual-sunshine-vm` appears at 2560x1440, and the
       `sunshine-virtual-display up` prep command fires correctly.
-- [ ] Sunshine capture set to **kwin**. Still outstanding, and the log shows the
-      exact failure it causes: KMS enumeration logs
-      `Unknown Monitor connector type [Virtual-sunshine]`, discards the virtual
-      output, and falls back to `Mapped 'HDMI-A-2' to kmsgrab monitor index 0` —
-      i.e. it streams the physical panel, not the virtual one.
+- [x] Root cause of "the display comes up but the stream is still the desk"
+      (2026-08-09): capture was left at the default `kms`, which enumerates DRM
+      connectors only. The log shows it exactly — `Unknown Monitor connector type
+      [Virtual-sunshine]`, then `Mapped 'HDMI-A-2' to kmsgrab monitor index 0`.
+      Fixed by seeding `capture = kwin` (upstream's direct
+      `zkde_screencast_unstable_v1` backend, in stable since 2026.516) plus
+      `output_name = Virtual-sunshine-vm` from the service's `ExecStartPre`.
+      The Arch-only `CAP_SYS_NICE` bug that broke kwin capture there (upstream
+      #5212, fixed after 2026.516) does not apply: Fedora's kwin package sets
+      `%caps(cap_sys_nice=ep)` on `kwin_wayland`.
+- [ ] Verify the seeding landed: `grep -E 'capture|output_name'
+      ~/.config/sunshine/sunshine.conf` after the first service start.
+- [ ] **Confirm the output name Sunshine actually sees.** `output_name` has to
+      match exactly or capture silently takes the first-enumerated output. The
+      authority is Sunshine's own log line `[kwingrab] Found output: <name>` —
+      not `kscreen-doctor`, and note the stale kms log above printed the
+      truncated-looking `Virtual-sunshine`. `sunshine-virtual-display up` warns
+      into the Sunshine log on a mismatch, so watch for
+      `WARNING: output_name is [...]`.
+- [ ] KWin grants the screencast protocol without help: expect
+      `[kwingrab] Found matching system KWin desktop permission file` in the log.
+      If instead it writes a temporary file into `~/.local/share/applications`
+      and needs a restart, the packaged
+      `/usr/share/applications/dev.lizardbyte.app.Sunshine.kwin.desktop` doesn't
+      match the running binary path. `KWIN_WAYLAND_NO_PERMISSION_CHECKS=1` is the
+      blunt fallback; don't reach for it before reading the log.
 - [ ] A Moonlight/Artemis client connects and the display scales to the client
       resolution (the Apollo-equivalent behavior).
+- [ ] Refresh rate follows the client: a 120Hz client should get
+      `addCustomMode` + `mode` applied (krfb only ever creates the monitor at
+      60Hz). Check `kscreen-doctor -o` mid-stream for the `*` on `WxH@120.00`.
 - [ ] `/usr/libexec/sunshine-virtual-display up|down` wired into Sunshine's
       Command Preparation brings the display up per-connection and tears it down.
+- [ ] Crash safety: `systemctl --user kill -s KILL
+      app-dev.lizardbyte.app.Sunshine.service` mid-stream and confirm the
+      `ExecStopPost` teardown removes the virtual monitor and restores the
+      previous primary output.
+- [ ] Optional, only if headless streaming is wanted: `SUNSHINE_VD_EXCLUSIVE=1`
+      in the service environment disables the physical outputs for the duration.
+      Test the teardown path *first* — a failure here means a black desk.
 
 ## 3. Sunshine service — `build_files/profiles/north/services-north.sh`
 
