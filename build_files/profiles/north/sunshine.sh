@@ -38,20 +38,48 @@ cat > /usr/libexec/sunshine-virtual-display << 'EOF'
 # Bring up a KDE Wayland virtual monitor for Sunshine streaming (no dummy plug).
 # Usage: sunshine-virtual-display up|down [WIDTH HEIGHT]
 # Wire into Sunshine: Configuration → General → Command Preparation
-#   Do:   /usr/libexec/sunshine-virtual-display up   ${SUNSHINE_CLIENT_WIDTH} ${SUNSHINE_CLIENT_HEIGHT}
+#   Do:   /usr/libexec/sunshine-virtual-display up
 #   Undo: /usr/libexec/sunshine-virtual-display down
+
 set -euo pipefail
 VM_NAME="sunshine-vm"
 # Not /tmp: a fixed name there is a predictable path we feed straight to kill(1).
 PIDFILE="${XDG_RUNTIME_DIR:-/tmp}/${VM_NAME}.pid"
+
+is_dim() {
+    case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$1" -ge "$2" ] && [ "$1" -le "$3" ]
+}
+
 case "${1:-}" in
     up)
-        W="${2:-2560}"; H="${3:-1440}"
+        W="${2:-${SUNSHINE_CLIENT_WIDTH:-}}"
+        H="${3:-${SUNSHINE_CLIENT_HEIGHT:-}}"
+        if ! is_dim "$W" 640 7680 || ! is_dim "$H" 360 4320; then
+            echo "sunshine-virtual-display: bad geometry [${W}x${H}], using 2560x1440" >&2
+            W=2560; H=1440
+        fi
         # --password/--port are required by krfb-virtualmonitor even though the
         # VNC side goes unused here (Sunshine captures via kwin, not VNC).
         krfb-virtualmonitor --name "$VM_NAME" --resolution "${W}x${H}" \
             --password sunshine --port 5905 &
-        echo $! > "$PIDFILE"
+        pid=$!
+        echo "$pid" > "$PIDFILE"
+        # Backgrounding krfb means a failed launch otherwise looks identical to a
+        # good one, and Sunshine starts capturing a display that never arrived.
+        for _ in $(seq 50); do
+            if kscreen-doctor -o 2>/dev/null | grep -q "Virtual-${VM_NAME}"; then
+                exit 0
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+                echo "sunshine-virtual-display: krfb-virtualmonitor exited" >&2
+                rm -f "$PIDFILE"
+                exit 1
+            fi
+            sleep 0.1
+        done
+        echo "sunshine-virtual-display: timed out waiting for ${VM_NAME}" >&2
+        exit 1
         ;;
     down)
         if [ -s "$PIDFILE" ]; then
