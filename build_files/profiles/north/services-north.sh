@@ -13,3 +13,9 @@ set -ouex pipefail
 # compat symlink, but upstream only declares it as an [Install] Alias= — which
 # doesn't exist until the real unit is enabled, so enabling the alias fails.
 systemctl --global enable app-dev.lizardbyte.app.Sunshine.service
+
+### SELinux boolean for containerized GPU compute
+# Enabled even though the lemonade Quadlet is deliberately not — without it, ROCm dies
+# with an HSA abort that looks nothing like a permission error. Guarded and idempotent,
+# so it's a no-op on every boot after the first. See llm.sh.
+systemctl enable lemonade-selinux.service

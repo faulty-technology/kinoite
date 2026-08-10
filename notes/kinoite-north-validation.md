@@ -11,11 +11,20 @@ mesa 26.1.6. **Settled** records constraints and non-obvious causes worth keepin
 **GPU node map** (`ls -l /dev/dri/by-path/` + `lspci -nn`). Numbering is not stable
 across kernel or slot changes — re-derive rather than trusting it.
 
-| PCI     | card  | render     | GPU                  |
-|---------|-------|------------|----------------------|
-| 03:00.0 | card1 | renderD128 | R9700 #1 (Navi 48)   |
-| 06:00.0 | card2 | renderD129 | R9700 #2 (Navi 48)   |
-| 10:00.0 | card3 | renderD130 | iGPU (Granite Ridge) |
+Only the PCI column is stable. Observed twice, with different numbering each time —
+2026-08-08 gave card1/card2/card3, 2026-08-10 gave card0/card1/card2 with 06:00.0
+sorting first. Never bake a card, renderD or device index.
+
+| PCI     | GPU                  | KFD node | `gfx_target_version` |
+|---------|----------------------|----------|----------------------|
+| 03:00.0 | R9700 (Navi 48)      | 1 or 2   | 120001               |
+| 06:00.0 | R9700 (Navi 48)      | 1 or 2   | 120001               |
+| 10:00.0 | iGPU (Granite Ridge) | 3        | 100306               |
+
+Re-derive with `ls -l /dev/dri/by-path/`, `lspci -nn`, and
+`grep -H gfx_target_version /sys/class/kfd/kfd/topology/nodes/*/properties`. Per-GPU
+VRAM in use (i.e. which cards actually hold model weights) reads from
+`/sys/class/drm/card*/device/mem_info_vram_used`.
 
 **The display cable decides which GPU does everything.** With the dummy plug in the
 motherboard HDMI port, Sunshine encoded on the iGPU (`vaapi vendor: ...
@@ -86,6 +95,58 @@ also matches `signing.sh` (`/etc/containers/policy.json`) and the `services.sh`
 drop-ins. Don't "fix" it back to `/usr` for tidiness — recheck with the `--dryrun`
 above after a podman bump if you want to.
 
+**ROCm's real blocker was one missing SELinux permission: `map` on `/dev/kfd`.**
+`container-selinux` grants container domains `hsa_device_t:chr_file` all of
+`{open getattr read write append ioctl lock}` but **not `map`** — and ROCm mmaps the
+node. Out of the box every model load aborted ~25ms in, before any
+`llama_model_loader:` output: `Memory critical error by agent node-0 ... Reason:
+Memory in use.` → exit 134 (SIGABRT). Node 0 is the **CPU** agent — host-memory
+registration — which is why every llama.cpp-level knob missed for a week. The only AVC
+in the entire trace:
+
+    denied { map }  tclass=chr_file  tcontext=system_u:object_r:hsa_device_t:s0
+
+Bisected 2026-08-10, each option alone against an otherwise-stock container:
+
+| `container_use_devices=on` | **PASS** | the fix; now baked via `lemonade-selinux.service` |
+| `SecurityLabelDisable=true` | PASS | same fix, bigger hammer — drops the container to `spc_t` |
+| `--ipc=host` | PASS | *also* the same fix: podman drops label separation when sharing host IPC |
+| `SeccompProfile=unconfined` | FAIL | never involved |
+| nothing | FAIL | the AVC above |
+
+Two traps this cost time on. `Ulimit=memlock=-1:-1` as a Quadlet key does **not**
+equal the `PodmanArgs` form — it left `ulimit -l` at 8192, because rootless can't raise
+a hard limit; memlock was inert in every configuration and is not part of the fix. And
+any bisect must pin `llamacpp.rocm_args` first: leaving `-sm row` set from an earlier
+experiment made six consecutive tests fail for an unrelated reason.
+
+Ruled out — don't re-chase: capping `ctx_size` (auto-tunes to **157140** on a 27B —
+worth pinning anyway, but not the cause); `-mg 0 -sm none`; `--load-mode mmap` alone;
+`ROCR_VISIBLE_DEVICES`. So this is **not** the documented iGPU warmup segfault
+(lemonade#1921 / llamacpp-rocm#96) and the iGPU is not implicated at all. Not the
+half-VRAM bug; VRAM reports correctly at 31.9 GB. A GPU power cap cannot cause it —
+the fault precedes any compute.
+
+**`-sm row` is unavailable, permanently for this build:** `device ROCm0 does not support
+split buffers` (exit 1, same with `-ts 1,1,0`). Split buffers need peer-copy compiled
+in, so layer split is the ceiling — decode streams from one card at a time and the
+second GPU adds capacity, not bandwidth. Recheck on llamacpp-rocm bumps.
+
+**Layer split does the right thing unaided — no device pinning needed.** With all three
+GPUs visible, a loaded 27B put 14186 MiB on 06:00.0 and 13680 MiB on 03:00.0, and 20 MiB
+(framebuffer only) on the iGPU. That is also proof the work is on the GPUs rather than
+silently on CPU. ~27.2 GiB resident for 19.7 GiB of weights; the rest is KV cache,
+compute buffers and MTP draft state.
+
+**Measured, 27B Q5_K_M (21.2 GB), layer split, ctx 32768:** ROCm **31–35 tok/s**,
+Vulkan ~29. Treat anything in the low 30s as the same result — observed spread on
+identical config was 32→35→31, and generation slows as the KV cache fills, so compare
+only from a fresh load at a fixed prompt. A number below ~30 is worth investigating.
+Both are near the ~30 tok/s single-card bandwidth ceiling (~640 GB/s ÷ 21.2 GB), which
+is why the backend gap is only ~20% — and MTP speculation is what puts ROCm *above* the
+naive ceiling. A remembered ~40 on Bazzite was likely **vLLM** (PyTorch/HIP), which
+shares nothing with llama.cpp's hand-written HIP backend but the name.
+
 **ROCm never lands on the host, and doesn't have to.** lemonade's `llamacpp-rocm`
 builds bundle their own ROCm 7 runtime, so the container needs no host ROCm and no
 `/opt/rocm` mount — which is why `amdgpu.sh` installs firmware and monitoring only.
@@ -133,30 +194,33 @@ tuning knob — hence the seeded `rocm_channel` in `llm.sh`.
 
 ### Containerized ROCm + lemonade — `build_files/profiles/north/llm.sh`
 
-The Quadlet is now baked (`/etc/containers/systemd/users/lemonade.container`),
-deliberately **not** enabled — no `[Install]`, nothing in `services-north.sh`. Nothing
-below has been run on the box yet; on-box runbook is `/usr/share/kinoite/lemonade.md`.
+The Quadlet is baked (`/etc/containers/systemd/users/lemonade.container`), deliberately
+**not** enabled — no `[Install]`, nothing in `services-north.sh`. On-box runbook is
+`/usr/share/kinoite/lemonade.md`. First bring-up 2026-08-10; the container plumbing is
+proven, the ROCm backend is not.
+
+**Settled on the box 2026-08-10, from the first bring-up log:**
+
+- Rootless device passthrough works. ROCm initialized in-container and enumerated
+  agents, so `/dev/kfd` + `/dev/dri` reach a rootless container with no group or ACL
+  changes and no `usermod`.
+- The SELinux `map` gap **did** materialize — see the Settled entry above. Enumerating
+  agents does not require `map`, which is why ROCm got far enough to look like a
+  non-SELinux failure.
+- The `nightly` channel seed took: the log reports `Using LlamaCpp Backend:
+  rocm-nightly` on a first-run container.
+- VRAM is reported correctly — `Largest memory pool: 31.9`. The half-VRAM bug that
+  affects some gfx1201 nightly builds is not present here.
+- KFD topology on this box: node 0 = CPU, nodes 1–2 = R9700 (`gfx_target_version
+  120001`), node 3 = iGPU (`100306`). `ROCR_VISIBLE_DEVICES` indexes GPU agents only,
+  so `0,1` is the pair that excludes the iGPU.
 
 - [ ] `TAG+="uaccess"` actually lands on `/dev/kfd` — it's a non-DRM device, so
       whether logind assigns it to a seat is the open question. `getfacl -p /dev/kfd`
       while logged in locally: the login user should appear without being in `render`.
       No active seat (SSH) means no ACL either way. Do the `stat` check under GPU
-      above first — it may make this moot.
-- [ ] Rootless podman can open the devices at all. Cheapest probe, before any Quadlet:
-      `podman run --rm --device /dev/kfd --device /dev/dri
-      ghcr.io/lemonade-sdk/lemonade-server:latest sh -c 'exec 3<>/dev/kfd && echo OK'`.
-      Devices display as `nobody:nobody` inside a userns — cosmetic; the kernel checks
-      the unmapped gid. Judge by the open, not by `ls`.
-- [ ] SELinux `map` on `/dev/kfd`. `container-selinux` grants `hsa_device_t:chr_file
-      rw_chr_file_perms` unconditionally, but that set is `{open getattr read write
-      append ioctl lock}` — no `map`, and ROCm mmaps the node. (`/dev/dri` is fine:
-      `container_use_dri_devices` defaults on and `dev_rw_dri` grants `map`
-      explicitly.) Look for `sudo ausearch -m AVC -ts recent | grep hsa_device_t`; fix
-      with `sudo setsebool -P container_use_devices on`. Not baked on purpose —
-      `setsebool -P` state lives in `/var/lib/selinux` and can't ship in the image
-      (same constraint as `nix-selinux.service`), and the boolean grants `map` on every
-      device to every container. If it proves permanent, narrow it to a CIL module for
-      `hsa_device_t` installed from a oneshot.
+      above first — it may make this moot. Lower priority now that passthrough is
+      proven working for the local-login case.
 - [ ] `UserNS=keep-id:uid=10001,gid=10001` gives host-side files owned by the login
       user: `ls -ln ~/.local/share/lemonade/huggingface` after the first model pull. A
       subuid owner means keep-id didn't apply and the bind mounts are pointless. Needs
@@ -166,19 +230,13 @@ below has been run on the box yet; on-box runbook is `/usr/share/kinoite/lemonad
       `systemd --user` manager, so `usermod -aG` needs `loginctl terminate-user`) and
       #28364 (device gids under keep-id). Only matters if `/dev/kfd` isn't 0666 *and*
       the box is driven headless.
-- [ ] lemonade actually *uses* the R9700 rather than silently falling back to CPU.
-      The failure mode is quiet, so this needs a tok/s comparison against a CPU run,
-      not a "does it start" check.
-- [ ] The `nightly` seed took: `podman exec lemonade lemonade config get rocm_channel`.
-      lemond only honours `defaults.json` on the first run — after that `config.json`
-      shadows it, so a stale config dir looks identical to a failed seed.
-- [ ] The iGPU warmup segfault. lemonade-sdk/lemonade#1921 and llamacpp-rocm#96: ROCm
-      llama.cpp segfaults at model warmup when a gfx1201 dGPU and a gfx1036 iGPU are
-      both enumerated. This box is exactly that pair (10:00.0) and `AddDevice=/dev/dri`
-      exposes all three. Not designed around on purpose. If it bites:
-      `llamacpp.rocm_args="-mg 0 -sm none"`, or shadow the unit from
-      `~/.config/containers/systemd/` pinning only the R9700 render nodes (re-derive
-      them from `by-path`). Re-test on lemonade bumps.
+- [ ] Is `--load-mode mmap` in the seeded `rocm_args` actually load-bearing? It was
+      pinned throughout the SELinux bisect and never isolated afterwards. Drop it and
+      retry; if ROCm still loads, remove it from `lemonade-defaults.json`.
+- [ ] Narrow `container_use_devices` to a CIL module granting only
+      `container_domain hsa_device_t:chr_file map`, installed by the same oneshot. The
+      boolean grants `map` on every device node to every container — fine for a
+      single-user box, worth tightening if that ever stops being true.
 - [ ] Whether it stays hand-started. If it earns its keep the change is `[Install]
       WantedBy=default.target` in the quadlet plus `loginctl enable-linger` — *not* a
       line in `services-north.sh`, since `systemctl --global enable` doesn't apply to

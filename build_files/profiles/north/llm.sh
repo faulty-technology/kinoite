@@ -16,20 +16,60 @@ for bin in podman crun; do
 done
 
 ### 1. Seeded lemonade defaults
-# nightly, not stable: stable has no gfx1201 support and silently runs on CPU.
-# rocm_args is the iGPU-segfault workaround slot, deliberately left empty.
+# nightly channel is correctness, not preference: stable has no gfx1201 support and
+# silently runs on CPU at ~1/7th speed. ctx_size because lemonade auto-tunes to 157140
+# on a 27B — raise per-model if you have headroom. rocm_args is the one combination
+# measured working (~35 tok/s vs ~29 on vulkan); whether --load-mode mmap is actually
+# load-bearing was never isolated after the SELinux fix landed, so it stays.
 mkdir -p /usr/share/kinoite
 cat > /usr/share/kinoite/lemonade-defaults.json << 'EOF'
 {
+  "ctx_size": 32768,
   "rocm_channel": "nightly",
   "llamacpp": {
     "backend": "rocm",
-    "rocm_args": ""
+    "rocm_args": "--load-mode mmap"
   }
 }
 EOF
 
-### 2. Rootless Quadlet unit
+### 2. SELinux: let containers mmap /dev/kfd
+# container-selinux grants container domains hsa_device_t {open read write ioctl ...}
+# but NOT map, and ROCm mmaps /dev/kfd. Without this every model load dies ~25ms in
+# with an HSA abort — "Memory critical error by agent node-0 ... Reason: Memory in
+# use.", exit 134 — which looks nothing like a permission problem and cost a long
+# bisect to find. Confirmed by the only AVC in the whole trace:
+#   denied { map } tclass=chr_file tcontext=...:hsa_device_t:s0
+#
+# Boolean state lives in /var/lib/selinux, so it can't ship in the image — same
+# constraint as nix-selinux.service, and the same fix: a guarded oneshot. The check
+# makes it a no-op after first boot.
+#
+# The alternative that also "worked" — SecurityLabelDisable=true or --ipc=host on the
+# container (podman drops label separation when sharing host IPC) — buys the same thing
+# by turning SELinux off for the container entirely. Not worth it for one permission.
+# Narrower still would be a CIL module granting only map on hsa_device_t; worth doing
+# if this boolean's breadth ever matters.
+for bin in getsebool setsebool; do
+    command -v "$bin" >/dev/null || { echo "llm.sh: missing $bin" >&2; exit 1; }
+done
+
+cat > /usr/lib/systemd/system/lemonade-selinux.service << 'EOF'
+[Unit]
+Description=SELinux boolean allowing containers to mmap GPU compute devices
+Documentation=file:///usr/share/kinoite/lemonade.md
+ConditionSecurity=selinux
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'getsebool container_use_devices | grep -q " on$" || setsebool -P container_use_devices on'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+### 3. Rootless Quadlet unit
 # /etc, not /usr: podman 5.8.4 only searches /etc/containers/systemd/users{,/$UID}
 # for rootless units — the /usr/share equivalent is documented but not scanned.
 # users/ (not users/$UID/) — the UID isn't knowable at build time.
@@ -81,7 +121,7 @@ ExecStartPre=/usr/bin/install -m 0644 /usr/share/kinoite/lemonade-defaults.json 
 # No [Install] — hand-started on purpose.
 EOF
 
-### 3. On-box notes
+### 4. On-box notes
 # The box won't have this repo checked out when something breaks.
 cat > /usr/share/kinoite/lemonade.md << 'EOF'
 # kinoite-north: Lemonade Server (rootless Quadlet)
@@ -104,32 +144,73 @@ have no [Install] to act on. That's the guardrail, not a bug.
 
 Owned by you (UserNS=keep-id), so du/rm/backup tools work normally.
 
-## gfx1201 (R9700) gotchas
+## If ROCm dies at model load
 
-1. The stable ROCm channel has no gfx1201 support and silently falls back to CPU
-   (~7x slower, no error). The image seeds rocm_channel=nightly, but that only
-   applies on the FIRST run — config.json wins after. To fix an existing install:
+Symptom, ~25ms into load_model, before any tensor output:
 
-       podman exec lemonade lemonade config set rocm_channel=nightly
-       podman exec lemonade lemonade config set llamacpp.backend=rocm
-       podman exec lemonade lemonade backends install llamacpp:rocm
-       systemctl --user restart lemonade
+    Memory critical error by agent node-0 ... Reason: Memory in use.
+    llama-server process has terminated with exit code: 134
 
-2. ROCm llama.cpp can segfault at model warmup when a gfx1201 dGPU and the gfx1036
-   iGPU are both visible (lemonade-sdk/lemonade#1921, llamacpp-rocm#96). This box is
-   that pair, and the unit passes all of /dev/dri.
+This is SELinux denying `map` on /dev/kfd, which ROCm mmaps. It looks nothing like a
+permission error. Check and fix:
 
-       podman exec lemonade lemonade config set llamacpp.rocm_args="-mg 0 -sm none"
-       systemctl --user restart lemonade
+    sudo ausearch -m AVC -ts recent | grep hsa_device_t
+    systemctl status lemonade-selinux.service
+    sudo setsebool -P container_use_devices on
 
-   Or hide the iGPU. This must SHADOW the unit, not drop in — AddDevice= repeats:
+lemonade-selinux.service does this at boot; if it's masked or failed, you get the abort.
 
-       mkdir -p ~/.config/containers/systemd
-       cp /etc/containers/systemd/users/lemonade.container \
-          ~/.config/containers/systemd/
-       # replace AddDevice=/dev/dri with the R9700 render nodes only.
-       # re-derive them, don't trust renderD numbering: ls -l /dev/dri/by-path/
-       systemctl --user daemon-reload
+Tested and does NOT help — don't re-chase: capping ctx_size, `-mg 0 -sm none`,
+`--load-mode mmap` alone, `ROCR_VISIBLE_DEVICES`, seccomp=unconfined. `--ipc=host` and
+`SecurityLabelDisable=true` DO work, but only because podman drops SELinux label
+separation for the container — same fix, bigger hammer.
+
+## Performance notes
+
+Measured: 27B Q5_K_M (21.2 GB), layer split, ctx 32768 — ROCm ~35 tok/s, Vulkan ~29.
+Fall back to vulkan any time with `lemonade config set llamacpp.backend=vulkan`.
+
+Both are near the ~30 tok/s single-card bandwidth ceiling (~640 GB/s ÷ 21.2 GB), which
+is why the backend gap is only ~20%. MTP speculation is what gets ROCm above the naive
+ceiling. The lever with real headroom is a smaller model, not tuning.
+
+`-sm row` (tensor split, would use both cards' bandwidth) is unavailable:
+`device ROCm0 does not support split buffers` — needs peer-copy compiled into the
+llamacpp-rocm build. Layer split is the ceiling; the second card adds capacity, not
+bandwidth. Recheck on llamacpp-rocm bumps.
+
+All three GPUs are visible to the container, so layer split may put layers on the
+gfx1036 iGPU, which would bottleneck every one of them. Check:
+
+    podman logs lemonade | grep -iE 'buffer size|assigned|ROCm[0-9]'
+
+If it is, pin to the R9700s. Re-derive the indices rather than trusting these —
+`grep -H gfx_target_version /sys/class/kfd/kfd/topology/nodes/*/properties`, where
+120001 is an R9700 and 100306 the iGPU:
+
+    llamacpp.rocm_args="--load-mode mmap -ts 1,1,0"     # zero weight to device 2
+    # or, on the container: Environment=ROCR_VISIBLE_DEVICES=...
+
+Not baked, because these indices move with kernel and slot changes.
+
+## Other gotchas
+
+The stable ROCm channel has no gfx1201 support and silently falls back to CPU (~7x
+slower, no error). The image pins rocm_channel=nightly, but seeds only apply on the
+FIRST run; config.json wins after:
+
+    podman exec lemonade lemonade config set rocm_channel=nightly
+    podman exec lemonade lemonade backends install llamacpp:rocm
+
+To change device passthrough you must SHADOW the unit, not drop in, since AddDevice=
+is a repeated key:
+
+    mkdir -p ~/.config/containers/systemd
+    cp /etc/containers/systemd/users/lemonade.container ~/.config/containers/systemd/
+    systemctl --user daemon-reload
+
+Note this cannot hide a GPU from ROCm — ROCr enumerates agents from the KFD topology
+(/sys/class/kfd/kfd/topology/nodes/), which is global. Use ROCR_VISIBLE_DEVICES.
 
 ## SELinux
 
