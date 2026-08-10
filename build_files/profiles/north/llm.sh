@@ -30,9 +30,11 @@ cat > /usr/share/kinoite/lemonade-defaults.json << 'EOF'
 EOF
 
 ### 2. Rootless Quadlet unit
+# /etc, not /usr: podman 5.8.4 only searches /etc/containers/systemd/users{,/$UID}
+# for rootless units — the /usr/share equivalent is documented but not scanned.
 # users/ (not users/$UID/) — the UID isn't knowable at build time.
-mkdir -p /usr/share/containers/systemd/users
-cat > /usr/share/containers/systemd/users/lemonade.container << 'EOF'
+mkdir -p /etc/containers/systemd/users
+cat > /etc/containers/systemd/users/lemonade.container << 'EOF'
 [Unit]
 Description=Lemonade Server (local LLM, containerized ROCm)
 Documentation=https://lemonade-server.ai/docs/
@@ -84,7 +86,7 @@ EOF
 cat > /usr/share/kinoite/lemonade.md << 'EOF'
 # kinoite-north: Lemonade Server (rootless Quadlet)
 
-Ships at /usr/share/containers/systemd/users/lemonade.container, NOT enabled.
+Ships at /etc/containers/systemd/users/lemonade.container, NOT enabled.
 
     systemctl --user daemon-reload      # only after an image update
     systemctl --user start lemonade
@@ -123,7 +125,7 @@ Owned by you (UserNS=keep-id), so du/rm/backup tools work normally.
    Or hide the iGPU. This must SHADOW the unit, not drop in — AddDevice= repeats:
 
        mkdir -p ~/.config/containers/systemd
-       cp /usr/share/containers/systemd/users/lemonade.container \
+       cp /etc/containers/systemd/users/lemonade.container \
           ~/.config/containers/systemd/
        # replace AddDevice=/dev/dri with the R9700 render nodes only.
        # re-derive them, don't trust renderD numbering: ls -l /dev/dri/by-path/

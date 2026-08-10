@@ -68,6 +68,24 @@ against a 0V max. Cosmetic NCT6701D quirks — ignore rather than chase. Recheck
 channel — upstream closed host→client on security grounds (#1539) and the text-only
 proposal as `not_planned` (#5384). Don't debug Sunshine for it.
 
+**Rootless Quadlets must ship in `/etc`, not `/usr`.** `podman-systemd.unit(5)` lists
+`/usr/share/containers/systemd/users/` as a rootless search path, and current podman
+source does iterate both admin tiers — but podman **5.8.4** (Fedora 44) does not. The
+generator on the box reports searching only:
+
+    /run/user/$UID/containers/systemd
+    ~/.config/containers/systemd
+    /etc/containers/systemd/users
+    /etc/containers/systemd/users/$UID
+
+A unit under `/usr/share/...` is silently ignored — no error, the unit simply doesn't
+exist. Confirmed by forcing it: `QUADLET_UNIT_DIRS=/usr/share/containers/systemd/users
+/usr/lib/systemd/user-generators/podman-user-generator --user --dryrun` parses the
+same file fine and emits `lemonade.service`. Hence `llm.sh` writes to `/etc`, which
+also matches `signing.sh` (`/etc/containers/policy.json`) and the `services.sh`
+drop-ins. Don't "fix" it back to `/usr` for tidiness — recheck with the `--dryrun`
+above after a podman bump if you want to.
+
 **ROCm never lands on the host, and doesn't have to.** lemonade's `llamacpp-rocm`
 builds bundle their own ROCm 7 runtime, so the container needs no host ROCm and no
 `/opt/rocm` mount — which is why `amdgpu.sh` installs firmware and monitoring only.
@@ -115,7 +133,7 @@ tuning knob — hence the seeded `rocm_channel` in `llm.sh`.
 
 ### Containerized ROCm + lemonade — `build_files/profiles/north/llm.sh`
 
-The Quadlet is now baked (`/usr/share/containers/systemd/users/lemonade.container`),
+The Quadlet is now baked (`/etc/containers/systemd/users/lemonade.container`),
 deliberately **not** enabled — no `[Install]`, nothing in `services-north.sh`. Nothing
 below has been run on the box yet; on-box runbook is `/usr/share/kinoite/lemonade.md`.
 
