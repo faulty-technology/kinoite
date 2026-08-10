@@ -68,6 +68,15 @@ against a 0V max. Cosmetic NCT6701D quirks — ignore rather than chase. Recheck
 channel — upstream closed host→client on security grounds (#1539) and the text-only
 proposal as `not_planned` (#5384). Don't debug Sunshine for it.
 
+**ROCm never lands on the host, and doesn't have to.** lemonade's `llamacpp-rocm`
+builds bundle their own ROCm 7 runtime, so the container needs no host ROCm and no
+`/opt/rocm` mount — which is why `amdgpu.sh` installs firmware and monitoring only.
+This retires the old "pick a gfx1201-capable ROCm 7.2+ image" item: there is no ROCm
+image to pick. The `nightly` channel is the only one shipping per-arch `gfx120X`
+builds; `stable` and `preview` have no gfx1201 HIP support and *silently* run on CPU
+at ~1/7th the speed (lemonade-sdk/lemonade#1787). That's a correctness trap, not a
+tuning knob — hence the seeded `rocm_channel` in `llm.sh`.
+
 ## Open
 
 ### Sunshine — `build_files/profiles/north/sunshine.sh`
@@ -85,6 +94,15 @@ proposal as `not_planned` (#5384). Don't debug Sunshine for it.
 
 ### GPU — `build_files/profiles/north/amdgpu.sh`, `tuning.sh`
 
+- [ ] Does `70-kfd.rules` help or hurt? Observed on the laptop: `/dev/dri/renderD128`
+      is mode **0666**, and Fedora's `70-uaccess.rules` tags DRM render nodes but has
+      no `kfd` line — so the script's comment is accurate and its rule is the only
+      thing tagging `/dev/kfd`. What's unknown is whether the base rules already ship
+      `/dev/kfd` at 0666 too; if so our `MODE="0660"` *tightens* it and then hands
+      back via `uaccess`/`render` access that was never restricted. One command
+      settles it: `stat -c '%n %a %U %G' /dev/kfd /dev/dri/renderD128`. If `/dev/kfd`
+      reads `666 root render` with our rule removed, drop the rule (or set
+      `MODE="0666"`) and delete the `usermod -aG render,video` advice from the README.
 - [ ] Fan control, decisive local check: `cat .../fan1_target`, then `echo 2600 |
       sudo tee .../fan1_target` and watch `fan1_input`. Raise only — a low setpoint
       on a workstation blower is a thermal risk. Reverts on reboot.
@@ -97,19 +115,56 @@ proposal as `not_planned` (#5384). Don't debug Sunshine for it.
 
 ### Containerized ROCm + lemonade — `build_files/profiles/north/llm.sh`
 
-- [ ] Pick a gfx1201-capable ROCm **7.2+** container image (Fedora 44's host ROCm is
-      too old — this is why ROCm stays containerized).
+The Quadlet is now baked (`/usr/share/containers/systemd/users/lemonade.container`),
+deliberately **not** enabled — no `[Install]`, nothing in `services-north.sh`. Nothing
+below has been run on the box yet; on-box runbook is `/usr/share/kinoite/lemonade.md`.
+
 - [ ] `TAG+="uaccess"` actually lands on `/dev/kfd` — it's a non-DRM device, so
-      whether logind assigns it to a seat is the open question. Check `getfacl
-      /dev/kfd` while logged in locally: the login user should appear in the ACL
-      without being in `render`. If not, the `usermod -aG render,video` fallback
-      becomes mandatory again — and it stays mandatory for headless/SSH use either
-      way, since no active seat means no ACL.
-- [ ] Rootless podman passes through `/dev/kfd` + `/dev/dri` (see `70-kfd.rules` in
-      `amdgpu.sh`).
-- [ ] lemonade runs against the R9700 in a container.
-- [ ] Codify the working setup as a Quadlet `.container` unit baked into the image
-      and enabled from `services-north.sh` (replaces the current no-op in `llm.sh`).
+      whether logind assigns it to a seat is the open question. `getfacl -p /dev/kfd`
+      while logged in locally: the login user should appear without being in `render`.
+      No active seat (SSH) means no ACL either way. Do the `stat` check under GPU
+      above first — it may make this moot.
+- [ ] Rootless podman can open the devices at all. Cheapest probe, before any Quadlet:
+      `podman run --rm --device /dev/kfd --device /dev/dri
+      ghcr.io/lemonade-sdk/lemonade-server:latest sh -c 'exec 3<>/dev/kfd && echo OK'`.
+      Devices display as `nobody:nobody` inside a userns — cosmetic; the kernel checks
+      the unmapped gid. Judge by the open, not by `ls`.
+- [ ] SELinux `map` on `/dev/kfd`. `container-selinux` grants `hsa_device_t:chr_file
+      rw_chr_file_perms` unconditionally, but that set is `{open getattr read write
+      append ioctl lock}` — no `map`, and ROCm mmaps the node. (`/dev/dri` is fine:
+      `container_use_dri_devices` defaults on and `dev_rw_dri` grants `map`
+      explicitly.) Look for `sudo ausearch -m AVC -ts recent | grep hsa_device_t`; fix
+      with `sudo setsebool -P container_use_devices on`. Not baked on purpose —
+      `setsebool -P` state lives in `/var/lib/selinux` and can't ship in the image
+      (same constraint as `nix-selinux.service`), and the boolean grants `map` on every
+      device to every container. If it proves permanent, narrow it to a CIL module for
+      `hsa_device_t` installed from a oneshot.
+- [ ] `UserNS=keep-id:uid=10001,gid=10001` gives host-side files owned by the login
+      user: `ls -ln ~/.local/share/lemonade/huggingface` after the first model pull. A
+      subuid owner means keep-id didn't apply and the bind mounts are pointless. Needs
+      `grep "^$USER:" /etc/subuid` non-empty and sized > 10001.
+- [ ] `GroupAdd=keep-groups` — confirm effective or delete the key. Known-flaky here:
+      containers/podman#27876 (inert in rootless Quadlets; groups come from the
+      `systemd --user` manager, so `usermod -aG` needs `loginctl terminate-user`) and
+      #28364 (device gids under keep-id). Only matters if `/dev/kfd` isn't 0666 *and*
+      the box is driven headless.
+- [ ] lemonade actually *uses* the R9700 rather than silently falling back to CPU.
+      The failure mode is quiet, so this needs a tok/s comparison against a CPU run,
+      not a "does it start" check.
+- [ ] The `nightly` seed took: `podman exec lemonade lemonade config get rocm_channel`.
+      lemond only honours `defaults.json` on the first run — after that `config.json`
+      shadows it, so a stale config dir looks identical to a failed seed.
+- [ ] The iGPU warmup segfault. lemonade-sdk/lemonade#1921 and llamacpp-rocm#96: ROCm
+      llama.cpp segfaults at model warmup when a gfx1201 dGPU and a gfx1036 iGPU are
+      both enumerated. This box is exactly that pair (10:00.0) and `AddDevice=/dev/dri`
+      exposes all three. Not designed around on purpose. If it bites:
+      `llamacpp.rocm_args="-mg 0 -sm none"`, or shadow the unit from
+      `~/.config/containers/systemd/` pinning only the R9700 render nodes (re-derive
+      them from `by-path`). Re-test on lemonade bumps.
+- [ ] Whether it stays hand-started. If it earns its keep the change is `[Install]
+      WantedBy=default.target` in the quadlet plus `loginctl enable-linger` — *not* a
+      line in `services-north.sh`, since `systemctl --global enable` doesn't apply to
+      generator-produced units.
 
 ### Build
 
