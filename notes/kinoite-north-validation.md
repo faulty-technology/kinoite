@@ -33,6 +33,16 @@ the compositor. Moving the plug to an R9700 port fixed it and brought AV1 encode
 with it. `adapter_name` is the wrong fix: it repoints only the encoder, leaving the
 compositor on the iGPU and the cross-GPU copy in place. Keep the plug on a dGPU.
 
+The cost, noted 2026-08-10: the R9700 now owns compositing, and it produces audible
+coil whine the iGPU never did (its power delivery is the board VRM, a fraction of the
+current). **Confirmed trigger:** UI animations — tab switches, menu/window effects;
+disabling desktop animations stops those. **Untested:** whether a connected stream on
+a static desktop, or LLM inference, whine on their own. Both are plausible — whine
+tracks *periodic* transients, not average load, and all three are periodic: encode at
+60/120 Hz, inference at the token rate (~31 Hz), animations at refresh rate. Isolate
+with the 2×2 before blaming any one of them: stream on/off × model loaded/generating,
+touching nothing during the stream tests. Harmless either way — not a GPU fault.
+
 **A dummy plug is still required, but only for Sunshine's startup probe.** With no
 output, KWin keeps running (`wayland-0` present) with zero outputs; what dies is
 Sunshine's encoder probe at launch — `[kwingrab] no wl_output found` → `Fatal:
@@ -94,6 +104,23 @@ same file fine and emits `lemonade.service`. Hence `llm.sh` writes to `/etc`, wh
 also matches `signing.sh` (`/etc/containers/policy.json`) and the `services.sh`
 drop-ins. Don't "fix" it back to `/usr` for tidiness — recheck with the `--dryrun`
 above after a podman bump if you want to.
+
+**3DMark: two separate failures, first one solved.** (1) Hangs at startup collecting
+system info — disabling hardware monitoring in 3DMark's settings fixes it. SystemInfo
+is genuinely Wine-incompatible and UL supports Windows only. (2) With that off, the
+benchmark itself then gets stuck — **unresolved, cause unknown**.
+
+Important: 3DMark *does* run on Bazzite on this same hardware (observed directly). So
+(2) is a real gap between this image and Bazzite, not an upstream Proton limitation —
+do not write it off as "3DMark doesn't work on Linux." Leading suspect is Proton
+version: Bazzite ships Proton-GE by default and this image had only stock Proton at the
+time; GE is baked as of the gaming.sh change, so retest after a rebuild before
+investigating anything else.
+
+Already ruled out: `radeon_icd.i686.json` is present so 32-bit Vulkan is fine, and
+Vulkan selects an R9700 rather than the iGPU (03:00.0 at ~9%, iGPU at 0%). Note scores
+can't validate on Linux regardless, so this is a "does the stack work" question rather
+than a benchmarking one.
 
 **ROCm's real blocker was one missing SELinux permission: `map` on `/dev/kfd`.**
 `container-selinux` grants container domains `hsa_device_t:chr_file` all of

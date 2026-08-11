@@ -41,12 +41,15 @@ register_repo_file() {
     printf '%s\n' "$@" >> "$REPO_REGISTRY"
 }
 
-# add_copr <slug> <owner/project> <fingerprint>
+# add_copr <slug> <owner/project> <fingerprint> [includepkgs]
 # Fingerprint-pins the COPR key, writes the .repo with gpgkey pointed at the
 # verified local copy, and registers the file for cleanup. check-keys.sh reads
 # these call sites too, so the pin stays checkable.
+#
+# includepkgs restricts a large COPR to a glob, so it can't upgrade unrelated
+# packages out from under us. Anything else resolves from Fedora or fails loudly.
 add_copr() {
-    local slug="$1" project="$2" fpr="$3"
+    local slug="$1" project="$2" fpr="$3" include="${4:-}"
     local owner="${project%%/*}" name="${project##*/}"
     local base="https://download.copr.fedorainfracloud.org/results/${owner}/${name}"
     local repo_file="/etc/yum.repos.d/_copr_${slug}.repo"
@@ -65,5 +68,12 @@ repo_gpgcheck=0
 enabled=1
 enabled_metadata=1
 EOF
+
+    # `if`, not `[ ] &&` — a false test as the last statement would return
+    # non-zero and kill the caller under `set -e`.
+    if [ -n "$include" ]; then
+        printf 'includepkgs=%s\n' "$include" >> "$repo_file"
+    fi
+
     register_repo_file "$repo_file"
 }
