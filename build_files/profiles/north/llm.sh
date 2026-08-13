@@ -24,7 +24,7 @@ done
 mkdir -p /usr/share/kinoite
 cat > /usr/share/kinoite/lemonade-defaults.json << 'EOF'
 {
-  "ctx_size": 32768,
+  "ctx_size": 131072,
   "rocm_channel": "nightly",
   "llamacpp": {
     "backend": "rocm",
