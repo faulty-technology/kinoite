@@ -57,8 +57,10 @@ seed() {
 
 seed capture kwin
 seed output_name Virtual-sunshine-vm
-# Runs for every app, so the virtual monitor exists before capture starts.
-seed global_prep_cmd '[{"do":"/usr/libexec/sunshine-virtual-display up","undo":"/usr/libexec/sunshine-virtual-display down","elevated":false}]'
+# Runs for every app, so the virtual monitor is resized if the client geometry changed.
+# The display is started at login and kept persistent so KWin never loses all outputs.
+# Sunshine prep_cmd only understands "do", "undo", "elevated" — no "args" key.
+seed global_prep_cmd '[{"do":"/usr/libexec/sunshine-virtual-display ensure","undo":"/usr/libexec/sunshine-virtual-display ensure","elevated":false}]'
 EOF
 chmod +x /usr/libexec/sunshine-config-defaults
 
@@ -67,14 +69,18 @@ cat > /usr/libexec/sunshine-virtual-display << 'EOF'
 #!/bin/bash
 # KDE Wayland virtual monitor for Sunshine streaming (no dummy plug).
 # Usage: sunshine-virtual-display up [--exclusive] [WIDTH HEIGHT [FPS]]
+#        sunshine-virtual-display ensure [--exclusive] [WIDTH HEIGHT [FPS]]
 #        sunshine-virtual-display down
 # Sunshine → Configuration → General → Command Preparation:
-#   Do: `... up`   Undo: `... down`
+#   Global: Do: `/usr/libexec/sunshine-virtual-display ensure`
+#           Undo: `/usr/libexec/sunshine-virtual-display ensure` (seeded, restores outputs on stream end)
+#   Per-app override: Do: `/usr/libexec/sunshine-virtual-display ensure --exclusive` (darkens physical outputs)
+#   Clean up if stranded: `/usr/libexec/sunshine-virtual-display down`
 #
 # Geometry comes from SUNSHINE_CLIENT_{WIDTH,HEIGHT,FPS}; args are for testing.
 #
-# --exclusive (or SUNSHINE_VD_EXCLUSIVE=1) disables the physical outputs for the
-# stream. Without it only new windows land on the virtual display, since primary
+# --exclusive (or SUNSHINE_VD_EXCLUSIVE=1 with `up`) disables the physical outputs for the
+# stream. The seeded `ensure` path only honours the `--exclusive` flag. Without it only new windows land on the virtual display, since primary
 # is all KWin honours; disabling an output is what makes KWin migrate windows
 # already running on it. Per-app is the point of the flag: Sunshine parses prep
 # commands without a shell, so an env var can't be set from an app entry.
@@ -150,13 +156,80 @@ teardown() {
 }
 
 case "${1:-}" in
+    ensure)
+        shift
+        # --exclusive toggles physical output disabling to force KWin to migrate windows.
+        # With the persistent display, this is how users enable/disable exclusivity
+        # per-app: set `ensure --exclusive` globally or for a single app entry.
+        # Called without --exclusive re-enables any previously disabled outputs.
+        exclusive_wanted=false
+        if [ "${1:-}" = "--exclusive" ]; then
+            exclusive_wanted=true
+            shift
+        fi
+        W="${1:-${SUNSHINE_CLIENT_WIDTH:-2560}}"
+        H="${2:-${SUNSHINE_CLIENT_HEIGHT:-1440}}"
+        FPS="${3:-${SUNSHINE_CLIENT_FPS:-60}}"
+        FPS="${FPS%.*}"
+        if ! is_dim "$W" 640 7680 || ! is_dim "$H" 360 4320; then
+            log "bad geometry [${W}x${H}], using 2560x1440"
+            W=2560; H=1440
+        fi
+        if ! is_dim "$FPS" 24 480; then
+            FPS=60
+        fi
+
+        # Already running? Just resize — no teardown, no re-launch.
+        if [ -s "$PIDFILE" ] && [ -n "$(output_block)" ]; then
+            kscreen-doctor "output.${OUTPUT}.enable" || log "could not enable ${OUTPUT}"
+            if ! output_block | grep -q "${W}x${H}@${FPS}\."; then
+                kscreen-doctor "output.${OUTPUT}.addCustomMode.${W}.${H}.$((FPS * 1000)).full" \
+                    || log "addCustomMode ${W}x${H}@${FPS} failed"
+            fi
+            kscreen-doctor "output.${OUTPUT}.mode.${W}x${H}@${FPS}" \
+                || log "could not apply ${W}x${H}@${FPS}"
+            kscreen-doctor "output.${OUTPUT}.priority.1" || log "could not set ${OUTPUT} as primary"
+            log "resized persistent display to ${W}x${H}@${FPS}"
+
+            # Apply or clear exclusivity
+            if [ "$exclusive_wanted" = true ]; then
+                : > "$DISABLEDFILE"
+                for out in $(enabled_outputs); do
+                    if [ "$out" != "$OUTPUT" ]; then
+                        if kscreen-doctor "output.${out}.disable"; then
+                            echo "$out" >> "$DISABLEDFILE"
+                        else
+                            log "could not disable ${out}"
+                        fi
+                    fi
+                done
+            elif [ -s "$DISABLEDFILE" ]; then
+                # Re-enable outputs that were disabled by a previous --exclusive stream
+                while read -r out; do
+                    kscreen-doctor "output.${out}.enable" || log "could not re-enable ${out}"
+                done < "$DISABLEDFILE"
+                rm -f "$DISABLEDFILE"
+            fi
+            exit 0
+        fi
+        # Not running — fall through to up to create it with the resolved geometry.
+        if [ "$exclusive_wanted" = true ]; then
+            "$0" up --exclusive "$W" "$H" "$FPS"
+        else
+            "$0" up "$W" "$H" "$FPS"
+        fi
+        ;;
     up)
         shift
         exclusive="${SUNSHINE_VD_EXCLUSIVE:-0}"
-        if [ "${1:-}" = "--exclusive" ]; then
-            exclusive=1
-            shift
-        fi
+        persistent="${SUNSHINE_VD_PERSISTENT:-0}"  # default 0: --persistent must be explicit
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --exclusive) exclusive=1; shift ;;
+                --persistent) persistent=1; shift ;;
+                *) break ;;
+            esac
+        done
         W="${1:-${SUNSHINE_CLIENT_WIDTH:-}}"
         H="${2:-${SUNSHINE_CLIENT_HEIGHT:-}}"
         FPS="${3:-${SUNSHINE_CLIENT_FPS:-}}"
@@ -215,16 +288,20 @@ case "${1:-}" in
 
         # A mismatch streams the desk with no error anywhere — say so in
         # Sunshine's own log, which is where this stderr lands.
-        if ! grep -qE '^[[:space:]]*capture[[:space:]]*=[[:space:]]*kwin' "$CONF" 2>/dev/null; then
-            log "WARNING: capture is not kwin in ${CONF} — kms cannot see ${OUTPUT}"
-        fi
-        configured=$(sed -n 's/^[[:space:]]*output_name[[:space:]]*=[[:space:]]*//p' "$CONF" 2>/dev/null | tail -1)
-        if [ "${configured:-}" != "$OUTPUT" ]; then
-            log "WARNING: output_name is [${configured:-unset}], expected [${OUTPUT}] — Sunshine will capture whichever output enumerates first"
+        if [ -f "$CONF" ]; then
+            if ! grep -qE '^[[:space:]]*capture[[:space:]]*=[[:space:]]*kwin' "$CONF" 2>/dev/null; then
+                log "WARNING: capture is not kwin in ${CONF} — kms cannot see ${OUTPUT}"
+            fi
+            configured=$(sed -n 's/^[[:space:]]*output_name[[:space:]]*=[[:space:]]*//p' "$CONF" 2>/dev/null | tail -1)
+            if [ "${configured:-}" != "$OUTPUT" ]; then
+                log "WARNING: output_name is [${configured:-unset}], expected [${OUTPUT}] — Sunshine will capture whichever output enumerates first"
+            fi
         fi
 
         # Last: nothing that can fail should run while the desk is dark.
-        if [ "$exclusive" = 1 ]; then
+        # --persistent (passed by the login service): never disable physical outputs.
+        # --exclusive without --persistent darkens the desk so KWin migrates windows.
+        if [ "$exclusive" = 1 ] && [ "$persistent" = 0 ]; then
             : > "$DISABLEDFILE"
             for out in $(enabled_outputs); do
                 if [ "$out" != "$OUTPUT" ]; then
@@ -241,17 +318,51 @@ case "${1:-}" in
         teardown
         ;;
     *)
-        echo "usage: $0 up [--exclusive] [WIDTH HEIGHT [FPS]] | down" >&2; exit 2 ;;
+        echo "usage: $0 {ensure|up} [--exclusive] [WIDTH HEIGHT [FPS]] | down" >&2; exit 2 ;;
 esac
 EOF
 chmod +x /usr/libexec/sunshine-virtual-display
 
 ### Service drop-in
-# ExecStopPost, not just Sunshine's undo command: undo only runs on a clean app
-# exit, so a crash would strand the monitor — and in exclusive mode, dark panels.
+# No teardown here — the persistent virtual display service owns that lifecycle.
+# ExecStopPost runs `ensure` to restore physical outputs if the last stream was exclusive.
 mkdir -p /usr/lib/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d
 cat > /usr/lib/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/10-kinoite-north.conf << 'EOF'
 [Service]
 ExecStartPre=-/usr/libexec/sunshine-config-defaults
-ExecStopPost=-/usr/libexec/sunshine-virtual-display down
+# Needed so global_prep_cmd's kscreen-doctor calls reach the compositor
+Environment=WAYLAND_DISPLAY=wayland-0
+ExecStopPost=-/usr/libexec/sunshine-virtual-display ensure
 EOF
+
+### Persistent virtual display at login
+# Keep the virtual output alive so KWin never drops to zero outputs (which can
+# deadlock the GPU and take SSH with it). Sunshine's ensure command resizes it
+# per-client; this just ensures it exists from login.
+# Resolved via WantedBy=graphical-session.target — it's per-user.
+cat > /usr/lib/systemd/user/sunshine-virtual-monitor.service << 'EOF'
+[Unit]
+Description=Sunshine persistent virtual display
+Documentation=https://github.com/LizardByte/Sunshine
+# systemd does not glob unit names — use the session target for ordering.
+# PartOf propagates stop/restart from the target so killing the session
+# also tears down the virtual display; see the comment below for RemainAfterExit.
+After=graphical-session.target
+PartOf=graphical-session.target
+Before=app-dev.lizardbyte.app.Sunshine.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# RemainAfterExit=yes is required: without it the cgroup (and thus the backgrounded krfb)
+# is torn down immediately when ExecStart's parent exits.
+Environment=DISPLAY=:0 WAYLAND_DISPLAY=wayland-0
+ExecStart=/usr/libexec/sunshine-virtual-display up --persistent 2560 1440 60
+
+[Install]
+WantedBy=graphical-session.target
+EOF
+
+
+# Enable globally so it starts for any logged-in user
+systemctl --global enable sunshine-virtual-monitor.service

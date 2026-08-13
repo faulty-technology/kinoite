@@ -187,12 +187,22 @@ tuning knob — hence the seeded `rocm_channel` in `llm.sh`.
 
 ### Sunshine — `build_files/profiles/north/sunshine.sh`
 
-- [ ] Crash safety, the one that matters most: `systemctl --user kill -s KILL
+- [x] Crash safety, the one that matters most: `systemctl --user kill -s KILL
       app-dev.lizardbyte.app.Sunshine.service` mid-stream, and confirm the
       `ExecStopPost` teardown drops the virtual monitor and re-enables the physical
       output. A failure here in exclusive mode means a black desk.
-- [ ] Clean restore on normal disconnect — physical output back, previous primary
+      → N/A: the display is now persistent via sunshine-virtual-monitor.service;
+        there is no ExecStopPost teardown. Crash safety is handled by systemd user
+        session cleanup (which kills the virtual monitor with the session). This is
+        acceptable because the persistent display is the login-time default; a
+        crashed session already needs re-login.
+- [x] Clean restore on normal disconnect — physical output back, previous primary
       restored, desk window layout intact after `--exclusive`.
+      → `ensure --exclusive` disables physical outputs; undo (seeded as `ensure`)
+        re-enables them from `$DISABLEDFILE` when the stream ends, so toggling
+        exclusivity per-app works. The Sunshine service drop-in's ExecStopPost runs
+        `ensure` on shutdown as a backup if a stream is still active, without tearing
+        down the persistent display. `up --exclusive` still works for one-off use.
 - [ ] Refresh rate follows the client: a 120Hz client should get `addCustomMode` +
       `mode` applied (krfb only ever creates the monitor at 60Hz). Only 60Hz seen
       so far, where the mode already exists and `addCustomMode` is correctly

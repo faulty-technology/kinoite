@@ -6,8 +6,13 @@ set -ouex pipefail
 ### Sunshine streaming host
 # Sunshine ships a systemd *user* unit; enable it globally so it starts for the
 # logged-in user. sunshine.sh drops in the ExecStartPre that seeds the capture
-# settings and the ExecStopPost that tears the virtual monitor down; pairing and
-# wiring the prep commands stay per-user first-login steps (see README).
+# settings and the global_prep_cmd that resizes the persistent virtual monitor;
+# pairing and wiring the prep commands stay per-user first-login steps (see README).
+#
+# The virtual display is now persistent (started at login via
+# sunshine-virtual-monitor.service). ExecStopPost runs `ensure` to restore
+# physical outputs if the last stream was exclusive; it does not teardown.
+# A crash mid-stream is handled by systemd's user session cleanup.
 #
 # Use the canonical unit name. pvermeer's package also ships a sunshine.service
 # compat symlink, but upstream only declares it as an [Install] Alias= — which
