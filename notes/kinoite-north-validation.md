@@ -279,6 +279,36 @@ proven, the ROCm backend is not.
       line in `services-north.sh`, since `systemctl --global enable` doesn't apply to
       generator-produced units.
 
+### Wake-on-WLAN — `build_files/profiles/north/wol.sh`
+
+The magic-packet trigger is armed declaratively by NetworkManager
+(`/usr/lib/NetworkManager/conf.d/20-wake-on-wlan.conf`). Nothing about it can be
+tested off the box. Driver support is confirmed in-tree — `rtw8922a.c` declares
+`WIPHY_WOWLAN_MAGIC_PKT` in its `wowlan_stub` under `CONFIG_PM`.
+
+Already ruled out, don't re-add: `ethtool -s <wlan> wol g` (mac80211's
+`ieee80211_ethtool_ops` has no `set_wol` — returns EOPNOTSUPP on every mac80211
+driver) and `iw dev ... set power_save off` (runtime power save, not a wake
+trigger). Both look like they work because the failure is silent.
+
+- [ ] The trigger is actually armed: `iw phy0 wowlan show` should report
+      `Wake-on-WLAN is enabled: * magic packet`. If it says disabled, check
+      `journalctl -u NetworkManager | grep -i wake` — NM logs an invalid default
+      and falls back to `ignore`. The value has to be numeric `8`; the word
+      `magic` parses as 0.
+- [ ] End to end: `systemctl suspend`, then `wol <wlan-mac>` from another host on
+      the same L2 segment. Must be the *Wi-Fi* MAC, and the sender must be on the
+      same broadcast domain — this is not routable, so it won't work over
+      Tailscale (a suspended box isn't running tailscaled anyway).
+- [ ] If armed but not waking, the PCIe function may not be enabled as a wakeup
+      source: `cat /sys/bus/pci/devices/<wifi-bdf>/power/wakeup`. Drivers arm this
+      via cfg80211's `set_wakeup` op; whether rtw89 implements it is unverified. If
+      it reads `disabled`, that's the gap — a udev rule writing `enabled` is the
+      fix, and it belongs in `wol.sh`.
+- [ ] Suspend type matters: confirm whether the box uses S3 or s2idle
+      (`cat /sys/power/mem_sleep`). Under s2idle the wake is a PCIe interrupt
+      rather than an ACPI event, and the ASUS BIOS WoL setting may only govern S3.
+
 ### Build
 
 - [ ] If a build fails on a GPG mismatch, re-verify every pinned fingerprint with
