@@ -100,7 +100,7 @@ generator on the box reports searching only:
 A unit under `/usr/share/...` is silently ignored — no error, the unit simply doesn't
 exist. Confirmed by forcing it: `QUADLET_UNIT_DIRS=/usr/share/containers/systemd/users
 /usr/lib/systemd/user-generators/podman-user-generator --user --dryrun` parses the
-same file fine and emits `lemonade.service`. Hence `llm.sh` writes to `/etc`, which
+same file fine and emits `lemonade.service`. Hence `lemonade.sh` writes to `/etc`, which
 also matches `signing.sh` (`/etc/containers/policy.json`) and the `services.sh`
 drop-ins. Don't "fix" it back to `/usr` for tidiness — recheck with the `--dryrun`
 above after a podman bump if you want to.
@@ -181,7 +181,7 @@ This retires the old "pick a gfx1201-capable ROCm 7.2+ image" item: there is no 
 image to pick. The `nightly` channel is the only one shipping per-arch `gfx120X`
 builds; `stable` and `preview` have no gfx1201 HIP support and *silently* run on CPU
 at ~1/7th the speed (lemonade-sdk/lemonade#1787). That's a correctness trap, not a
-tuning knob — hence the seeded `rocm_channel` in `llm.sh`.
+tuning knob — hence the seeded `rocm_channel` in `lemonade.sh`.
 
 ## Open
 
@@ -229,7 +229,7 @@ tuning knob — hence the seeded `rocm_channel` in `llm.sh`.
       a Vulkan downgrade on RDNA4 is the worse trade. Revisit if RPM Fusion catches
       up and gamescope HDR turns out to matter.
 
-### Containerized ROCm + lemonade — `build_files/profiles/north/llm.sh`
+### Containerized ROCm + lemonade — `build_files/profiles/north/lemonade.sh`
 
 The Quadlet is baked (`/etc/containers/systemd/users/lemonade.container`), deliberately
 **not** enabled — no `[Install]`, nothing in `services-north.sh`. On-box runbook is
@@ -259,7 +259,7 @@ proven, the ROCm backend is not.
       above first — it may make this moot. Lower priority now that passthrough is
       proven working for the local-login case.
 - [ ] `UserNS=keep-id:uid=10001,gid=10001` gives host-side files owned by the login
-      user: `ls -ln ~/.local/share/lemonade/huggingface` after the first model pull. A
+      user: `ls -ln ~/.local/share/models/huggingface` after the first model pull. A
       subuid owner means keep-id didn't apply and the bind mounts are pointless. Needs
       `grep "^$USER:" /etc/subuid` non-empty and sized > 10001.
 - [ ] `GroupAdd=keep-groups` — confirm effective or delete the key. Known-flaky here:
@@ -279,7 +279,7 @@ proven, the ROCm backend is not.
       line in `services-north.sh`, since `systemctl --global enable` doesn't apply to
       generator-produced units.
 
-**Baked recipe set (resolved 2026-08-15).** `llm.sh` now seeds four Unsloth Qwen custom
+**Baked recipe set (resolved 2026-08-15).** `lemonade.sh` now seeds four Unsloth Qwen custom
 models into `~/.local/share/lemonade/config/{user_models,recipe_options}.json` (curated
 superset, always in the model list; conditional install so user edits survive). Profile is
 **Q6 + big context**, chosen for coding/testing: `Qwen3.8-27B` Q6_K / `Qwen3.6-27B` Q6_K /
@@ -303,6 +303,52 @@ Settled "Layer split does the right thing unaided" measurement), so no pinning i
 - [ ] Q6 tok/s vs the measured Q5_K_M ~31–35: bigger weights + far bigger KV will be
       slower; confirm it's still usable for agentic loops. Compare from a fresh load at a
       fixed prompt (generation slows as KV fills).
+
+### vLLM + Open WebUI stack — `build_files/profiles/north/vllm.sh`
+
+Second, independent local-LLM stack (added 2026-08-16): kyuz0's gfx1201 vLLM image
+(`docker.io/kyuz0/vllm-therock-gfx1201:latest`) + Open WebUI, in one rootless Quadlet
+**pod** (`north-llm.pod`) so they start/stop together over shared localhost. Hand-started
+(`systemctl --user start north-llm-pod`), UI on 127.0.0.1:3000, API on 127.0.0.1:8000/v1.
+Default model `Qwen/Qwen3.8-27B-FP8` (FP8, 8-bit — user prefers no Q4; TP=2, ctx **131072/128K**,
+util 0.95). Follows kyuz0's `RedHatAI/Qwen3.6-27B-FP8` recipe but with far larger context: 3.8-27B
+is `model_type qwen3_5`, a HYBRID (48/64 layers linear-attention, 16 full-attention) with native
+`max_position_embeddings 262144`. Growing KV ≈ **0.0625 GB/1K fp16** (16 full-attn layers × 4 KV ×
+256 × 2 × 2B) — a quarter of a classic 27B — so 128K ≈ 8 GB KV, 256K ≈ 16 GB KV, both fit the pair
+atop ~27 GB FP8 weights. No rope-scaling (native), no fp8 KV needed. Headless launcher reproduces the
+exec that kyuz0's interactive `start_vllm.py` ends in. **Shares the model store** with
+lemonade at `~/.local/share/models/huggingface` (lemonade's cache volume was repointed there).
+
+- [ ] Where is kyuz0's `01-rocm-envs.sh` in the image, and are those vars already
+      Dockerfile-`ENV` baked? `podman run --rm docker.io/kyuz0/vllm-therock-gfx1201:latest
+      env | grep -iE 'VLLM|TRITON|FLASH'`. The launcher sources the file if present at
+      `/opt/scripts/` or `/etc/profile.d/`, else assumes ENV. Fix the path / drop the source
+      once known.
+- [ ] Quadlet `.pod` behavior on podman 5.8.4: does `systemctl --user start north-llm-pod`
+      bring up both member containers, and does pod-level `PublishPort` publish 3000+8000? If
+      not, `systemctl --user start vllm` (member pulls in the pod) is the documented fallback
+      in vllm.md — confirm which is true and tidy the runbook.
+- [ ] R9700-only pinning: `podman logs vllm | grep -iE 'HIP_VISIBLE|R9700'` — confirm the
+      `rocm-smi --showproductname` parse set `HIP_VISIBLE_DEVICES` to the two gfx1201 cards
+      and excluded node-3 iGPU. Also confirm the grep parse survives this box's exact
+      rocm-smi output format (mawk/gawk-free; uses `grep -oE`).
+- [ ] **Does this vLLM build support the `qwen3_5` hybrid arch at all?** It mixes linear-attention
+      (Mamba-style constant state) with full-attention layers — vLLM needs hybrid/Mamba support and
+      a recent enough version to know `qwen3_5`. This is the top risk now, ahead of FP8. Check the
+      startup log for an unknown-architecture / unsupported error first. If unsupported, that gates
+      everything below — fall back to a classic-transformer Qwen or bump the image.
+- [ ] `Qwen/Qwen3.8-27B-FP8` loads on this ROCm build (FP8 kernels + graph compile, no
+      --enforce-eager) and `ctx 131072` fits without OOM or iGPU spill. `podman logs vllm | grep
+      -iE 'GPU blocks|KV cache|compil|architecture|does not support'`. FP8 fallbacks:
+      `unsloth/Qwen3.8-27B-FP8`, or full BF16 `Qwen/Qwen3.8-27B` (tighter, less ctx).
+- [ ] Confirm the corrected KV estimate on-box (~0.0625 GB/1K fp16, hybrid) and push
+      `VLLM_MAX_MODEL_LEN=262144` (native 256K, ~16 GB KV) — should still fit the pair. Measure
+      actual per-card `mem_info_vram_used` at 128K and 256K; watch prompt-processing time growth.
+- [ ] vLLM batched tok/s vs the lemonade GGUF path for a comparable model — the reason this
+      stack exists. Also confirm Open WebUI auto-discovers the model at
+      `http://localhost:8000/v1` once vLLM is up (it retries; may lag first start).
+- [ ] Shared store sanity: after a vLLM pull, `ls ~/.local/share/models/huggingface/hub`
+      shows it, and a later lemonade pull lands in the same `hub/` (no second copy).
 
 ### Wake-on-WLAN — `build_files/profiles/north/wol.sh`
 

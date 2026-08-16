@@ -12,7 +12,7 @@ set -ouex pipefail
 
 # crun specifically — GroupAdd=keep-groups is a crun-only feature.
 for bin in podman crun; do
-    command -v "$bin" >/dev/null || { echo "llm.sh: missing $bin" >&2; exit 1; }
+    command -v "$bin" >/dev/null || { echo "lemonade.sh: missing $bin" >&2; exit 1; }
 done
 
 ### 1. Seeded lemonade defaults
@@ -50,7 +50,7 @@ EOF
 # checkpoint pins the exact GGUF filename (all single-file here — no split parts, so no
 # `checkpoints` object). The two 27B dense models and the 35B MoE are vision-capable
 # (mmproj-F16.gguf); the coder is text-only.
-command -v python3 >/dev/null || { echo "llm.sh: missing python3 (JSON validation)" >&2; exit 1; }
+command -v python3 >/dev/null || { echo "lemonade.sh: missing python3 (JSON validation)" >&2; exit 1; }
 
 mkdir -p /usr/share/kinoite/lemonade-recipes
 cat > /usr/share/kinoite/lemonade-recipes/user_models.json << 'EOF'
@@ -126,7 +126,7 @@ done
 # Narrower still would be a CIL module granting only map on hsa_device_t; worth doing
 # if this boolean's breadth ever matters.
 for bin in getsebool setsebool; do
-    command -v "$bin" >/dev/null || { echo "llm.sh: missing $bin" >&2; exit 1; }
+    command -v "$bin" >/dev/null || { echo "lemonade.sh: missing $bin" >&2; exit 1; }
 done
 
 cat > /usr/lib/systemd/system/lemonade-selinux.service << 'EOF'
@@ -177,7 +177,9 @@ PublishPort=127.0.0.1:13305:13305
 
 # %h is expanded by systemd, not Quadlet. :z not :Z — :Z would relabel the whole
 # model cache on every start, since Quadlet builds a new container each time.
-Volume=%h/.local/share/lemonade/huggingface:/opt/lemonade/.cache/huggingface:z
+# The huggingface cache is the SHARED model store (see vllm.sh) — same HF hub layout,
+# so lemonade and vLLM download once and reuse. llama/ and config/ stay lemonade-specific.
+Volume=%h/.local/share/models/huggingface:/opt/lemonade/.cache/huggingface:z
 Volume=%h/.local/share/lemonade/llama:/opt/lemonade/llama:z
 Volume=%h/.local/share/lemonade/config:/opt/lemonade/.cache/lemonade:z
 
@@ -190,7 +192,7 @@ Environment=LEMONADE_DEFAULTS_PATH=/opt/lemonade/.cache/lemonade/defaults.json
 TimeoutStartSec=900
 
 # Podman doesn't create missing bind-mount sources.
-ExecStartPre=/usr/bin/mkdir -p %h/.local/share/lemonade/huggingface %h/.local/share/lemonade/llama %h/.local/share/lemonade/config
+ExecStartPre=/usr/bin/mkdir -p %h/.local/share/models/huggingface %h/.local/share/lemonade/llama %h/.local/share/lemonade/config
 ExecStartPre=/usr/bin/install -m 0644 /usr/share/kinoite/lemonade-defaults.json %h/.local/share/lemonade/config/defaults.json
 
 # Recipe seeds, conditional (unlike defaults.json above): lemonade reads user_models.json
@@ -250,11 +252,13 @@ image update, delete and restart:
 
 ## Storage
 
-    ~/.local/share/lemonade/huggingface   models
+    ~/.local/share/models/huggingface     models (SHARED with vLLM — see vllm.md)
     ~/.local/share/lemonade/llama         llama.cpp + ROCm binaries (downloaded)
     ~/.local/share/lemonade/config        config.json, defaults.json, recipes
 
-Owned by you (UserNS=keep-id), so du/rm/backup tools work normally.
+The huggingface cache is the shared model store: vLLM and any future stack mount the same
+path, so a model pulled by either is reused by both. Owned by you (UserNS=keep-id), so
+du/rm/backup tools work normally.
 
 ## If ROCm dies at model load
 

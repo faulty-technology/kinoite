@@ -7,7 +7,7 @@ set -ouex pipefail
 #
 # Inherits the shared baseline (1Password, Chrome, Tailscale, Nix, fonts,
 # bootc/update services, signing) and layers on AMD/RDNA4 enablement, a lean
-# gaming core, and Sunshine streaming. ROCm itself stays containerized — see llm.sh.
+# gaming core, and Sunshine streaming. ROCm itself stays containerized — see lemonade.sh.
 
 PROFILE_DIR="$(cd "$(dirname "$0")" && pwd)"
 SHARED="$(cd "$PROFILE_DIR/../../scripts" && pwd)"
@@ -29,7 +29,8 @@ SHARED="$(cd "$PROFILE_DIR/../../scripts" && pwd)"
 "$PROFILE_DIR/wol.sh"
 "$PROFILE_DIR/gaming.sh"
 "$PROFILE_DIR/sunshine.sh"
-"$PROFILE_DIR/llm.sh"
+"$PROFILE_DIR/lemonade.sh"
+"$PROFILE_DIR/vllm.sh"
 
 # Shared runtime setup + finalization
 "$SHARED/nix.sh"

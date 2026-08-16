@@ -22,5 +22,5 @@ systemctl --global enable app-dev.lizardbyte.app.Sunshine.service
 ### SELinux boolean for containerized GPU compute
 # Enabled even though the lemonade Quadlet is deliberately not — without it, ROCm dies
 # with an HSA abort that looks nothing like a permission error. Guarded and idempotent,
-# so it's a no-op on every boot after the first. See llm.sh.
+# so it's a no-op on every boot after the first. See lemonade.sh.
 systemctl enable lemonade-selinux.service

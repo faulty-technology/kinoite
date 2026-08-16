@@ -6,7 +6,7 @@ set -ouex pipefail
 # AMD RDNA4 / Radeon AI PRO R9700 (gfx1201) enablement.
 #
 # Host stays lean: NO host ROCm packages — ROCm 7.2+ (required for gfx1201)
-# lives in containers so it tracks independently of Fedora 44 (see llm.sh).
+# lives in containers so it tracks independently of Fedora 44 (see lemonade.sh).
 # This script only ensures the amdgpu firmware is present and that the compute
 # device nodes are reachable by an unprivileged, containerized ROCm runtime.
 #
