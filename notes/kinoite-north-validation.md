@@ -319,28 +319,57 @@ atop ~27 GB FP8 weights. No rope-scaling (native), no fp8 KV needed. Headless la
 exec that kyuz0's interactive `start_vllm.py` ends in. **Shares the model store** with
 lemonade at `~/.local/share/models/huggingface` (lemonade's cache volume was repointed there).
 
-- [ ] Where is kyuz0's `01-rocm-envs.sh` in the image, and are those vars already
-      Dockerfile-`ENV` baked? `podman run --rm docker.io/kyuz0/vllm-therock-gfx1201:latest
-      env | grep -iE 'VLLM|TRITON|FLASH'`. The launcher sources the file if present at
-      `/opt/scripts/` or `/etc/profile.d/`, else assumes ENV. Fix the path / drop the source
-      once known.
-- [ ] Quadlet `.pod` behavior on podman 5.8.4: does `systemctl --user start north-llm-pod`
-      bring up both member containers, and does pod-level `PublishPort` publish 3000+8000? If
-      not, `systemctl --user start vllm` (member pulls in the pod) is the documented fallback
-      in vllm.md — confirm which is true and tidy the runbook.
-- [ ] R9700-only pinning: `podman logs vllm | grep -iE 'HIP_VISIBLE|R9700'` — confirm the
-      `rocm-smi --showproductname` parse set `HIP_VISIBLE_DEVICES` to the two gfx1201 cards
-      and excluded node-3 iGPU. Also confirm the grep parse survives this box's exact
-      rocm-smi output format (mawk/gawk-free; uses `grep -oE`).
-- [ ] **Does this vLLM build support the `qwen3_5` hybrid arch at all?** It mixes linear-attention
-      (Mamba-style constant state) with full-attention layers — vLLM needs hybrid/Mamba support and
-      a recent enough version to know `qwen3_5`. This is the top risk now, ahead of FP8. Check the
-      startup log for an unknown-architecture / unsupported error first. If unsupported, that gates
-      everything below — fall back to a classic-transformer Qwen or bump the image.
-- [ ] `Qwen/Qwen3.8-27B-FP8` loads on this ROCm build (FP8 kernels + graph compile, no
-      --enforce-eager) and `ctx 131072` fits without OOM or iGPU spill. `podman logs vllm | grep
-      -iE 'GPU blocks|KV cache|compil|architecture|does not support'`. FP8 fallbacks:
-      `unsloth/Qwen3.8-27B-FP8`, or full BF16 `Qwen/Qwen3.8-27B` (tighter, less ctx).
+**First run 2026-08-16 — the hard part works.** On kyuz0 image `a69b6a95c6d3` (32 GB), vLLM
+`0.22.1rc1.dev499`. Confirmed from the startup log:
+- SETTLED: `qwen3_5` hybrid arch IS supported — `Resolved architecture:
+  Qwen3_5ForConditionalGeneration`, loads the GDN linear-attention path (`Using Triton/FLA GDN
+  prefill kernel`, splitting_ops include `mamba_mixer2`/`linear_attention`/`qwen_gdn_attention_core`).
+  This was the top risk; it's gone.
+- SETTLED: R9700 pinning works — launcher logged `HIP_VISIBLE_DEVICES=0,1` (iGPU excluded); the
+  `grep -oE` parse of `rocm-smi --showproductname` survives this box's output.
+- SETTLED: FP8 loads on gfx1201 — `quantization=fp8`, `Selected TritonFp8BlockScaledMMKernel`.
+- SETTLED: dual-GPU RCCL init succeeds — `world_size=2`, ranks 0/1 assigned, `backend=nccl` (no
+  hang → confirms NOT setting ROCR_/CUDA_VISIBLE_DEVICES was correct).
+- SETTLED: ctx 131072 accepted (`Using max model len 131072`), chunked prefill on (16384).
+- SETTLED: pod member auto-start — `systemctl --user start north-llm-pod` brought up infra +
+  open-webui + (once its image was present) vllm; pod-level `PublishPort` published 3000+8000.
+- SETTLED: kyuz0 rocm-env is baked into the image ENV (aiter/triton/fp8 all initialised without the
+  launcher finding `/opt/scripts/01-rocm-envs.sh`) — the launcher's `source ... || true` guard is a
+  harmless no-op; leaving it.
+
+**SETTLED gotcha — the 32 GB image pull is hard-capped at 5 min.** First `systemctl start`
+failed at exactly `5min 03s` (`vllm.service: Failed with result 'exit-code'`): the implicit pull
+inside `podman run` under systemd is capped at 5m0s regardless of `TimeoutStartSec`. Fix (baked):
+an `ExecStartPre=/bin/sh -c 'podman image exists … || podman pull …'` does a plain, uncapped pull
+first (only when missing), and `TimeoutStartSec` bumped to 3600 to cover image + 27 GB model on
+first run. Manual unblock was `podman pull docker.io/kyuz0/vllm-therock-gfx1201:latest`. NOTE: same
+5-min exposure applies to `lemonade.container` (multi-GB image, `TimeoutStartSec=900`) — add the
+same guarded pre-pull there if it ever fails first-start.
+
+**COSMETIC:** `WARNING … Unknown vLLM environment variable detected: VLLM_MODEL` — our knob name
+collides with vLLM's reserved `VLLM_*` namespace. Harmless (bash reads it before vLLM). Rename our
+launcher knobs to a non-`VLLM_` prefix if the noise bothers.
+
+**Startup slowness — SOLVED (persistent compile cache).** Each start was silent for ~6-8 min after
+"Starting to load model": a full `torch.compile`+inductor+triton recompile of the 27B hybrid+FP8
+graph, because kyuz0's image sets `VLLM_DISABLE_COMPILE_CACHE=1` (and our launcher did too). This
+also made the load look "stuck" and tempted mid-load restarts (each throwing the compile away — the
+apparent "5-min restart loop" was actually manual restarts, NOT any auto-killer: `Restart=no`,
+`WatchdogUSec=0`, `TimeoutStartUSec=30min`, no timer, `Health=nil`). Fix (baked): launcher now sets
+`VLLM_DISABLE_COMPILE_CACHE=0` + `VLLM_CACHE_ROOT`/`TORCHINDUCTOR_CACHE_DIR`/`TRITON_CACHE_DIR` under
+a new persistent volume `~/.local/share/vllm/cache` (`/opt/vllm-cache`). First start compiles once
+(~6-8 min); later starts ~1-2 min. Caches are version-hashed so an image bump recompiles cleanly.
+`--enforce-eager` remains the escape hatch (skip compile, ~2 min start, ~10-20% slower gen).
+
+- SETTLED — the stack works end to end (2026-08-16). `/v1/models` serves Qwen3.8-27B-FP8 at
+  max_model_len 131072; a chat completion generated coherently. **`GPU KV cache size: 332,662
+  tokens`** at 128K → ~2.5x concurrency, AND confirms the full native **256K fits** (262,144 <
+  332,662, ~21 GB KV pool — matches the ~0.0625 GB/1K hybrid estimate). So `VLLM_MAX_MODEL_LEN=262144`
+  is safe. Throughput: **~22 tok/s generation, ~630 tok/s prefill** on the pair (so a FULL 256K
+  prompt is ~7 min of prefill — 128K is the sane default even though 256K fits).
+- [ ] Explore `--enable-prefix-caching` for agentic coding (reuse KV of the unchanged prompt prefix
+      across turns) — currently `enable_prefix_caching=False`; may be unsupported on the hybrid arch.
+- [ ] vLLM ~22 tok/s vs the lemonade GGUF path, and whether MTP (`--speculative-config`) lifts it.
 - [ ] Confirm the corrected KV estimate on-box (~0.0625 GB/1K fp16, hybrid) and push
       `VLLM_MAX_MODEL_LEN=262144` (native 256K, ~16 GB KV) — should still fit the pair. Measure
       actual per-card `mem_info_vram_used` at 128K and 256K; watch prompt-processing time growth.

@@ -42,7 +42,20 @@ for f in /opt/scripts/01-rocm-envs.sh /etc/profile.d/01-rocm-envs.sh; do
     # shellcheck disable=SC1090
     [ -f "$f" ] && source "$f"
 done
-export VLLM_DISABLE_COMPILE_CACHE=1 NCCL_PROTO=Simple
+export NCCL_PROTO=Simple
+
+# Persistent compile cache: pay torch.compile / inductor / triton ONCE, not on every start (a full
+# recompile of this 27B hybrid+FP8 graph is the ~6-8 min silent stretch at startup). We override the
+# image default VLLM_DISABLE_COMPILE_CACHE=1 — kyuz0 disables it to avoid reusing stale graphs across
+# image upgrades, but all three caches are keyed by a hash of the vLLM/torch/triton version + model
+# + config, so an image bump just misses and recompiles cleanly. Set AFTER the source loop so we win
+# over the image ENV. Dirs live on the mounted cache volume (see vllm.container); rm it to force a
+# clean rebuild. (aiter's JIT under ~/.aiter is left ephemeral — it's cheap and version-fragile.)
+export VLLM_DISABLE_COMPILE_CACHE=0
+export VLLM_CACHE_ROOT=/opt/vllm-cache/vllm
+export TORCHINDUCTOR_CACHE_DIR=/opt/vllm-cache/inductor
+export TRITON_CACHE_DIR=/opt/vllm-cache/triton
+mkdir -p "$VLLM_CACHE_ROOT" "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR"
 
 # Pin to the R9700s (gfx1201) only — never the gfx1036 iGPU. Set HIP_VISIBLE_DEVICES and NOT
 # CUDA_/ROCR_VISIBLE_DEVICES: per start_vllm.py's find_r9700(), those conflict with HIP and hang
@@ -131,16 +144,28 @@ Environment=HF_HOME=/root/.cache/huggingface
 # Copied-in launcher (see the /usr read-only note in the build script). :z so it's relabelable.
 Volume=%h/.local/share/vllm/bin:/opt/kinoite:z
 
+# Persistent torch.compile / inductor / triton cache — first start compiles (~6-8 min), every start
+# after is fast. Version-hashed, so an image bump recompiles cleanly. rm this dir to force a rebuild.
+Volume=%h/.local/share/vllm/cache:/opt/vllm-cache:z
+
 # The one knob to change models. Launcher flags are tuned for this default (FP8 dense 27B).
 Environment=VLLM_MODEL=Qwen/Qwen3.8-27B-FP8
 Exec=/opt/kinoite/vllm-serve.sh
 
 [Service]
-# First start pulls a multi-GB image AND the model weights.
-TimeoutStartSec=1800
+# First start pre-pulls the ~32 GB image (ExecStartPre below) AND vLLM downloads the ~27 GB model;
+# both must finish within this window, so give it an hour of headroom.
+TimeoutStartSec=3600
+
+# Pre-pull the image with a plain `podman pull` (bounded only by TimeoutStartSec), and ONLY when
+# it's missing so routine restarts don't re-hit the network. This is load-bearing: the implicit
+# pull inside `podman run` is HARD-CAPPED at 5 min under systemd and kills a slow first pull —
+# confirmed on-box, first start died at exactly 5m03s on the 32 GB image. Updating the image is
+# then a deliberate `podman pull` (see vllm.md), not a surprise re-download on every start.
+ExecStartPre=/bin/sh -c 'podman image exists docker.io/kyuz0/vllm-therock-gfx1201:latest || podman pull docker.io/kyuz0/vllm-therock-gfx1201:latest'
 
 # Podman doesn't create missing bind-mount sources.
-ExecStartPre=/usr/bin/mkdir -p %h/.local/share/models/huggingface %h/.local/share/vllm/bin
+ExecStartPre=/usr/bin/mkdir -p %h/.local/share/models/huggingface %h/.local/share/vllm/bin %h/.local/share/vllm/cache
 ExecStartPre=/usr/bin/install -m 0755 /usr/share/kinoite/vllm/vllm-serve.sh %h/.local/share/vllm/bin/vllm-serve.sh
 
 # No [Install] — hand-started (the pod) on purpose.
@@ -188,6 +213,24 @@ Endpoints, loopback only, unauthenticated:
 
 If `start north-llm-pod` doesn't bring up both containers on this podman, start a member
 instead — it pulls in the pod: `systemctl --user start vllm`.
+
+First run is slow: the vLLM image is ~32 GB and the model ~27 GB, both downloaded once.
+The unit pre-pulls the image itself (an ExecStartPre `podman pull`, since podman hard-caps the
+implicit pull inside `podman run` at 5 min and kills a slow first pull). Watch progress with
+`journalctl --user -u vllm -f`; the server is up when you see `Application startup complete` /
+`Uvicorn running on http://0.0.0.0:8000`. To UPDATE the image later (the pre-pull only fires when
+it's missing, so it won't happen on its own):
+
+    podman pull docker.io/kyuz0/vllm-therock-gfx1201:latest
+    systemctl --user restart vllm
+
+Startup time: the FIRST start after a fresh image compiles the model graph (torch.compile +
+inductor + triton) and takes ~6-8 min of mostly-silent work after "Starting to load model". That
+compile is cached to `~/.local/share/vllm/cache`, so every start after is fast (~1-2 min). An image
+update recompiles once (the cache is version-hashed — old entries just miss). To force a clean
+rebuild, `rm -rf ~/.local/share/vllm/cache` and restart. Don't restart mid-compile — it throws the
+progress away and starts over. To skip compilation entirely (eager, ~2 min start, ~10-20% slower
+generation) add `--enforce-eager` to a shadowed launcher.
 
 ## Model store (shared with lemonade)
 
