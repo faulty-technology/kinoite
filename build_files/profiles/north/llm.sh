@@ -33,6 +33,81 @@ cat > /usr/share/kinoite/lemonade-defaults.json << 'EOF'
 }
 EOF
 
+### 1b. Curated custom-model recipes (always-present superset)
+# Baked to /usr/share/kinoite/lemonade-recipes, conditionally seeded into the user's
+# lemonade config on first start (see the ExecStartPre lines in the Quadlet below).
+# Names become user.<name> at runtime — run one with `lemonade run user.<name>`.
+#
+# This is a coding/testing box: Q6 quality floor AND big context. These ctx_size values
+# exceed one card, so they rely on the layer split across both R9700s — which is the
+# AUTOMATIC default here (measured: a 27B put ~14 GB on each R9700 and nothing on the
+# iGPU, no pinning). KV cost is ~0.25 GB/1K tokens for the dense 27Bs (64 layers, 4 KV
+# heads, head_dim 256) and ~0.10 GB/1K for the MoEs — 27B Q6 at 128K = 22.9 GB weights +
+# ~33 GB KV = ~56 GB, ~28 GB per card. Whether 128K still fits the pair cleanly (and stays
+# off the iGPU) at that size is an on-box check; fallback is lower ctx or q8_0 KV-quant.
+# See lemonade.md.
+#
+# checkpoint pins the exact GGUF filename (all single-file here — no split parts, so no
+# `checkpoints` object). The two 27B dense models and the 35B MoE are vision-capable
+# (mmproj-F16.gguf); the coder is text-only.
+command -v python3 >/dev/null || { echo "llm.sh: missing python3 (JSON validation)" >&2; exit 1; }
+
+mkdir -p /usr/share/kinoite/lemonade-recipes
+cat > /usr/share/kinoite/lemonade-recipes/user_models.json << 'EOF'
+{
+  "Qwen3.8-27B": {
+    "source": "huggingface",
+    "checkpoint": "unsloth/Qwen3.8-27B-GGUF:Qwen3.8-27B-Q6_K.gguf",
+    "mmproj": "mmproj-F16.gguf",
+    "recipe": "llamacpp",
+    "size": 22.9,
+    "labels": ["vision", "reasoning", "coding"]
+  },
+  "Qwen3.6-27B": {
+    "source": "huggingface",
+    "checkpoint": "unsloth/Qwen3.6-27B-GGUF:Qwen3.6-27B-Q6_K.gguf",
+    "mmproj": "mmproj-F16.gguf",
+    "recipe": "llamacpp",
+    "size": 22.5,
+    "labels": ["vision", "reasoning"]
+  },
+  "Qwen3.6-35B-A3B": {
+    "source": "huggingface",
+    "checkpoint": "unsloth/Qwen3.6-35B-A3B-GGUF:Qwen3.6-35B-A3B-UD-Q6_K.gguf",
+    "mmproj": "mmproj-F16.gguf",
+    "recipe": "llamacpp",
+    "size": 29.3,
+    "labels": ["vision", "reasoning"]
+  },
+  "Qwen3-Coder-30B": {
+    "source": "huggingface",
+    "checkpoint": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Qwen3-Coder-30B-A3B-Instruct-Q6_K.gguf",
+    "recipe": "llamacpp",
+    "size": 25.1,
+    "labels": ["coding"]
+  }
+}
+EOF
+
+# Per-model ctx, keyed by the fully-qualified user.<name> id. Sized for the automatic
+# two-card layer split (64 GB pool): 128K on the dense 27Bs and 35B, native 256K on the
+# coder. On a single card these OOM — drop ctx or add q8_0 KV-quant. At 128K the KV is
+# large; if it won't fit the pair or spills to the iGPU, see lemonade.md. backend inherits
+# rocm from defaults.json.
+cat > /usr/share/kinoite/lemonade-recipes/recipe_options.json << 'EOF'
+{
+  "user.Qwen3.8-27B":     { "ctx_size": 131072 },
+  "user.Qwen3.6-27B":     { "ctx_size": 131072 },
+  "user.Qwen3.6-35B-A3B": { "ctx_size": 131072 },
+  "user.Qwen3-Coder-30B": { "ctx_size": 262144 }
+}
+EOF
+
+# Fail the build loudly on a JSON typo rather than shipping a config lemonade rejects.
+for f in user_models recipe_options; do
+    python3 -m json.tool "/usr/share/kinoite/lemonade-recipes/$f.json" >/dev/null
+done
+
 ### 2. SELinux: let containers mmap /dev/kfd
 # container-selinux grants container domains hsa_device_t {open read write ioctl ...}
 # but NOT map, and ROCm mmaps /dev/kfd. Without this every model load dies ~25ms in
@@ -118,6 +193,13 @@ TimeoutStartSec=900
 ExecStartPre=/usr/bin/mkdir -p %h/.local/share/lemonade/huggingface %h/.local/share/lemonade/llama %h/.local/share/lemonade/config
 ExecStartPre=/usr/bin/install -m 0644 /usr/share/kinoite/lemonade-defaults.json %h/.local/share/lemonade/config/defaults.json
 
+# Recipe seeds, conditional (unlike defaults.json above): lemonade reads user_models.json
+# every start and the user may add their own custom models to it, so only seed when
+# absent — first run only, like the defaults.json note in lemonade.md. %h is expanded by
+# systemd before bash sees it.
+ExecStartPre=/bin/bash -c 'test -f %h/.local/share/lemonade/config/user_models.json || install -m 0644 /usr/share/kinoite/lemonade-recipes/user_models.json %h/.local/share/lemonade/config/user_models.json'
+ExecStartPre=/bin/bash -c 'test -f %h/.local/share/lemonade/config/recipe_options.json || install -m 0644 /usr/share/kinoite/lemonade-recipes/recipe_options.json %h/.local/share/lemonade/config/recipe_options.json'
+
 # No [Install] — hand-started on purpose.
 EOF
 
@@ -135,6 +217,36 @@ Ships at /etc/containers/systemd/users/lemonade.container, NOT enabled.
 Web UI and API on http://127.0.0.1:13305 — loopback only, unauthenticated.
 `systemctl --user enable lemonade` is expected to fail: generator-produced units
 have no [Install] to act on. That's the guardrail, not a bug.
+
+## Recipes (baked custom models)
+
+Curated Unsloth Qwen GGUFs, seeded into config/user_models.json on the FIRST start.
+List and run (via the Web UI, or the CLI inside the container):
+
+    podman exec lemonade lemonade list
+    podman exec lemonade lemonade run user.Qwen3.8-27B     # downloads on first run
+
+    user.Qwen3.8-27B      newest dense, vision+thinking, MTP, Developer Role   Q6_K      22.9 GB   ctx 128K
+    user.Qwen3.6-27B      dense, vision+thinking                               Q6_K      22.5 GB   ctx 128K
+    user.Qwen3.6-35B-A3B  fast MoE (~3B active), vision+thinking               UD-Q6_K   29.3 GB   ctx 128K
+    user.Qwen3-Coder-30B  agentic coding MoE, 256K native, text-only           Q6_K      25.1 GB   ctx 256K
+
+Qwen3.8-27B is the default all-rounder (MTP + Developer Role); Qwen3-Coder-30B is the
+coding workhorse. Q6 quality floor WITH big context — these ctx exceed one card, so they
+use the layer split across both R9700s, which is the AUTOMATIC default here (measured:
+~14 GB per R9700, nothing on the iGPU). At 128K the KV cache is large (~33 GB on a dense
+27B); if it doesn't fit the pair, drop ctx (~24K single-card) or add q8_0 KV-quant. If a
+load ever spills onto the iGPU, exclude it (see "Context size & caching").
+
+Even more context: add q8_0 KV-quant (-fa -ctk q8_0 -ctv q8_0 in a recipe's llamacpp_args)
+for ~2x. More quality: move a model to Q8_0 in user_models.json. Backend falls back with
+`lemonade config set llamacpp.backend=vulkan`.
+
+Seeds are first-run only (like defaults.json below). To pull updated recipes after an
+image update, delete and restart:
+
+    rm ~/.local/share/lemonade/config/user_models.json      # and/or recipe_options.json
+    systemctl --user restart lemonade
 
 ## Storage
 
@@ -192,6 +304,55 @@ If it is, pin to the R9700s. Re-derive the indices rather than trusting these �
     # or, on the container: Environment=ROCR_VISIBLE_DEVICES=...
 
 Not baked, because these indices move with kernel and slot changes.
+
+## Context size & caching
+
+The model download cache is already persistent (see Storage above) — models pull once.
+llama.cpp also reuses the KV cache of a request's common prefix automatically; nothing to
+configure for that.
+
+The lever for LONG context is VRAM for the KV cache, which is SEPARATE from weights and
+grows linearly with ctx_size. For the dense 27Bs (64 layers, 4 KV heads, head_dim 256)
+it is ~0.25 GB per 1K tokens at fp16 — so 128K ~= 32 GB, on TOP of the ~23 GB weights;
+the MoEs are ~0.10 GB/1K (2.5x lighter). So a 27B Q6 at 128K is ~56 GB total — it only
+fits by SPLITTING across both R9700s, which is what the seeded contexts assume.
+
+That split is AUTOMATIC here — default -sm layer already spreads layers (and their KV)
+across both R9700s and, measured at ctx 32768, put nothing on the gfx1036 iGPU (only its
+20 MiB framebuffer). -sm row is unavailable on this build, so layer split is the only mode
+anyway. Two things to watch at 128K, where total memory is far larger: it must still fit
+the 2x32 GB pair, and it must keep off the iGPU — if a load spills there, exclude it with
+ROCR_VISIBLE_DEVICES=0,1 (GPU-agent indices; 2 is the iGPU) or the -ts note above. Bigger
+context also costs prompt-processing time, so a smaller ctx is fine for quick edits.
+
+KV-cache quantization roughly halves that KV footprint with little quality loss. Add to a
+recipe's llamacpp_args in recipe_options.json:
+
+    -fa -ctk q8_0 -ctv q8_0     # q8_0 ~halves KV; q4_0 ~quarters it
+
+Not baked: V-cache quant needs flash attention (-fa), whose state on the gfx1201 ROCm
+build is unverified. Confirm -fa works on the box first, then bake it into recipe_options
+if you want it as a default.
+
+## Coding / agent use
+
+Two recipes suit agentic coding: user.Qwen3-Coder-30B (tuned for tool-calling / Codex-style
+agents, 256K native ctx) and user.Qwen3.8-27B (Developer Role, plus vision + reasoning).
+Coder is the default driver — MoE so it's fast, Q6_K, and its native 256K is the seeded
+ctx (which the automatic two-card split makes room for).
+
+Point your agent (opencode, aider, Continue, ...) at lemonade's OpenAI-compatible endpoint:
+
+    base URL   http://127.0.0.1:13305/api/v1      (any api key; it's ignored)
+    model      user.Qwen3-Coder-30B
+
+Context: agentic coding uses far more than chat (multi-file, diffs, tool output, scratchpad).
+The Coder seed is already the native 262144 (256K), which needs the two-card split — see
+"Context size & caching". For a quick single-card session, drop ctx or add q8_0 KV-quant.
+
+Keep it warm: an agent resends a large, mostly-unchanged prompt every turn, and llama.cpp
+reuses the common prefix's KV automatically — but only while the model stays loaded. Enable
+linger (below) and don't let it idle-unload, or you re-process the whole prompt each turn.
 
 ## Other gotchas
 

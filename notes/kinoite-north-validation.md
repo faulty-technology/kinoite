@@ -279,6 +279,31 @@ proven, the ROCm backend is not.
       line in `services-north.sh`, since `systemctl --global enable` doesn't apply to
       generator-produced units.
 
+**Baked recipe set (resolved 2026-08-15).** `llm.sh` now seeds four Unsloth Qwen custom
+models into `~/.local/share/lemonade/config/{user_models,recipe_options}.json` (curated
+superset, always in the model list; conditional install so user edits survive). Profile is
+**Q6 + big context**, chosen for coding/testing: `Qwen3.8-27B` Q6_K / `Qwen3.6-27B` Q6_K /
+`Qwen3.6-35B-A3B` UD-Q6_K at **128K**, `Qwen3-Coder-30B` Q6_K at **256K** (native). Sizing
+math (verified against Qwen3.8-27B config: 64 layers, 4 KV heads, head_dim 256): dense KV
+≈ 0.25 GB/1K, MoE ≈ 0.10 GB/1K, so 27B Q6 @128K ≈ 22.9 GB weights + ~33 GB KV ≈ 56 GB.
+These **exceed one card** and depend on the layer split — which is automatic here (the
+Settled "Layer split does the right thing unaided" measurement), so no pinning is baked.
+
+- [ ] Do the seeded contexts actually fit and stay off the iGPU at their full size? The
+      "nothing on the iGPU" measurement was at ctx **32768**; the seeds are 128K–256K,
+      where KV is ~10–20 GB larger. Load `user.Qwen3-Coder-30B` (256K) and a 128K dense,
+      watch `mem_info_vram_used` per card + `podman logs lemonade | grep -iE 'buffer
+      size|assigned'`. If it OOMs or spills onto the iGPU, either lower `ctx_size` in
+      `recipe_options.json` or pin with `ROCR_VISIBLE_DEVICES=0,1` (GPU-agent indices,
+      2 = iGPU). This is the gating check for the baked LLM defaults.
+- [ ] Flash-attention on gfx1201 (llamacpp-rocm nightly), the context multiplier: does
+      `-fa -ctk q8_0 -ctv q8_0` load and roughly halve KV? If yes, it ~doubles every seed
+      (or lets Q8 weights fit) and is worth baking into `recipe_options.json`. Documented
+      as a tunable in `lemonade.md`, not baked, until confirmed on the box.
+- [ ] Q6 tok/s vs the measured Q5_K_M ~31–35: bigger weights + far bigger KV will be
+      slower; confirm it's still usable for agentic loops. Compare from a fresh load at a
+      fixed prompt (generation slows as KV fills).
+
 ### Wake-on-WLAN — `build_files/profiles/north/wol.sh`
 
 The magic-packet trigger is armed declaratively by NetworkManager
