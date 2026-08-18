@@ -57,10 +57,13 @@ seed() {
 
 seed capture kwin
 seed output_name Virtual-sunshine-vm
-# Runs for every app, so the virtual monitor is resized if the client geometry changed.
-# The display is started at login and kept persistent so KWin never loses all outputs.
+# do:   creates the virtual monitor on demand (or resizes it if the client geometry
+#       changed). It is no longer created at login — see sunshine.sh.
+# undo: tears it down so krfb stops holding a render node and the GPU backing it can
+#       runtime-suspend between streams. `down` re-enables any output an --exclusive
+#       stream disabled, and refuses to run at all if no physical output is connected.
 # Sunshine prep_cmd only understands "do", "undo", "elevated" — no "args" key.
-seed global_prep_cmd '[{"do":"/usr/libexec/sunshine-virtual-display ensure","undo":"/usr/libexec/sunshine-virtual-display ensure","elevated":false}]'
+seed global_prep_cmd '[{"do":"/usr/libexec/sunshine-virtual-display ensure","undo":"/usr/libexec/sunshine-virtual-display down","elevated":false}]'
 EOF
 chmod +x /usr/libexec/sunshine-config-defaults
 
@@ -73,7 +76,8 @@ cat > /usr/libexec/sunshine-virtual-display << 'EOF'
 #        sunshine-virtual-display down
 # Sunshine → Configuration → General → Command Preparation:
 #   Global: Do: `/usr/libexec/sunshine-virtual-display ensure`
-#           Undo: `/usr/libexec/sunshine-virtual-display ensure` (seeded, restores outputs on stream end)
+#           Undo: `/usr/libexec/sunshine-virtual-display down` (seeded; restores outputs
+#                 AND drops the monitor so the GPU backing it can suspend between streams)
 #   Per-app override: Do: `/usr/libexec/sunshine-virtual-display ensure --exclusive` (darkens physical outputs)
 #   Clean up if stranded: `/usr/libexec/sunshine-virtual-display down`
 #
@@ -91,8 +95,18 @@ OUTPUT="Virtual-${VM_NAME}"
 # Not /tmp: a fixed name there is a predictable path into kill(1).
 RUNDIR="${XDG_RUNTIME_DIR:-/tmp}"
 PIDFILE="${RUNDIR}/${VM_NAME}.pid"
-DISABLEDFILE="${RUNDIR}/${VM_NAME}.disabled-outputs"
-PRIMARYFILE="${RUNDIR}/${VM_NAME}.prev-primary"
+
+# The output-restore state MUST outlive a reboot, so it does NOT live beside the
+# pidfile. It used to: XDG_RUNTIME_DIR is tmpfs, so an --exclusive stream that never
+# ran its undo (crash, hard reboot, power cut) lost the restore list — while KDE
+# persisted the *disabled* state in ~/.config/kwinoutputconfig.json. Net result was a
+# box with its physical displays off and nothing left that knew how to turn them back
+# on. The pidfile stays in the runtime dir deliberately: a PID from a previous boot is
+# worse than no PID at all.
+STATEDIR="${XDG_STATE_HOME:-$HOME/.local/state}/${VM_NAME}"
+mkdir -p "$STATEDIR"
+DISABLEDFILE="${STATEDIR}/disabled-outputs"
+PRIMARYFILE="${STATEDIR}/prev-primary"
 CONF="${XDG_CONFIG_HOME:-$HOME/.config}/sunshine/sunshine.conf"
 
 log() { echo "sunshine-virtual-display: $*" >&2; }
@@ -126,6 +140,15 @@ primary_output() {
     outputs_state | awk '
         /^Output:/ { name = $3; next }
         name != "" && $1 == "priority" && $2 == "1" { print name; exit }
+    '
+}
+
+# Every *connected* output that isn't ours, enabled or not. enabled_outputs() can't
+# answer this — a disabled output is exactly the one we need to find.
+physical_outputs() {
+    outputs_state | awk -v skip="$OUTPUT" '
+        /^Output:/ { name = $3; next }
+        name != "" && $1 == "connected" { if (name != skip) print name; name = "" }
     '
 }
 
@@ -242,8 +265,23 @@ case "${1:-}" in
             FPS=60
         fi
 
-        # Clear any monitor left by a session that never ran its undo.
+        # Clear any monitor left by a session that never ran its undo. teardown
+        # re-enables whatever the restore list recorded, which now survives reboots.
         teardown
+
+        # Login safety net, for when the restore list itself is gone or was never
+        # written — a KDE-persisted disabled output, or state predating the STATEDIR
+        # move. Only on the login path: a manual `up --exclusive` is a deliberate
+        # request for a dark desk and must not be undone here.
+        if [ "$persistent" = 1 ] && [ -z "$(enabled_outputs | grep -v "^${OUTPUT}$")" ]; then
+            log "no enabled physical output at login — restoring all connected outputs"
+            for out in $(physical_outputs); do
+                kscreen-doctor "output.${out}.enable" \
+                    && log "restored ${out}" \
+                    || log "could not restore ${out}"
+            done
+        fi
+
         # Saved before anything changes, so teardown can put it back.
         primary_output > "$PRIMARYFILE" || true
 
@@ -315,6 +353,16 @@ case "${1:-}" in
         fi
         ;;
     down)
+        # Refuse to strand a headless box. teardown re-enables any physical output it
+        # disabled, so a merely-disabled display is fine — but if no physical output is
+        # *connected* at all, the virtual one is the only thing KWin has, and dropping
+        # it can leave the compositor at zero outputs, deadlock the GPU, and take SSH
+        # with it. In that configuration the persistent unit is what should own the
+        # display anyway (see sunshine.sh).
+        if [ -z "$(physical_outputs)" ]; then
+            log "refusing to tear down: no connected physical output to fall back to"
+            exit 0
+        fi
         teardown
         ;;
     *)
@@ -335,10 +383,21 @@ Environment=WAYLAND_DISPLAY=wayland-0
 ExecStopPost=-/usr/libexec/sunshine-virtual-display ensure
 EOF
 
-### Persistent virtual display at login
-# Keep the virtual output alive so KWin never drops to zero outputs (which can
-# deadlock the GPU and take SSH with it). Sunshine's ensure command resizes it
-# per-client; this just ensures it exists from login.
+### Virtual display unit — SHIPPED BUT NOT ENABLED (changed 2026-08-18)
+# It used to be `systemctl --global enable`d, so every login started krfb whether or
+# not anyone streamed. krfb-virtualmonitor holds a DRM render node for as long as it
+# runs, which pins whichever GPU backs it into D0 — the same class of problem as the
+# CoolerControl polling (see motherboard.sh). On this box that meant a dedicated GPU
+# awake at ~30% fan around the clock for a monitor nobody was looking at.
+#
+# Streaming does not need it at login: the seeded global_prep_cmd runs `ensure`, which
+# falls through to `up` and creates the display on demand when a stream starts.
+#
+# Kept as a shipped-but-disabled unit because it is still the right answer for a
+# genuinely headless box, where losing the virtual output means KWin reaches zero
+# outputs — which can deadlock the GPU and take SSH with it. With a physical display
+# attached there is always another output, so the risk does not apply.
+#   Headless setup:  systemctl --user enable --now sunshine-virtual-monitor.service
 # Resolved via WantedBy=graphical-session.target — it's per-user.
 cat > /usr/lib/systemd/user/sunshine-virtual-monitor.service << 'EOF'
 [Unit]
@@ -364,5 +423,6 @@ WantedBy=graphical-session.target
 EOF
 
 
-# Enable globally so it starts for any logged-in user
-systemctl --global enable sunshine-virtual-monitor.service
+# Deliberately NOT enabled — see the block above. A `systemctl --global enable` here
+# would also be undoable only with `systemctl --user mask`, not `--user disable`, which
+# is a nasty surprise for anyone trying to turn it off on one machine.
