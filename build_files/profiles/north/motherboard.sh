@@ -29,14 +29,19 @@ cat > /usr/lib/modules-load.d/nct6775.conf << 'EOF'
 nct6775
 EOF
 
-### 2. CoolerControl — GUI fan-curve control for CPU/case/AIO fans
-# The system-fan counterpart to LACT (which handles the GPUs). Reads the sensors
-# unlocked above. Installed from the maintainer's COPR, key fingerprint-pinned.
-add_copr codifryed-coolercontrol codifryed/CoolerControl E8AB88BC4834377F98A165F860E6A0997C96AB47
-
-# coolercontrold owns coolercontrold.service but is only a Recommends of the
-# GUI — name it explicitly so the enable below can't break on a weak-dep change.
-install_pkgs coolercontrol coolercontrold
-
-# Enable the daemon (GUI `coolercontrol` talks to it).
-systemctl enable coolercontrold.service
+### 2. CoolerControl — REMOVED 2026-08-18. Do not add it back without reading this.
+# It was here for CPU/case/AIO fan curves, as the system-fan counterpart to LACT.
+# Two reasons it's gone:
+#
+# 1. It couldn't actually drive this board's fans — the NCT6701D is too new (same
+#    gap as the temp-channel TODO above), so it read sensors and changed nothing.
+# 2. `coolercontrold` polls GPU hwmon about once a second, and every amdgpu hwmon
+#    read calls pm_runtime_get_sync() then pm_runtime_mark_last_busy(). That resets
+#    the 5s autosuspend timer forever, so neither R9700 could EVER runtime-suspend.
+#    Result: both cards sat awake at ~1950 RPM (30% of 6500) permanently. This cost
+#    a long investigation that misdiagnosed it as an amdgpu firmware fan floor —
+#    see notes/kinoite-north-validation.md, the SOLVED entry.
+#
+# Anything that continuously polls GPU hwmon has this effect. Weigh idle noise
+# against monitoring before enabling such a daemon here. `lactd` has the same
+# behaviour and is kept deliberately, because it applies the power cap/undervolt.
