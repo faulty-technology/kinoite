@@ -31,7 +31,10 @@ cat > /usr/share/kinoite/vllm/vllm-serve.sh << 'EOF'
 #!/bin/bash
 # Headless vLLM launcher — reproduces the exec that kyuz0's interactive start_vllm.py wizard
 # ends in, for the model in $VLLM_MODEL. Overridable knobs: VLLM_TP, VLLM_MAX_SEQS,
-# VLLM_MAX_MODEL_LEN, VLLM_GPU_UTIL, VLLM_MAX_BATCHED_TOKENS.
+# VLLM_MAX_MODEL_LEN, VLLM_GPU_UTIL, VLLM_MAX_BATCHED_TOKENS, plus the three perf experiments
+# NCCL_PROTO, VLLM_FUSE_NORM_QUANT and VLLM_SPECULATIVE (see the comments at each, and the
+# "Decode performance" section of vllm.md). All are settable from a systemd drop-in, so an
+# experiment does not need an image rebuild.
 set -euo pipefail
 
 # kyuz0's ROCm/vLLM env (VLLM_TARGET_DEVICE=rocm, VLLM_USE_TRITON_AWQ=1,
@@ -42,7 +45,22 @@ for f in /opt/scripts/01-rocm-envs.sh /etc/profile.d/01-rocm-envs.sh; do
     # shellcheck disable=SC1090
     [ -f "$f" ] && source "$f"
 done
-export NCCL_PROTO=Simple
+
+# NCCL_PROTO: deliberately NOT forced to Simple any more (measured 2026-08-19, see notes/).
+# On gfx1201 every fast all-reduce backend is arch-gated to CDNA in this vLLM build
+# (rocm.py use_custom_allreduce() and quick_all_reduce.py supported_archs are both
+# ["gfx94","gfx95"]), so TP falls through to PYNCCL — confirmed in the startup log:
+#   Using ['PYNCCL'] all-reduce backends ... out of potential backends:
+#   ['NCCL_SYMM_MEM','QUICK_REDUCE','FLASHINFER','CUSTOM','SYMM_MEM','PYNCCL']
+# That makes PYNCCL's protocol load-bearing, and `Simple` is the WRONG one here: TP decode at
+# batch 1 does 2 all-reduces per layer x 64 layers = 128 per token, each only hidden_size x 2B
+# = 10 KiB. Simple is the high-bandwidth/high-latency protocol; it disables LL/LL128, which
+# exist for exactly these tiny messages. Leaving it unset lets RCCL's tuner pick per size.
+# The image itself sets no NCCL_/RCCL_ vars (verified via podman image inspect), so this
+# assignment was the only thing setting it. Overridable, so Simple can be restored from a
+# systemd drop-in (Environment=NCCL_PROTO=Simple) without rebuilding the image — the old
+# unconditional export could not be overridden that way, which is why it is a knob now.
+if [ -n "${NCCL_PROTO:-}" ]; then export NCCL_PROTO; fi
 
 # Persistent compile cache: pay torch.compile / inductor / triton ONCE, not on every start (a full
 # recompile of this 27B hybrid+FP8 graph is the ~6-8 min silent stretch at startup). We override the
@@ -69,13 +87,56 @@ if command -v rocm-smi >/dev/null 2>&1; then
 fi
 echo "[vllm-serve] HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-<unset>} model=${VLLM_MODEL:?set VLLM_MODEL}"
 
-# --compilation-config disables the norm-quant graph fusion that crashes on gfx1201; the two
-# TRITON_ATTN backends keep both the LM and the (unused, language-model-only) ViT numerically
-# healthy on RDNA4. All lifted verbatim from start_vllm.py's launch path.
+# fuse_norm_quant: kyuz0 disables this norm-quant graph fusion because it crashed on gfx1201.
+# That finding predates this image's vLLM (0.22.1rc1.dev499), so it's worth re-testing — but the
+# default stays FALSE (safe) so a restart can't be broken by an untested flag. To test:
+#   VLLM_FUSE_NORM_QUANT=true systemctl --user restart vllm     (via a drop-in Environment=)
+# If it starts and generates sane text, flip the default here. If it crashes, that's your answer.
+FUSE_NORM_QUANT="${VLLM_FUSE_NORM_QUANT:-false}"
+case "$FUSE_NORM_QUANT" in
+    true|false) ;;
+    *) echo "[vllm-serve] VLLM_FUSE_NORM_QUANT must be true|false, got '$FUSE_NORM_QUANT'" >&2; exit 1 ;;
+esac
+
+# --compilation-config carries the fusion toggle above; the two TRITON_ATTN backends keep both the
+# LM and the (unused, language-model-only) ViT numerically healthy on RDNA4. Otherwise lifted
+# verbatim from start_vllm.py's launch path.
+#
+# --max-num-seqs default is 4, NOT kyuz0's 1. Measured 2026-08-19: the engine reports 426,942 KV
+# tokens available (13.33 GiB/rank), which is 3.25x the 131072 context — so ~3 full-context or many
+# short sequences fit with VRAM to spare, and at 1 the log shows real requests queueing
+# ("Waiting: 1 reqs, Deferred: 1 reqs"). Batch-1 decode here is bound by a FIXED per-token cost
+# (weights + 128 all-reduces), not by context, so batching amortises both and buys aggregate
+# throughput for parallel agent tool calls at ~no single-stream cost. Set VLLM_MAX_SEQS=1 to get
+# kyuz0's single-stream benchmarking behaviour back.
+# NEXT EXPERIMENT — MTP speculative decoding, OFF by default (untested on this box). A knob
+# rather than a commented-out flag on purpose: editing this script means rebuilding the image, so
+# shipping it as an env var lets the experiment run from a systemd drop-in instead. To try it:
+#   Environment='VLLM_SPECULATIVE={"method":"mtp","num_speculative_tokens":1}'
+#
+# This is the ONE lever that beats the memory-bandwidth roofline, because it emits several tokens
+# per weight read AND amortises the 128 per-token all-reduces over them — it attacks both halves
+# of the measured 42.6 ms/token budget. Verified available for THIS checkpoint (not inferred from
+# a sibling model), 2026-08-19:
+#   - config.json text_config.mtp_num_hidden_layers = 1  -> num_speculative_tokens 1
+#   - the FP8 checkpoint really ships the weights: 22 mtp.* tensors in the safetensors index with
+#     FP8 weight_scale_inv (mtp.fc.weight is unquantised BF16, matching the workaround noted at
+#     vllm/model_executor/models/qwen3_5_mtp.py:81)
+#   - vllm/config/speculative.py:460 maps model_type "qwen3_5" -> "qwen3_5_mtp", which is in
+#     MTPModelTypes; registry.py:637 registers Qwen3_5MTP (dense; MoeMTP is the MoE sibling)
+# Costs ~1 extra layer of VRAM; check the acceptance rate in the log before keeping it. Caveat:
+# qwen3_5_mtp.py:373 says it does not support 'all' prefix caching (already off — hybrid arch).
+EXTRA_ARGS=()
+if [ -n "${VLLM_SPECULATIVE:-}" ]; then
+    EXTRA_ARGS+=(--speculative-config "$VLLM_SPECULATIVE")
+fi
+
+# ${EXTRA_ARGS[@]+...} guard: expanding an empty array is an unbound-variable error under `set -u`
+# on bash < 4.4, and this runs in whatever bash the upstream image ships.
 exec vllm serve "$VLLM_MODEL" \
     --host 0.0.0.0 --port 8000 \
     --tensor-parallel-size "${VLLM_TP:-2}" \
-    --max-num-seqs "${VLLM_MAX_SEQS:-1}" \
+    --max-num-seqs "${VLLM_MAX_SEQS:-4}" \
     --max-model-len "${VLLM_MAX_MODEL_LEN:-131072}" \
     --gpu-memory-utilization "${VLLM_GPU_UTIL:-0.95}" \
     --max-num-batched-tokens "${VLLM_MAX_BATCHED_TOKENS:-16384}" \
@@ -83,11 +144,12 @@ exec vllm serve "$VLLM_MODEL" \
     --trust-remote-code \
     --language-model-only \
     --attention-backend TRITON_ATTN \
-    --compilation-config '{"pass_config":{"fuse_norm_quant":false}}' \
+    --compilation-config "{\"pass_config\":{\"fuse_norm_quant\":$FUSE_NORM_QUANT}}" \
     --mm-encoder-attn-backend TRITON_ATTN \
     --enable-auto-tool-choice \
     --tool-call-parser qwen3_coder \
-    --reasoning-parser qwen3
+    --reasoning-parser qwen3 \
+    ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
 EOF
 chmod 0755 /usr/share/kinoite/vllm/vllm-serve.sh
 
@@ -258,7 +320,63 @@ benchmarks/models.py. The baked launcher's flags match the default FP8 dense 27B
 (Qwen/Qwen3.8-27B-FP8, mirroring kyuz0's verified RedHatAI/Qwen3.6-27B-FP8): --language-model-only,
 graph-compiled (no --enforce-eager), full-precision KV, qwen3_coder tool parser, qwen3 reasoning
 parser. FP8 is 8-bit — NOT the 4-bit AWQ path. Other knobs are env-overridable: VLLM_TP,
-VLLM_MAX_SEQS, VLLM_MAX_MODEL_LEN, VLLM_GPU_UTIL, VLLM_MAX_BATCHED_TOKENS.
+VLLM_MAX_SEQS, VLLM_MAX_MODEL_LEN, VLLM_GPU_UTIL, VLLM_MAX_BATCHED_TOKENS, plus the perf knobs
+NCCL_PROTO / VLLM_FUSE_NORM_QUANT / VLLM_SPECULATIVE (see "Decode performance" below).
+
+## Decode performance
+
+Measured 2026-08-19 on Qwen/Qwen3.8-27B-FP8, TP=2, batch 1: **23.5 tok/s**, and dead flat as
+context grows (23.5 at 4.5% KV, 23.7 at 2.3%) — because 48 of the 64 layers are linear-attention
+with constant-size state, so per-token cost is FIXED (weights + collectives), not context-driven.
+
+Where the 42.6 ms/token goes:
+
+    weight read   14.45 GiB shard / ~640 GB/s   ~24 ms   (~28-30 ms at a realistic 80-85% of spec)
+    everything else                             ~12-18 ms
+
+That remainder is tensor-parallel collectives. At batch 1 each layer does 2 all-reduces (mixer
+out-proj, MLP down-proj) x 64 layers = **128 all-reduces per token**, each only hidden_size x 2B =
+**10 KiB**. Both cards are PCIe 5.0 x16, where 10 KiB is sub-microsecond of wire time — so that
+12-18 ms is essentially all per-op latency, not transfer.
+
+The reason it is expensive: on gfx1201 every fast all-reduce backend is arch-gated to CDNA, so TP
+falls through to the generic PYNCCL path. Confirmed in the startup log:
+
+    Using ['PYNCCL'] all-reduce backends (in dispatch order) for group 'tp:0' out of potential
+    backends: ['NCCL_SYMM_MEM','QUICK_REDUCE','FLASHINFER','CUSTOM','SYMM_MEM','PYNCCL']
+
+Both gates are hard-coded to ["gfx94","gfx95"] in this image: `use_custom_allreduce()` in
+vllm/platforms/rocm.py and `supported_archs` in
+vllm/distributed/device_communicators/quick_all_reduce.py. No flag or env var changes that.
+
+Knobs, in the order worth trying (all settable from a drop-in — no image rebuild):
+
+    mkdir -p ~/.config/systemd/user/vllm.service.d
+    cat > ~/.config/systemd/user/vllm.service.d/perf.conf << 'CONF'
+    [Service]
+    Environment='VLLM_SPECULATIVE={"method":"mtp","num_speculative_tokens":1}'
+    CONF
+    systemctl --user daemon-reload && systemctl --user restart vllm
+
+1. `VLLM_SPECULATIVE` — MTP speculative decoding. The only lever that beats the bandwidth
+   roofline: several tokens per weight read, and the 128 all-reduces amortised across them.
+   This checkpoint really does ship the MTP weights (22 `mtp.*` tensors). Check the acceptance
+   rate in the log before keeping it.
+2. `NCCL_PROTO` — now UNSET by default (was forced to `Simple`, the high-latency protocol, which
+   is wrong for 10 KiB messages). Set `NCCL_PROTO=Simple` to restore the old behaviour if RCCL
+   misbehaves.
+3. `VLLM_MAX_SEQS` — now 4 (was 1). Does not raise single-stream tok/s; it stops parallel agent
+   requests queueing. There is room: the engine reports 426,942 KV tokens, 3.25x the 128K context.
+4. `VLLM_FUSE_NORM_QUANT=true` — re-test the fusion kyuz0 disabled for a gfx1201 crash on an older
+   vLLM. Default stays `false`. If it starts and generates sane text, flip the default in vllm.sh.
+
+Not worth chasing: QuickReduce (arch-gated, never RDNA4); PP=2 instead of TP=2 (batch-1 decode
+serialises both shards, ~21 tok/s, worse); TP=1 (29 GB of weights + KV will not fit 30.4 GB
+usable); PCIe tuning (already 5.0 x16); the one-shot Triton JIT warnings (not steady state).
+Higher ceiling but invasive: this image already patches `_ON_MI3XX` in rocm.py to include gfx1201,
+so patching `use_custom_allreduce()` the same way may light up the one-shot custom all-reduce —
+generic HIP, but needs correctness checking (garbage output / hangs), and pairs with `iommu=pt`
+(`rpm-ostree kargs --append=iommu=pt`, reboot; no IOMMU kargs are set today).
 
 Qwen3.8-27B is vision-capable; the launcher serves it text-only (--language-model-only) to save
 VRAM. To enable vision, drop that flag in the launcher copy (costs VRAM).
