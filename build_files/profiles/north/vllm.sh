@@ -37,30 +37,42 @@ cat > /usr/share/kinoite/vllm/vllm-serve.sh << 'EOF'
 # experiment does not need an image rebuild.
 set -euo pipefail
 
-# kyuz0's ROCm/vLLM env (VLLM_TARGET_DEVICE=rocm, VLLM_USE_TRITON_AWQ=1,
-# FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE, NCCL_PROTO=Simple, ...). Ships in the image; source
-# it if present, otherwise assume the Dockerfile already exported these. Verify the real path
-# with: podman run --rm docker.io/kyuz0/vllm-therock-gfx1201:latest env | grep -iE 'VLLM|TRITON'
+# Remember what the CALLER asked for before the source loop below can clobber it. Load-bearing:
+# the image's /etc/profile.d/01-rocm-envs.sh exports NCCL_PROTO=Simple, so anything we decide
+# about NCCL_PROTO has to be (re)applied AFTER sourcing, exactly like VLLM_DISABLE_COMPILE_CACHE
+# further down. Empty or unset means "let RCCL's tuner choose".
+NCCL_PROTO_WANT="${NCCL_PROTO:-}"
+
+# kyuz0's ROCm/vLLM env. On this image (verified on box 2026-08-19) the SECOND path exists and is
+# sourced — it is NOT a no-op, contrary to an earlier note. It exports 7 vars:
+#   TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1  FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE
+#   VLLM_TARGET_DEVICE=rocm  VLLM_USE_TRITON_AWQ=1  VLLM_DISABLE_COMPILE_CACHE=1
+#   NCCL_PROTO=Simple  PYTHONNOUSERSITE=1
+# The last two are the ones we deliberately override below/after. Re-check after an image bump:
+#   podman run --rm docker.io/kyuz0/vllm-therock-gfx1201:latest \
+#       sh -c 'cat /etc/profile.d/01-rocm-envs.sh'
 for f in /opt/scripts/01-rocm-envs.sh /etc/profile.d/01-rocm-envs.sh; do
     # shellcheck disable=SC1090
     [ -f "$f" ] && source "$f"
 done
 
-# NCCL_PROTO: deliberately NOT forced to Simple any more (measured 2026-08-19, see notes/).
+# NCCL_PROTO: deliberately NOT left at the image's Simple (measured 2026-08-19, see notes/).
 # On gfx1201 every fast all-reduce backend is arch-gated to CDNA in this vLLM build
 # (rocm.py use_custom_allreduce() and quick_all_reduce.py supported_archs are both
 # ["gfx94","gfx95"]), so TP falls through to PYNCCL — confirmed in the startup log:
 #   Using ['PYNCCL'] all-reduce backends ... out of potential backends:
 #   ['NCCL_SYMM_MEM','QUICK_REDUCE','FLASHINFER','CUSTOM','SYMM_MEM','PYNCCL']
-# That makes PYNCCL's protocol load-bearing, and `Simple` is the WRONG one here: TP decode at
-# batch 1 does 2 all-reduces per layer x 64 layers = 128 per token, each only hidden_size x 2B
-# = 10 KiB. Simple is the high-bandwidth/high-latency protocol; it disables LL/LL128, which
-# exist for exactly these tiny messages. Leaving it unset lets RCCL's tuner pick per size.
-# The image itself sets no NCCL_/RCCL_ vars (verified via podman image inspect), so this
-# assignment was the only thing setting it. Overridable, so Simple can be restored from a
-# systemd drop-in (Environment=NCCL_PROTO=Simple) without rebuilding the image — the old
-# unconditional export could not be overridden that way, which is why it is a knob now.
-if [ -n "${NCCL_PROTO:-}" ]; then export NCCL_PROTO; fi
+# That makes PYNCCL's protocol load-bearing, and `Simple` is a poor fit here: TP decode at batch 1
+# does 2 all-reduces per layer x 64 layers = 128 per token, each only hidden_size x 2B = 10 KiB.
+# Simple is the high-bandwidth/high-latency protocol; it disables LL/LL128, which exist for
+# exactly these tiny messages. Unsetting lets RCCL's tuner pick per message size.
+# Set NCCL_PROTO=Simple in a systemd drop-in to restore the image default without a rebuild.
+if [ -n "$NCCL_PROTO_WANT" ]; then
+    export NCCL_PROTO="$NCCL_PROTO_WANT"
+else
+    unset NCCL_PROTO
+fi
+unset NCCL_PROTO_WANT
 
 # Persistent compile cache: pay torch.compile / inductor / triton ONCE, not on every start (a full
 # recompile of this 27B hybrid+FP8 graph is the ~6-8 min silent stretch at startup). We override the
@@ -362,9 +374,13 @@ Knobs, in the order worth trying (all settable from a drop-in — no image rebui
    roofline: several tokens per weight read, and the 128 all-reduces amortised across them.
    This checkpoint really does ship the MTP weights (22 `mtp.*` tensors). Check the acceptance
    rate in the log before keeping it.
-2. `NCCL_PROTO` — now UNSET by default (was forced to `Simple`, the high-latency protocol, which
-   is wrong for 10 KiB messages). Set `NCCL_PROTO=Simple` to restore the old behaviour if RCCL
-   misbehaves.
+2. `NCCL_PROTO` — now actively UNSET by default. `Simple` is the high-bandwidth/high-latency
+   protocol and disables LL/LL128, which exist for 10 KiB messages like these. Note where it
+   comes from: the image's own `/etc/profile.d/01-rocm-envs.sh` exports it, and the launcher
+   sources that file — so it must be unset AFTER sourcing, not merely left unassigned. (Getting
+   this wrong is a silent no-op: the first attempt only dropped the launcher's own export, the
+   sourced file put `Simple` straight back, and decode stayed at exactly 23.6 tok/s.) Set
+   `NCCL_PROTO=Simple` in a drop-in to restore the image default.
 3. `VLLM_MAX_SEQS` — now 4 (was 1). Does not raise single-stream tok/s; it stops parallel agent
    requests queueing. There is room: the engine reports 426,942 KV tokens, 3.25x the 128K context.
 4. `VLLM_FUSE_NORM_QUANT=true` — re-test the fusion kyuz0 disabled for a gfx1201 crash on an older
