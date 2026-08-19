@@ -1,8 +1,9 @@
 # kinoite-north — hardware notes
 
 AMD 9900X, dual Radeon AI PRO R9700 (RDNA4 / gfx1201), ASUS ProArt B850-Creator
-WiFi Neo. Validated on the real box 2026-08-08/09 on kernel 7.1.7-200.fc44 with
-mesa 26.1.6. **Settled** records constraints and non-obvious causes worth keeping;
+WiFi Neo. Validated on the real box across 2026-08-08 → 08-18, on kernel
+7.1.7-200.fc44 with mesa 26.1.6. **Settled** records constraints and non-obvious causes
+worth keeping;
 **Open** is what's left to verify. Code that depends on an open item carries a
 `TODO(hardware):` comment pointing here.
 
@@ -47,14 +48,34 @@ touching nothing during the stream tests. Harmless either way — not a GPU faul
 output, KWin keeps running (`wayland-0` present) with zero outputs; what dies is
 Sunshine's encoder probe at launch — `[kwingrab] no wl_output found` → `Fatal:
 Unable to find display or encoder during startup`. The per-stream virtual monitor
-can't help, since the prep command runs long after the probe. Ways to drop the
-plug, cheapest first, all untested:
-- Persistent `krfb-virtualmonitor` user unit on `graphical-session.target`, ordered
-  before Sunshine, so an output exists at probe time. Would need to coexist with
-  the per-stream monitor — likely resize it rather than create a second.
+can't help, since the prep command runs long after the probe.
+
+**Still true after the 2026-08-18 on-demand change — more so (reconfirmed
+2026-08-18).** The failure is a matter of *timing*, not mechanism: `global_prep_cmd`
+fires when a client starts a stream, the probe runs at process launch, and Sunshine is
+already dead by then. No command-driven display can ever satisfy it. Making the display
+on-demand also un-enabled `sunshine-virtual-monitor.service`, which was the one thing
+that put an output there at probe time, so on the current image the plug is the only
+output present when Sunshine starts.
+
+Ways to drop the plug, all untested. **Reordered 2026-08-18** — the persistent unit is
+no longer the cheap option, because it is exactly what the GPU-idle fix removed:
 - `video=<connector>:1920x1080@60e` ('e' overrides connect detection) in `kargs.d`.
+  Now the preferred route: a kernel-forced connector is a real DRM output with **no
+  userspace process holding a render node**, and it keeps KWin off the zero-output
+  state the `down` guard exists to prevent. Cost is unchanged from today — the GPU
+  driving it can't runtime-suspend, same as with the plug, so put it on a dGPU
+  connector for the reason given above. Caveat to check first: `video=` matches by
+  connector name (`DP-1`), and with three amdgpu devices those names are not globally
+  unique — confirm which card actually takes the override.
 - `drm.edid_firmware=<connector>:edid/<file>.bin` with a blob in
   `/usr/lib/firmware/edid/`, dumped from the plug itself. May need it in initramfs.
+- Persistent `krfb-virtualmonitor` user unit on `graphical-session.target`, ordered
+  before Sunshine, so an output exists at probe time. **Now the last resort:** krfb
+  holds a DRM render node for as long as it runs, so this buys back the always-awake
+  dGPU that disabling the unit eliminated (see the on-demand entry below). It also
+  leaves a headless box one crash away from KWin at zero outputs. Would additionally
+  need to coexist with the per-stream monitor — resize it rather than create a second.
 
 **Why the Sunshine config is seeded.** Default `kms` capture enumerates DRM
 connectors only, so it discarded the virtual monitor (`Unknown Monitor connector
@@ -69,25 +90,19 @@ so `KWIN_WAYLAND_NO_PERMISSION_CHECKS=1` is not needed.
 governs *new* windows, so an already-running Steam stays on the desk. Disabling the
 physical outputs is what makes KWin migrate existing windows.
 
-**R9700 fan control — WAS broken, FIXED by a vBIOS flash (2026-08-17).** Until
-then hwmon exposed `fan1_enable/target/input/min/max` but no `pwm1_enable` and no
-`gpu_od/fan_ctrl/`, and reading `fan1_enable` returned EINVAL — an amdgpu SMU
-interface version mismatch specific to the R9700 that broke fan control across
-LACT, rocm-smi and amd-smi alike (undervolt/clock/power tuning kept working).
-**Flashing updated GPU vBIOS fixed it** — confirmed by setting idle fans to 60% via
-LACT (the write took effect). This is exactly the "recheck on firmware bumps" TODO
-paying off — a vBIOS flash is a firmware change.
+**R9700 fan control — was broken, fixed by a vBIOS flash (2026-08-17).** Before the
+flash, hwmon exposed `fan1_enable/target/input/min/max` but no `pwm1_enable` and no
+`gpu_od/fan_ctrl/`, and reading `fan1_enable` returned EINVAL — fan control was dead
+across LACT, rocm-smi and amd-smi alike, while undervolt/clock/power tuning kept working.
+The flash changed the vBIOS OverDrive tables and fixed it, confirmed by setting idle fans
+to 60% via LACT.
 
-**Correction (2026-08-17): the flash did NOT close the SMU interface mismatch, and
-that was never the cause.** An earlier version of this note said it did. dmesg after
-the flash still reads `smu driver if version = 0x0000002e, smu fw if version =
-0x00000033` — driver 46 vs firmware 51, so the gap actually *widened* (was 46 vs 50),
-and both cards still init fine. Fan control works with the mismatch present. So AMD's
-#6078 position is correct on the facts: **the mismatch message is harmless and is not
-what gates anything.** What the flash actually changed was the vBIOS OverDrive tables.
-Practical consequence: on a future kernel or firmware bump, do not use the mismatch
-message as the health signal — it will always be there. Check whether
-`gpu_od/fan_ctrl/` exists and whether writes take.
+**The SMU interface mismatch is not what gated this, and never was.** It survives the
+flash — `smu driver if version = 0x0000002e` vs `smu fw if version = 0x00000033`, 46 vs
+51, a *wider* gap than the 46 vs 50 before — and both cards init fine either way. AMD's
+ROCm#6078 position is correct on this point: the message is harmless. So on a future
+kernel or firmware bump, do not use it as the health signal; it will always be there.
+Check whether `gpu_od/fan_ctrl/` exists and whether writes take.
 
 **Firmware baseline, post-flash (2026-08-17)** — diff against this after any bump:
 | | R9700 ×2 (03:00.0, 06:00.0) | iGPU (10:00.0) |
@@ -129,11 +144,6 @@ unreadable on a card that is powered down. Confirmed against a Bazzite live boot
 Fedora Kinoite live boot, both of which suspend these same cards — neither ships
 CoolerControl.
 
-**Every OD node we tested was irrelevant.** `minimum_pwm`, `zero_rpm`,
-`acoustic_target_rpm_threshold`, `fan_target_temperature` all govern an awake card, and
-the card was only awake because something was watching it. The observations about them
-are still accurate (below) — they just never mattered.
-
 **Disposition of the daemons.**
 - **CoolerControl: removed from the image (2026-08-18).** It could not actually change
   fan settings on this board anyway — the NCT6701D is too new — so it was blocking dGPU
@@ -148,7 +158,10 @@ are still accurate (below) — they just never mattered.
   then it is a straight trade — LACT running, or quiet idle. `systemctl stop lactd`
   reclaims the idle at any time; settings it already applied persist.
 
-**Still accurate, for an awake card:**
+**Every OD node tested was irrelevant** — `minimum_pwm`, `zero_rpm`,
+`acoustic_target_rpm_threshold` and `fan_target_temperature` all govern an *awake* card,
+and the card was only awake because something was watching it. Still accurate for an
+awake card:
 - Idle is 1950–2050 RPM = exactly 30% of the 6500 max, dies ice-cold.
 - `fan_minimum_pwm` OD_RANGE is `30 100`; writes below 30 error out.
 - `fan_zero_rpm_enable` is an inert stub; `fan_zero_rpm_stop_temperature` is absent.
@@ -158,51 +171,38 @@ are still accurate (below) — they just never mattered.
   four out of any LACT profile regardless.
 - `pp_table` does not exist on gfx1201 — no soft PowerPlay override path.
 - Ruled out as causes, each tested directly: the `amdgpu.ppfeaturemask=0xfff7ffff`
-  karg, the persistent virtual monitor, processes holding the DRM nodes, the HDMI audio
-  function 06:00.1, and the kernel itself.
+  karg, processes holding the DRM nodes, the HDMI audio function 06:00.1, and the
+  kernel itself.
+- **Retracted 2026-08-18:** "the persistent virtual monitor" was on that ruled-out list
+  and shouldn't have been — the test ran with the pollers still active, which pin the
+  cards regardless, so it proved nothing either way. krfb holds a render node and pins
+  its backing GPU into D0 on its own; that's an independent second cause, not a
+  competing explanation. Untested with the pollers stopped.
 
-**Claims previously recorded here as fact that were wrong:**
-- "Fans are WONTFIX / a firmware floor with no fix." False. It was a poller.
-- "The floor is power-state-independent." Never tested — no suspended card had ever been
-  measured, because none had ever suspended.
+**Wrong claims previously recorded here as fact** — the first one you will meet again in
+AMD's own tracker, so it's worth keeping refuted:
+- "Fans are WONTFIX / a firmware floor with no fix." False; it was a poller. ROCm#6078's
+  "the ~30% default curve is intended" remains AMD's position and remains not the reason
+  for this box's noise.
 - "amdgpu never enables runtime PM on these cards." False; it does.
-- "The bigmalloy D0/runtime-PM fix is a no-op." Its A/B ran on the display card, which
-  was legitimately always D0. It never tested the headless card.
-- ROCm#6078's "the ~30% default curve is intended" is still AMD's position, but it was
-  never the reason for *this* box's noise.
+- "The bigmalloy D0/runtime-PM fix is a no-op." Unproven — the A/B ran on the display
+  card, which was legitimately always D0, so it never tested the headless card.
 
-**Self-inflicted confound, for the record.** A `power/control=on` pin was written to
-`/etc/tmpfiles.d/` and `/etc/udev/rules.d/` on 2026-08-17 while testing #6101 D3
-insurance, and left there. It forbade runtime suspend on 06:00.0 across every
-subsequent reboot, so hours of "06:00.0 never suspends" were measuring the pin. Both
-files deleted. Nothing equivalent is baked in the image.
+**The virtual monitor could leave the box with no display — FIXED 2026-08-18.** Found in
+the wild as `HDMI-A-3` **connected but disabled**; it presented as "the iGPU doesn't work
+on north". Root cause was a storage-location mistake, not the disabling itself:
+`--exclusive` recorded which outputs it turned off in `$XDG_RUNTIME_DIR` (tmpfs), while
+the damage it was undoing — KDE's disabled-output state in
+`~/.config/kwinoutputconfig.json` — persists on disk. Any abnormal end to a stream
+destroyed the restore list and kept the outputs off. **The general rule: restore state
+must outlive whatever it restores.**
 
-**Separate real bug — the virtual monitor could leave the box with no display. FIXED
-2026-08-18.** `services-north.sh` `--global enable`s `sunshine-virtual-monitor.service`,
-so every login runs `sunshine-virtual-display up --persistent`, launching
-`krfb-virtualmonitor` and making the virtual output primary whether or not anyone
-streams. Found in the wild as `HDMI-A-3` **connected but disabled** — this was "the iGPU
-doesn't work on north".
+Fixed by moving `DISABLEDFILE`/`PRIMARYFILE` to `$XDG_STATE_HOME/sunshine-vm/` (`PIDFILE`
+deliberately stays in the runtime dir — a PID from a previous boot is worse than none),
+plus a login-path safety net that re-enables every connected output when none are on.
 
-Root cause was a storage-location mistake, not the disabling itself: `--exclusive`
-recorded which outputs it turned off in `$XDG_RUNTIME_DIR`, which is tmpfs, while the
-damage it was undoing (KDE's disabled-output state in
-`~/.config/kwinoutputconfig.json`) persists on disk. Any abnormal end to an exclusive
-stream — crash, hard reboot, power cut — destroyed the restore list and kept the
-disabled outputs. `teardown` at next login already re-enables whatever the list holds;
-the list just never survived to be read.
-
-Two changes in `sunshine.sh`:
-1. `DISABLEDFILE`/`PRIMARYFILE` moved to `${XDG_STATE_HOME:-~/.local/state}/sunshine-vm/`
-   so the restore list outlives a reboot. `PIDFILE` deliberately stays in the runtime
-   dir — a PID from a previous boot is worse than none.
-2. A login-path safety net: if no non-virtual output is enabled when the persistent
-   service starts, re-enable every connected output. Covers a lost or never-written
-   list, including KDE-persisted state predating this fix. Gated on `--persistent` so a
-   deliberate manual `up --exclusive` is not undone.
-
-Recovery if it ever recurs: `kscreen-doctor output.HDMI-A-3.enable`. Note a
-`--global enable` cannot be undone with `systemctl --user disable` — it needs
+Recovery if it recurs: `kscreen-doctor output.HDMI-A-3.enable`. Note a `systemctl
+--global enable` cannot be undone with `systemctl --user disable` — it needs
 `systemctl --user mask`.
 
 **Virtual monitor is now on-demand, not at login (2026-08-18).** `krfb-virtualmonitor`
@@ -228,6 +228,11 @@ it. Change it in Sunshine → Configuration → General → Command Preparation,
 - **Reading hwmon wakes the GPU.** `sensors` is not a passive instrument. Read
   `power/runtime_status` (PCI core sysfs) FIRST and `sensors` second, or you measure
   your own observation.
+- **Check for stray `power/control=on` pins before trusting any idle measurement** —
+  `/etc/tmpfiles.d/` and `/etc/udev/rules.d/`. One left behind by a #6101 D3 test on
+  2026-08-17 forbade runtime suspend on 06:00.0 across every reboot, and hours of
+  "06:00.0 never suspends" turned out to be measuring the pin. Nothing equivalent is
+  baked in the image.
 - `runtime_usage` / `runtime_enabled` do NOT exist on Fedora (they need
   `CONFIG_PM_ADVANCED_DEBUG`). `runtime_suspended_time` answers "has it ever suspended"
   and works while the GPU is busy, being cumulative.
@@ -244,48 +249,26 @@ it. Change it in Sunshine → Configuration → General → Command Preparation,
 
 Nothing fan-related is baked into `tuning.sh`, by choice — and nothing needs to be.
 
-**Escape-hatch analysis — Windows / WSL2 (decision reference, 2026-08-17).** NOTE: MOOT
-as a noise argument. This was reasoned from the premise that a quiet Linux idle was
-impossible, which turned out to be a polling daemon (see SOLVED above) — Linux idles the
-cards fully, fans off. The workload analysis below still stands on its own merits.
-Evaluated moving to Windows (quiet Adrenalin
-12%/zero-RPM fans + better game compat) while keeping LLM work in WSL2. Under WSL2
-the *Windows* driver owns the GPU, so fans stay quiet while WSL borrows it for
-compute — appealing, but the workload fit is the catch:
-- **FP8 is two-card-only for 27B.** FP8 27B weights ≈ 27 GB — fills a 32 GB card,
-  leaving no room for KV. That's *why* we run TP=2. Single-card FP8 27B @ any real
-  context does not fit, independent of WSL. (FP8 kernels themselves work on gfx1201;
-  vLLM-on-ROCm-WSL is just not AMD-validated.)
-- **Dual-GPU is what WSL2 least reliably delivers.** AMD ships ROCm-on-WSL as
-  preview/limited-validation, and gfx1201 multi-GPU RCCL is already fragile on NATIVE
-  Linux — open TP=2 deadlock issues on dual R9700 (vllm-project/vllm#40980,
-  ROCm/rocm-systems#5480; both GPUs 100%, TP=1 fine). Our working TP=2 is on the
-  lucky side of a known-rocky feature; moving it onto WSL's weaker multi-GPU layer is
-  the opposite of derisking.
-- **The container model doesn't port.** WSL2 has no `/dev/kfd`; GPU goes through
-  `/dev/dxg` + a WSL-specific ROCm runtime. Existing rootless Quadlets / kfd+dri
-  passthrough (lemonade.container, north-llm pod) need rework, not lift-and-shift.
-- **Single-card GGUF IS viable, and the hybrid KV savings CARRY to llama.cpp.**
-  llama.cpp has `llama_memory_hybrid` (Jamba-derived) extended to the qwen3_5 GDN
-  arch: only the full-attention layers keep a KV cache, the linear-attention (Gated
-  DeltaNet) layers keep none → the same ~4× saving vLLM sees (~0.0625 vs dense 0.25
-  GB/1K). CAVEAT: qwen3_5/GDN operator support is bleeding-edge — needs the
-  absolute-latest llama.cpp/lemonade build, and you must confirm the hybrid path
-  engages on load (grep the log for linear-attention/GDN) vs a silent dense fallback.
-- **Single-card memory (32 GB, hybrid KV):** Q6_K 27B @128K ≈ 23 weights + ~8 KV ≈
-  31 GB → fits (tight); Q5_K_M @128K ≈ 29 GB comfortable; 256K needs KV quant or two
-  cards. Stack flash-attn + Q4_0 KV (~47% saving, near-zero quality, lemonade b1285)
-  to push one card toward 256K. Without the hybrid path it falls back to dense
-  (0.25 GB/1K → 128K KV ≈ 33 GB), where single-card 128K needs Q4 weights + Q4 KV.
-- Gotcha: llamacpp-rocm#96 — gfx1201 segfaults if the iGPU is also visible to ROCm;
-  likely moot under WSL (iGPU not exposed) but verify.
-
-**Verdict:** WSL2 single-card = quiet + gaming + Q6 27B @128K, *if* on a bleeding-edge
-build with the hybrid path engaged; it gives up dual-card 256K/FP8. The lower-rework
-alternative that keeps everything: this box already has Sunshine + WoL + Tailscale, so
-**relocate the loud box out of earshot and keep native Linux dual-card** — solves the
-noise without abandoning the stack. Dual-boot is the middle path (Linux for LLM/dev,
-Windows for quiet gaming sessions).
+**Windows / WSL2 escape hatch — evaluated and rejected (2026-08-17).** The whole case
+rested on noise, which turned out to be a polling daemon (see SOLVED), so the decision is
+settled: **stay on native Linux dual-card and move the box out of earshot** — Sunshine +
+WoL + Tailscale are already in place for exactly that. Dual-boot is the middle path if
+quiet gaming sessions ever matter. The findings that outlived the decision:
+- **FP8 27B is two-card-only.** Weights ≈ 27 GB fill a 32 GB card with no room for KV.
+  That is *why* TP=2, independent of WSL.
+- **Dual-GPU is what WSL2 least reliably delivers.** ROCm-on-WSL is preview/limited-
+  validation, and gfx1201 multi-GPU RCCL is already fragile on *native* Linux — open TP=2
+  deadlock issues on dual R9700 (vllm-project/vllm#40980, ROCm/rocm-systems#5480; both
+  GPUs 100%, TP=1 fine). Our working TP=2 sits on the lucky side of a known-rocky feature.
+- **The container model doesn't port.** WSL2 has no `/dev/kfd` — GPU goes via `/dev/dxg`
+  and a WSL-specific ROCm runtime, so the rootless Quadlets need rework, not a lift.
+- **llama.cpp gets the same hybrid KV saving vLLM does.** `llama_memory_hybrid`
+  (Jamba-derived) extended to the qwen3_5 GDN arch: only full-attention layers keep a KV
+  cache, so ~0.0625 vs dense 0.25 GB/1K. Bleeding-edge — confirm the hybrid path actually
+  engages on load (grep the log for linear-attention/GDN) rather than silently falling
+  back to dense. Single-card sizing at 32 GB with it: Q6_K 27B @128K ≈ 31 GB (tight),
+  Q5_K_M @128K ≈ 29 GB; 256K needs KV quant.
+- Gotcha: llamacpp-rocm#96 — gfx1201 segfaults if the iGPU is also visible to ROCm.
 
 **Sensor channels that read wrong, and always will.** `AUXTIN3 -61°C`, `AUXTIN4
 +86°C ALARM`, all three `PCH_*` at 0°C, and several `inN` rails flagged ALARM
@@ -396,22 +379,23 @@ tuning knob — hence the seeded `rocm_channel` in `lemonade.sh`.
 
 ### Sunshine — `build_files/profiles/north/sunshine.sh`
 
-- [x] Crash safety, the one that matters most: `systemctl --user kill -s KILL
-      app-dev.lizardbyte.app.Sunshine.service` mid-stream, and confirm the
-      `ExecStopPost` teardown drops the virtual monitor and re-enables the physical
-      output. A failure here in exclusive mode means a black desk.
-      → N/A: the display is now persistent via sunshine-virtual-monitor.service;
-        there is no ExecStopPost teardown. Crash safety is handled by systemd user
-        session cleanup (which kills the virtual monitor with the session). This is
-        acceptable because the persistent display is the login-time default; a
-        crashed session already needs re-login.
-- [x] Clean restore on normal disconnect — physical output back, previous primary
-      restored, desk window layout intact after `--exclusive`.
-      → `ensure --exclusive` disables physical outputs; undo (seeded as `ensure`)
-        re-enables them from `$DISABLEDFILE` when the stream ends, so toggling
-        exclusivity per-app works. The Sunshine service drop-in's ExecStopPost runs
-        `ensure` on shutdown as a backup if a stream is still active, without tearing
-        down the persistent display. `up --exclusive` still works for one-off use.
+All three display checks below were closed against the pre-2026-08-18 design and reopened
+with it: the display is no longer persistent, `undo` is `down` rather than `ensure`, and a
+SIGKILL now skips a teardown that actually matters. Nothing here has run on the box.
+
+- [ ] Crash safety, the one that matters most: `systemctl --user kill -s KILL
+      app-dev.lizardbyte.app.Sunshine.service` mid-*exclusive* stream, then confirm
+      `ExecStopPost` drops the monitor and re-enables the physical output. Reboot after
+      it and confirm the outputs are still on — that second leg is what proves the
+      `$XDG_STATE_HOME` restore-list fix. Failure here means a black desk.
+- [ ] Clean restore on normal disconnect — physical output back, previous primary
+      restored (`down` is what reads `$PRIMARYFILE`; `ensure` never did), desk window
+      layout intact after `--exclusive`.
+- [ ] `ExecStopPost` is now `down`, was `ensure` (fixed 2026-08-18). `ensure` creates the
+      monitor when none exists, so stopping Sunshine without ever streaming spawned krfb
+      on the way out and pinned a GPU awake. Check: `systemctl --user stop
+      app-dev.lizardbyte.app.Sunshine.service` after a login with no stream, then confirm
+      no `krfb-virtualmonitor` survives and both dGPUs reach `runtime_status: suspended`.
 - [ ] Refresh rate follows the client: a 120Hz client should get `addCustomMode` +
       `mode` applied (krfb only ever creates the monitor at 60Hz). Only 60Hz seen
       so far, where the mode already exists and `addCustomMode` is correctly
@@ -428,37 +412,18 @@ tuning knob — hence the seeded `rocm_channel` in `lemonade.sh`.
       settles it: `stat -c '%n %a %U %G' /dev/kfd /dev/dri/renderD128`. If `/dev/kfd`
       reads `666 root render` with our rule removed, drop the rule (or set
       `MODE="0666"`) and delete the `usermod -aG render,video` advice from the README.
-- [x] Fan control, decisive local check: writes now take effect after the 2026-08-17
-      vBIOS flash — set idle fans to 60% via LACT and the fan responded. Was EINVAL
-      before the flash (SMU mismatch). See the Settled entry above.
-- [x] Fan OD nodes, all four tested (2026-08-17): `minimum_pwm` floors at 30,
-      `zero_rpm` is an inert stub, and `acoustic_target_rpm_threshold` /
-      `fan_target_temperature` accept writes and silently do nothing. Keep all of them
-      OUT of the LACT config. Leave LACT on **Automatic**. This says what an *awake*
-      card does; it is not a conclusion about the fan floor overall.
-- [x] **Fans SOLVED (2026-08-18): it was `coolercontrold` + `lactd` polling hwmon.**
-      Not a firmware floor. Each poll calls `pm_runtime_get_sync()` and resets the 5 s
-      autosuspend timer, so the cards never idled; ~1950 RPM is just what an awake
-      R9700 does. Stop both and both cards suspend in <30 s with fans off. See the
-      SOLVED entry above.
-- [x] CoolerControl removed from `motherboard.sh` (2026-08-18) — it couldn't drive this
-      board's fans anyway (NCT6701D too new) and was the main blocker. Sensor karg and
-      `nct6775` module-load kept; they're independent.
+- [x] Fan control works post-flash; fan OD nodes all tested and all irrelevant; the
+      ~1950 RPM floor was `coolercontrold` + `lactd` polling, not firmware; CoolerControl
+      dropped from `motherboard.sh`. All four resolved 2026-08-17/18 — see Settled.
+      Operationally: keep every OD node out of the LACT config, leave LACT on
+      **Automatic**.
 - [ ] LACT vs quiet idle — `lactd` polls the same way, so the dGPUs won't idle while it
       runs. Check whether it can stop polling with no GUI client attached, or poll
       slower than 5 s. Until then it's a straight trade; `systemctl stop lactd` reclaims
       the idle and already-applied settings persist.
-- [x] **Bug FIXED (2026-08-18): the virtual monitor could leave the box with no
-      display.** An `--exclusive` teardown that never completed left physical outputs
-      disabled while its restore list died with `$XDG_RUNTIME_DIR`. Fixed by moving the
-      restore state to `$XDG_STATE_HOME` and adding a login-path safety net that
-      re-enables all connected outputs when none are on. Unverified on hardware — needs
-      a rebuild, then an exclusive stream killed mid-flight, then a reboot.
-- [x] Virtual monitor moved to on-demand (2026-08-18): unit shipped but not enabled,
-      `undo` seeded as `down`, and `down` guarded against stranding a headless box.
-      Goal was "GPU may spin up while streaming, not when idle". Unverified on
-      hardware — needs a rebuild, then a stream start/stop cycle checking that krfb
-      exits and the backing GPU returns to `suspended`.
+- [x] Virtual monitor: no-display bug fixed and the display moved to on-demand
+      (2026-08-18) — see Settled. Both are code-complete and neither has run on the box;
+      the hardware checks live under Sunshine above.
 - [ ] Undervolt is the actual tuning goal (not a fan curve). The ppfeaturemask karg
       already baked is what unlocks the mV offset — no karg change needed. Tune a
       per-card negative GPU voltage offset in LACT (start −50 mV, step −25 mV under

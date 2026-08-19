@@ -9,12 +9,12 @@ set -ouex pipefail
 # settings and the global_prep_cmd that resizes the persistent virtual monitor;
 # pairing and wiring the prep commands stay per-user first-login steps (see README).
 #
-# The virtual display is created on demand by the seeded global_prep_cmd (`ensure`),
-# NOT at login — sunshine-virtual-monitor.service is shipped disabled as of
-# 2026-08-18 because krfb holds a render node and pinned a GPU awake full time. See
-# sunshine.sh. ExecStopPost runs `ensure` to restore physical outputs if the last
-# stream was exclusive; it does not teardown.
-# A crash mid-stream is handled by systemd's user session cleanup.
+# The virtual display is created on demand by the seeded global_prep_cmd (`ensure`)
+# and destroyed by its `undo` (`down`), NOT at login — sunshine-virtual-monitor.service
+# is shipped disabled as of 2026-08-18 because krfb holds a render node and pinned a GPU
+# awake full time. See sunshine.sh. A crash mid-stream skips `undo`, so ExecStopPost runs
+# `down` as the net: it re-enables outputs an --exclusive stream disabled, restores the
+# previous primary, and drops the monitor.
 #
 # Use the canonical unit name. pvermeer's package also ships a sunshine.service
 # compat symlink, but upstream only declares it as an [Install] Alias= — which

@@ -3,7 +3,12 @@ set -ouex pipefail
 
 . "$(cd "$(dirname "$0")/../../scripts" && pwd)/lib/common.sh"
 
-# Sunshine game-streaming host + KDE Wayland virtual display (no dummy plug).
+# Sunshine game-streaming host + KDE Wayland virtual display.
+#
+# The virtual display replaces a dummy plug for *streaming*, not for booting: Sunshine
+# probes for an encoder at process launch and dies with `[kwingrab] no wl_output found`
+# if KWin has zero outputs. Prep commands run at stream start, far too late to help. So
+# a plug (or a forced connector) is still required — see notes/kinoite-north-validation.md.
 #
 # COPR: pvermeer/sunshine — targets Fedora Atomic, carries the spec fixes
 # LizardByte's own (unmaintained) `stable` COPR lacks. `sunshine-beta` is weekly.
@@ -70,7 +75,9 @@ chmod +x /usr/libexec/sunshine-config-defaults
 ### Virtual-display helper
 cat > /usr/libexec/sunshine-virtual-display << 'EOF'
 #!/bin/bash
-# KDE Wayland virtual monitor for Sunshine streaming (no dummy plug).
+# KDE Wayland virtual monitor for Sunshine streaming. Note this does not remove the
+# need for a dummy plug at boot — Sunshine's launch-time encoder probe needs an output
+# that exists before any prep command runs. See sunshine.sh.
 # Usage: sunshine-virtual-display up [--exclusive] [WIDTH HEIGHT [FPS]]
 #        sunshine-virtual-display ensure [--exclusive] [WIDTH HEIGHT [FPS]]
 #        sunshine-virtual-display down
@@ -372,15 +379,21 @@ EOF
 chmod +x /usr/libexec/sunshine-virtual-display
 
 ### Service drop-in
-# No teardown here — the persistent virtual display service owns that lifecycle.
-# ExecStopPost runs `ensure` to restore physical outputs if the last stream was exclusive.
+# ExecStopPost is the crash net: it runs when a stream's `undo` never did (SIGKILL,
+# session teardown), restoring physical outputs and dropping the monitor.
+#
+# It must be `down`, not `ensure`. `ensure` *creates* the monitor when none exists, so
+# stopping Sunshine without ever streaming would spawn krfb on the way out and pin a GPU
+# awake — the exact failure the on-demand change fixed. `down` is also the only path that
+# restores the previous primary, and it self-guards on a headless box (no connected
+# physical output ⇒ refuses, leaving sunshine-virtual-monitor.service to own the display).
 mkdir -p /usr/lib/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d
 cat > /usr/lib/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/10-kinoite-north.conf << 'EOF'
 [Service]
 ExecStartPre=-/usr/libexec/sunshine-config-defaults
 # Needed so global_prep_cmd's kscreen-doctor calls reach the compositor
 Environment=WAYLAND_DISPLAY=wayland-0
-ExecStopPost=-/usr/libexec/sunshine-virtual-display ensure
+ExecStopPost=-/usr/libexec/sunshine-virtual-display down
 EOF
 
 ### Virtual display unit — SHIPPED BUT NOT ENABLED (changed 2026-08-18)
