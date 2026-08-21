@@ -143,18 +143,34 @@ esac
 # (weights + 128 all-reduces), not by context, so batching amortises both and buys aggregate
 # throughput for parallel agent tool calls at ~no single-stream cost. Set VLLM_MAX_SEQS=1 to get
 # kyuz0's single-stream benchmarking behaviour back.
-# MTP speculative decoding — ON by default. This is the single biggest win found on this box:
-# it emits ~1.9 tokens per forward pass, so the ENTIRE per-token cost is amortised across them,
-# whatever that cost is made of. Measured on-box 2026-08-19 (slope method, batch 1, this image):
-#     workload      off      on
-#     rust code    24.3 -> 41.74 tok/s   (+72%)
-#     python code  24.3 -> 40.43         (+66%)
-#     prose        24.3 -> 38.72         (+59%)
-# Acceptance length 1.91, acceptance rate 86-100%. For scale: tuned llama.cpp on the same pair of
-# R9700s does 31.24 tok/s on this model, so MTP puts vLLM ~33% past it.
+# MTP speculative decoding — ON by default, at num_speculative_tokens=3. This is the single
+# biggest win found on this box: it emits ~3 tokens per forward pass, so the ENTIRE per-token cost
+# is amortised across them, whatever that cost is made of.
+#
+# k SWEEP, measured on-box 2026-08-20 (batch 1, this image, streaming first-to-last-token so
+# prefill and TTFT are excluded; best of 2 after a discarded warm-up, 512 tokens per run):
+#     k   rust    python  prose   MEAN    accept_len  per_draft_token
+#     1   38.41   39.22   36.75   38.13   1.853       0.853
+#     2   49.14   50.78   46.22   48.71   2.554       0.777
+#     3   55.17   57.99   49.51   54.22   3.038       0.679     <- default
+#     4   56.25   60.19   50.64   55.69   3.298       0.575
+# k=1->2 is +27.7%, 2->3 +11.3%, 3->4 only +2.7%. The knee is at 3: k=4 buys almost nothing while
+# burning 33% more draft compute at a much worse per-draft acceptance (0.575), which is wasted
+# work that gets *more* expensive as batch size rises. 3 is also what the upstream vLLM recipe for
+# this model specifies (recipes.vllm.ai/Qwen/Qwen3.8-27B).
+#
+# WHY THIS WAS 1 UNTIL NOW — the old comment inferred "mtp_num_hidden_layers = 1 -> so k must be
+# 1". That is wrong, and it cost ~42% of achievable throughput. mtp_num_hidden_layers is the DEPTH
+# of the MTP module (how many transformer layers the draft head has), not a ceiling on how many
+# tokens you may speculate. vLLM runs that one module autoregressively k times. Read the actual
+# constraint at vllm/config/speculative.py:765-780 — n_predict (= mtp_num_hidden_layers) is only
+#   (a) the DEFAULT when num_speculative_tokens is unset, and
+#   (b) a DIVISIBILITY requirement when k > n_predict ("Ensure divisibility for MTP module reuse")
+# and with n_predict=1 every k divides cleanly. There is no upper bound here. Verified in the
+# running container, not inferred.
 #
 # Verified available for THIS checkpoint (not inferred from a sibling model):
-#   - config.json text_config.mtp_num_hidden_layers = 1  -> num_speculative_tokens 1
+#   - config.json text_config.mtp_num_hidden_layers = 1  -> the draft head is 1 layer deep
 #   - the FP8 checkpoint really ships the weights: 22 mtp.* tensors in the safetensors index with
 #     FP8 weight_scale_inv (mtp.fc.weight is unquantised BF16, matching the workaround noted at
 #     vllm/model_executor/models/qwen3_5_mtp.py:81)
@@ -174,7 +190,7 @@ esac
 # to turn speculation off. Do NOT chase a newer image for this: vLLM 0.27.1 was tested and is
 # WORSE here (MTP 34.66 vs 40.75 on the identical prompt), with an unchanged 24.34 baseline.
 EXTRA_ARGS=()
-SPEC_DEFAULT='{"method":"mtp","num_speculative_tokens":1}'
+SPEC_DEFAULT='{"method":"mtp","num_speculative_tokens":3}'
 SPEC="${VLLM_SPECULATIVE-$SPEC_DEFAULT}"
 if [ -n "$SPEC" ]; then
     EXTRA_ARGS+=(--speculative-config "$SPEC")
@@ -204,6 +220,133 @@ chmod 0755 /usr/share/kinoite/vllm/vllm-serve.sh
 
 # Fail the build loudly on a shell typo rather than shipping a launcher bash rejects.
 bash -n /usr/share/kinoite/vllm/vllm-serve.sh
+
+### 1b. Decode benchmark
+# Baked because the tuned defaults in the launcher (above all num_speculative_tokens) are only
+# valid for the image+model pair that was measured, and the doc tells you to re-run the sweep
+# after a bump. Without this shipped, "re-measure" means rewriting the harness first, which is
+# how a stale default survives for a day. Host-side (talks to the published 127.0.0.1:8000) and
+# stdlib-only, so it needs nothing installed.
+#
+# Method: stream the response and time from the FIRST content token to the LAST. That excludes
+# queueing, prefill and TTFT, so the number is pure decode rate — equivalent to the slope method
+# used earlier, without needing two runs at different lengths.
+cat > /usr/share/kinoite/vllm/bench.py << 'PYEOF'
+#!/usr/bin/env python3
+"""Decode-throughput bench for the local vLLM server.
+
+    python3 /usr/share/kinoite/vllm/bench.py [max_tokens]
+
+Reports per-workload decode tok/s at batch 1, plus the MTP acceptance length scraped from vLLM's
+own spec_decode counters (mean tokens emitted per forward pass — the number that explains the
+throughput). See "Decode performance" in vllm.md for the k sweep this produced.
+"""
+import json, sys, time, urllib.request
+
+BASE = "http://127.0.0.1:8000"
+MAXTOK = int(sys.argv[1]) if len(sys.argv) > 1 else 512
+
+WORKLOADS = {
+    "rust":   "Write a complete Rust implementation of a lock-free MPSC queue using atomics, with detailed comments explaining the memory ordering choices at every step.",
+    "python": "Write a complete Python implementation of a B-tree with insert, delete, and range-scan, with docstrings and inline comments explaining the split and merge logic.",
+    "prose":  "Write a detailed essay explaining how GPU memory bandwidth becomes the limiting factor for autoregressive LLM inference at batch size one, and how speculative decoding changes that.",
+}
+SPEC_KEYS = ("spec_decode_num_drafts_total",
+             "spec_decode_num_draft_tokens_total",
+             "spec_decode_num_accepted_tokens_total")
+
+
+def metrics():
+    """spec_decode counters, or {} when speculation is off."""
+    try:
+        raw = urllib.request.urlopen(BASE + "/metrics", timeout=10).read().decode()
+    except Exception:
+        return {}
+    out = {}
+    for line in raw.splitlines():
+        if line.startswith("#"):
+            continue
+        for key in SPEC_KEYS:
+            if key in line:
+                try:
+                    out[key] = out.get(key, 0.0) + float(line.rsplit(" ", 1)[1])
+                except (ValueError, IndexError):
+                    pass
+    return out
+
+
+def run(prompt):
+    body = json.dumps({
+        "model": MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": MAXTOK,
+        "temperature": 0.0,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+        # Keep thinking off so every run generates the same KIND of tokens; with it on, a run that
+        # happens to think longer looks faster or slower for reasons that are not the engine.
+        "chat_template_kwargs": {"enable_thinking": False},
+    }).encode()
+    req = urllib.request.Request(BASE + "/v1/chat/completions", data=body,
+                                 headers={"Content-Type": "application/json"})
+    t_first = t_last = None
+    n = 0
+    usage = None
+    with urllib.request.urlopen(req, timeout=900) as resp:
+        for raw in resp:
+            line = raw.decode().strip()
+            if not line.startswith("data: "):
+                continue
+            payload = line[6:]
+            if payload == "[DONE]":
+                break
+            chunk = json.loads(payload)
+            if chunk.get("usage"):
+                usage = chunk["usage"].get("completion_tokens") or usage
+            for ch in chunk.get("choices", []):
+                delta = ch.get("delta", {})
+                if delta.get("content") or delta.get("reasoning_content"):
+                    now = time.perf_counter()
+                    if t_first is None:
+                        t_first = now
+                    t_last = now
+                    n += 1
+    if t_first is None or n < 2:
+        return None
+    counted = usage or n
+    return (counted - 1) / (t_last - t_first), counted, t_last - t_first
+
+
+MODEL = json.load(urllib.request.urlopen(BASE + "/v1/models", timeout=30))["data"][0]["id"]
+print(f"model={MODEL}  max_tokens={MAXTOK}")
+
+m0 = metrics()
+results = {}
+for name, prompt in WORKLOADS.items():
+    run(prompt)                       # warm-up, discarded
+    best = None
+    for _ in range(2):
+        r = run(prompt)
+        if r and (best is None or r[0] > best[0]):
+            best = r
+    results[name] = best[0]
+    print(f"  {name:7s} {best[0]:6.2f} tok/s   ({best[1]} tok in {best[2]:.2f}s)")
+m1 = metrics()
+
+print(f"MEAN {sum(results.values()) / len(results):.2f} tok/s")
+
+d  = m1.get(SPEC_KEYS[0], 0) - m0.get(SPEC_KEYS[0], 0)
+dt = m1.get(SPEC_KEYS[1], 0) - m0.get(SPEC_KEYS[1], 0)
+a  = m1.get(SPEC_KEYS[2], 0) - m0.get(SPEC_KEYS[2], 0)
+if d > 0:
+    print(f"acceptance_length {1 + a / d:.3f} tokens/forward-pass   "
+          f"per_draft_token_rate {a / dt:.3f}   "
+          f"(drafts={int(d)} draft_tok={int(dt)} accepted={int(a)})")
+else:
+    print("acceptance_length n/a (no speculation)")
+PYEOF
+chmod 0755 /usr/share/kinoite/vllm/bench.py
+python3 -c 'import ast,sys; ast.parse(open("/usr/share/kinoite/vllm/bench.py").read())'
 
 ### 2. Rootless Quadlet: pod + two containers
 # /etc, not /usr: podman 5.8.4 only scans /etc/containers/systemd/users{,/$UID} for rootless
@@ -374,10 +517,50 @@ NCCL_PROTO / VLLM_FUSE_NORM_QUANT / VLLM_SPECULATIVE (see "Decode performance" b
 
 ## Decode performance
 
-All measured on-box 2026-08-19, Qwen/Qwen3.8-27B-FP8, TP=2, batch 1.
+All measured on-box, Qwen/Qwen3.8-27B-FP8, TP=2, batch 1.
 
-    with MTP (the default)   38.7 - 41.7 tok/s  depending on workload
-    without MTP              24.3 tok/s
+    with MTP k=3 (the default)   49.5 - 58.0 tok/s  depending on workload   (2026-08-20)
+    with MTP k=1 (old default)   36.8 - 39.2                                (2026-08-20)
+    without MTP                  24.3                                       (2026-08-19)
+
+The k sweep — num_speculative_tokens is the highest-value knob on this box, and it sat at 1 for a
+day because of a misread config field (see the launcher comment at SPEC_DEFAULT):
+
+    k   rust    python  prose   MEAN    accept_len  per_draft_token
+    1   38.41   39.22   36.75   38.13   1.853       0.853
+    2   49.14   50.78   46.22   48.71   2.554       0.777
+    3   55.17   57.99   49.51   54.22   3.038       0.679     <- default
+    4   56.25   60.19   50.64   55.69   3.298       0.575
+
++42% mean from k=1 to k=3 for a one-line change. Past 3 the acceptance rate per draft token falls
+faster than the extra draft depth pays for it, and the wasted drafts cost more as batch grows.
+Re-run the sweep with `bench.py` (below) after any image or model change — the knee moves.
+
+k=3 does NOT cost anything at batch >1, which was the thing worth checking before making it the
+default — speculation wastes compute when it guesses wrong, and that waste is normally what makes
+big k a bad idea on a server. Measured 2026-08-20, 4 concurrent requests x 384 tokens, released
+from a barrier so they genuinely overlap, `ignore_eos` so every stream is the same length, median
+of 3 reps:
+
+    metric                        k=1      k=3      gain
+    single stream                 40.76    67.58    +66%
+    aggregate, 4 concurrent      139.02   187.11    +35%
+    per-stream while batched     33.2-37.6 48.0-59.7
+    ~9.5k-token prompt            33.14    47.55    +43%
+    ~38k-token prompt             20.83    29.08    +40%
+
+Correctness gate (counting 1-40, 17*23, exact-word echo) passes at k=3.
+
+Note those single-stream figures are HIGHER than the k-sweep table above (67.58 vs 54.22) because
+`ignore_eos` forces the model past its natural stop into low-entropy filler, which MTP predicts
+unusually well. That is fine for an A/B where both arms do it, but it is not the number to quote.
+The honest single-stream figure is the sweep table's.
+
+CONTEXT IS NOT FREE ONCE YOU SPECULATE. The "dead flat in context" result below is about the
+NON-speculative baseline and still holds there. With MTP on, decode falls off hard with prompt
+depth — 67.6 short, 47.6 at ~9.5k, 29.1 at ~38k (same method, k=3). Both arms decay by the same
+proportion, so k=3 stays ~40% ahead everywhere, but do not quote a short-prompt tok/s as what an
+agent with a full context window will see.
 
 24.3 is dead flat in context — 24.35 at a 15-token prompt down to 22.99 at 32K, a 4% decline over
 a 2000x context increase — because 48 of the 64 layers are linear-attention with constant-size
@@ -396,8 +579,10 @@ The hardware is healthy and is NOT the limit: a synthetic large read measures **
 of the 640 GB/s spec, and the FP8 GEMVs hit 96% of that. An external datapoint corroborates the
 ceiling to within 2% — llama.cpp on a single R9700 streams this model at an implied 577 GB/s.
 
-MTP matters precisely because it does not require explaining that ~15 ms: emitting ~1.9 tokens per
-forward pass amortises the whole budget regardless of what it is made of.
+MTP matters precisely because it does not require explaining that ~15 ms: emitting ~3.0 tokens per
+forward pass amortises the whole budget regardless of what it is made of. That is also why raising
+k pays so well here — the fixed cost per pass is unusually large, so every extra token that rides
+along on the same pass is nearly free.
 
 DEAD ENDS — all eliminated by measurement on this box, do not re-chase without new evidence:
 NCCL_PROTO / all-reduce protocol (comm is only 11% of the budget); context length (flat, above);
@@ -407,15 +592,48 @@ and kyuz0's MI300X fallback patch misses all five of this model's shapes anyway)
 thermals (mclk pinned at top DPM 1258 MHz under load, mem 58C, junction 72C, no throttling);
 gpu_memory_utilization and max_num_batched_tokens (no effect on the server); iGPU spillover (the
 iGPU holds a constant 828 MiB of desktop and never moves); CPU saturation (~5 of 24 cores, and
-both GPUs report 100% busy throughout, so the CPU is not the gate); GGUF/4-bit in vLLM (that is a
-llama.cpp asset — for vLLM you would need AWQ/GPTQ, unproven on gfx1201); upgrading the image
+both GPUs report 100% busy throughout, so the CPU is not the gate); upgrading the image
 (vLLM 0.27.1 tested: baseline unchanged at 24.34, MTP WORSE at 34.66 vs 40.75).
+
+4-BIT IN vLLM — the obvious next lever, and it is weaker than it looks for THIS model. The bytes
+you actually read per token are what matter, and most 4-bit repackagings of Qwen3.8-27B barely
+shrink it, because 48 of the 64 layers are Gated DeltaNet and quantisers leave them alone:
+
+    BF16                             55.6 GB
+    FP8 (what we run)                27.8 GB
+    AWQ W4A16 (barrydeen)            27.8 GB   <- identical to FP8; GDN layers kept BF16. No win.
+    MXFP4 (Quark)                    23.3 GB   1.19x
+    W4A16 AutoRound GPTQ             ~19.5 GB  1.43x
+    GGUF IQ4_XS (llama.cpp only)     14.2 GB   1.96x
+
+So "switch to AWQ" is a trap: same bytes, worse numerics. Only the AutoRound W4A16 repack is worth
+an experiment on the vLLM side, and even then the ~15 ms fixed cost above does not shrink with it —
+27.8 -> 19.5 GB moves the GEMV term 21.5 -> 15.1 ms, i.e. 41 -> 34.6 ms, only +19% non-speculative.
+Stacked on k=3 it is worth more, but it is a download and a numerics risk for maybe +15%, whereas
+the k sweep was free. Do the cheap thing first.
 
 Profiling note: the torch profiler records ZERO GPU kernel events in this image (kineto's ROCm
 activity backend produces nothing, with or without cudagraphs), and rocprofv3 only flushes at
 process exit while vLLM will not exit under it. `rocprofv3` is present in the image if you want to
 retry, but budget real time for it — the working approach was micro-benchmarking kernels directly
 against a measured bandwidth ceiling.
+
+### Re-measuring
+
+`bench.py` is baked next to the launcher. It runs on the HOST against the published port, uses
+only the stdlib, and needs no arguments:
+
+    python3 /usr/share/kinoite/vllm/bench.py            # 512-token runs
+    python3 /usr/share/kinoite/vllm/bench.py 1024
+
+It prints decode tok/s per workload (timed first-content-token to last, so prefill and TTFT are
+excluded) and the MTP acceptance length read from vLLM's own `/metrics`. To redo the k sweep,
+change `num_speculative_tokens` in the shadowed unit, `systemctl --user restart vllm`, wait for
+`/v1/models` to answer, and run it again — about six minutes per k with a warm compile cache.
+
+Two traps when comparing numbers: generation slows as the KV cache fills, so always compare from a
+fresh load at a fixed prompt; and a run that happens to emit `<think>` blocks is not comparable to
+one that does not, which is why the harness pins `enable_thinking: false`.
 
 The reason it is expensive: on gfx1201 every fast all-reduce backend is arch-gated to CDNA, so TP
 falls through to the generic PYNCCL path. Confirmed in the startup log:
@@ -438,11 +656,18 @@ Knobs. A systemd drop-in does NOT work for these — this is a Quadlet container
 A shadowed unit is a full copy and will not track changes to the baked unit — re-copy after an
 image build.
 
-1. `VLLM_SPECULATIVE` — MTP speculative decoding, **ON by default**. The big one: ~1.9 tokens per
-   forward pass, so the whole per-token cost is amortised. Measured 2026-08-19: 41.74 tok/s on
-   rust code, 40.43 python, 38.72 prose, versus 24.3 with it off. Set to the empty string to
-   disable. Greedy output will not be byte-identical to non-speculative — that is expected, see
-   the launcher comment; batch shape alone flips the same tokens with no speculation involved.
+1. `VLLM_SPECULATIVE` — MTP speculative decoding, **ON by default at k=3**. The big one: ~3.0
+   tokens per forward pass, so the whole per-token cost is amortised. Measured 2026-08-20:
+   55.17 tok/s on rust code, 57.99 python, 49.51 prose, versus 24.3 with it off. Set to the empty
+   string to disable, or override k outright:
+
+       Environment='VLLM_SPECULATIVE={"method":"mtp","num_speculative_tokens":4}'
+
+   `num_speculative_tokens` is NOT capped by the model's `mtp_num_hidden_layers` — that field is
+   the draft head's depth, not the speculation width. See the SPEC_DEFAULT comment in the launcher
+   and the k sweep under "Decode performance". Greedy output will not be byte-identical to
+   non-speculative — that is expected, see the launcher comment; batch shape alone flips the same
+   tokens with no speculation involved.
 2. `NCCL_PROTO` — defaults to `Simple`, which MEASURED faster on this box: a 2-rank RCCL
    all-reduce benchmark gave 27.6 us/op for Simple vs 35.0 for auto at the 10 KiB size decode
    actually uses (equal by 1 MiB). Theory suggested the opposite; the theory was wrong. Note it
@@ -474,8 +699,8 @@ needed), just set it:
     Environment=VLLM_MAX_MODEL_LEN=262144      # in the shadowed unit; 256K native
 
 No fp8 KV-quant needed at these sizes; add `--kv-cache-dtype fp8` in the launcher only if you also
-want vision or many concurrent sequences. (The model also ships MTP, mtp_num_hidden_layers=1 — a
-potential vLLM `--speculative-config` speedup later, unverified on this ROCm build.)
+want vision or many concurrent sequences. (The model ships an MTP draft head and the launcher uses
+it by default — see `VLLM_SPECULATIVE` above.)
 
 ## GPU selection
 
@@ -509,5 +734,14 @@ Run whichever you want; running both at once contends for VRAM, so stop one firs
 
 ## Surviving logout
 
-    loginctl enable-linger $USER
+Already handled — `kinoite-linger.service` runs `loginctl enable-linger` for every regular
+account at boot, so a hand-started server outlives the session that started it. That matters
+here more than it looks: start vLLM over SSH without linger and the engine dies the moment
+that SSH session ends, mid-request, with nothing in the log to explain it.
+
+It cannot be baked as a file — linger is recorded under /var/lib/systemd/linger and /var is
+machine-local state, not image content — so it is re-asserted each boot. Confirm with
+`loginctl show-user $USER -p Linger`. To opt out, mask the service AND disable-linger; the
+second alone is undone at the next boot. Linger starts no LLM by itself: the Quadlets have
+no [Install] section.
 EOF

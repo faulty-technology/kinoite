@@ -362,9 +362,33 @@ Vulkan ~29. Treat anything in the low 30s as the same result — observed spread
 identical config was 32→35→31, and generation slows as the KV cache fills, so compare
 only from a fresh load at a fixed prompt. A number below ~30 is worth investigating.
 Both are near the ~30 tok/s single-card bandwidth ceiling (~640 GB/s ÷ 21.2 GB), which
-is why the backend gap is only ~20% — and MTP speculation is what puts ROCm *above* the
-naive ceiling. A remembered ~40 on Bazzite was likely **vLLM** (PyTorch/HIP), which
-shares nothing with llama.cpp's hand-written HIP backend but the name.
+is why the backend gap is only ~20%. A remembered ~40 on Bazzite was likely **vLLM**
+(PyTorch/HIP), which shares nothing with llama.cpp's hand-written HIP backend but the name.
+
+**CORRECTION 2026-08-20 — the "MTP puts ROCm above the naive ceiling" clause was wrong**
+and is struck. No MTP was configured when those numbers were taken: there is no
+`--spec-type`, no `-md` and no `draft` checkpoint in `lemonade.sh` or in the seeded
+recipes, so the low-30s figures are plain unspeculated decode sitting just under the
+bandwidth ceiling, exactly as the rest of the paragraph says. The "MTP draft state"
+mentioned in the layer-split note above was a misreading of resident VRAM.
+
+Measured properly, driving `llama-server` directly on the R9700 pair (Qwen3.8-27B-UD-IQ4_XS,
+14.0 GB, `-ngl 99 -c 32768`, HIP_VISIBLE_DEVICES=0,1, 512-token runs):
+
+| config | rust | python | prose | MEAN |
+| --- | --- | --- | --- | --- |
+| baseline, no speculation | 30.45 | 30.43 | 30.33 | **30.40** |
+| `--spec-type draft-mtp -md mtp-Qwen3.8-27B-Q4_0.gguf -ngld 99 --spec-draft-n-max 4` | 53.92 | 65.25 | 51.41 | **56.86** |
+
+**+87%.** Draft acceptance 0.45–0.67, mean accepted length 2.8–3.7. The shipped
+rocm-nightly build supports the whole feature set already (`--spec-type`, `-md`, `-ngld`,
+`--spec-draft-n-max`, `--spec-draft-p-min` are all in `--help`) — it was never switched on.
+
+Note the baseline is dead flat across workloads (30.45/30.43/30.33), the signature of a
+purely bandwidth-bound loop; the MTP arm varies a lot (51–65) because acceptance is
+workload-dependent. 30.40 tok/s on 14.0 GB works out to ~426 GB/s effective, i.e. ~67% of
+the 640 GB/s spec — llama.cpp's HIP backend leaves real bandwidth on the table here, which
+is worth remembering before attributing any llama.cpp-vs-vLLM gap to quantisation alone.
 
 **ROCm never lands on the host, and doesn't have to.** lemonade's `llamacpp-rocm`
 builds bundle their own ROCm 7 runtime, so the container needs no host ROCm and no
@@ -577,13 +601,41 @@ a new persistent volume `~/.local/share/vllm/cache` (`/opt/vllm-cache`). First s
   prompt is ~7 min of prefill — 128K is the sane default even though 256K fits).
 - [ ] Explore `--enable-prefix-caching` for agentic coding (reuse KV of the unchanged prompt prefix
       across turns) — currently `enable_prefix_caching=False`; may be unsupported on the hybrid arch.
-- [ ] vLLM ~22 tok/s vs the lemonade GGUF path, and whether MTP (`--speculative-config`) lifts it.
+- [x] **vLLM vs the lemonade GGUF path, and whether MTP lifts it — ANSWERED 2026-08-20.** MTP lifts
+      it enormously, and the knob that mattered was not "on/off" but `num_speculative_tokens`, which
+      had been pinned at 1 on a misreading of `mtp_num_hidden_layers` (that field is the draft
+      head's DEPTH, not a cap on speculation width; `vllm/config/speculative.py:765-780` only
+      requires k to be divisible by it, and everything divides by 1). Sweep at batch 1, FP8, TP=2,
+      512-token runs, decode timed first-token-to-last:
+
+      | k | rust | python | prose | MEAN | accept_len | per_draft_token |
+      | --- | --- | --- | --- | --- | --- | --- |
+      | 1 | 38.41 | 39.22 | 36.75 | 38.13 | 1.853 | 0.853 |
+      | 2 | 49.14 | 50.78 | 46.22 | 48.71 | 2.554 | 0.777 |
+      | **3** | 55.17 | 57.99 | 49.51 | **54.22** | 3.038 | 0.679 |
+      | 4 | 56.25 | 60.19 | 50.64 | 55.69 | 3.298 | 0.575 |
+
+      Knee at 3 (+42% over k=1); k=4 adds 2.7% for 33% more draft compute at much worse acceptance.
+      **Baked as the launcher default.** Head-to-head with llama.cpp on the same pair, same day:
+      vLLM FP8 (27.8 GB) k=3 = **54.22**, llama.cpp IQ4_XS (14.0 GB) MTP = **56.86**. llama.cpp
+      reads half the bytes per token and wins by ~5%; the quantisation advantage is almost entirely
+      cancelled by vLLM being the more efficient engine. Neither is "the fast one".
 - [ ] Confirm the corrected KV estimate on-box (~0.0625 GB/1K fp16, hybrid) and push
       `VLLM_MAX_MODEL_LEN=262144` (native 256K, ~16 GB KV) — should still fit the pair. Measure
       actual per-card `mem_info_vram_used` at 128K and 256K; watch prompt-processing time growth.
-- [ ] vLLM batched tok/s vs the lemonade GGUF path for a comparable model — the reason this
-      stack exists. Also confirm Open WebUI auto-discovers the model at
-      `http://localhost:8000/v1` once vLLM is up (it retries; may lag first start).
+- [x] **vLLM batched tok/s — MEASURED 2026-08-20.** 4 concurrent x 384 tokens, released from a
+      barrier so they genuinely overlap, `ignore_eos` so every stream is the same length, median of
+      3 reps: aggregate **139.02 tok/s at k=1 → 187.11 at k=3 (+35%)**, per-stream 33.2-37.6 →
+      48.0-59.7. So raising k does NOT cost anything at batch >1, which was the real risk in making
+      k=3 the default (wrong guesses waste compute, and that waste normally scales with batch).
+      Long context, same method: ~9.5k prompt 33.14 → 47.55, ~38k prompt 20.83 → 29.08.
+      Caveat on those single-stream controls (40.76 at k=1, 67.58 at k=3): `ignore_eos` pushes the
+      model into low-entropy filler past its natural stop, which MTP predicts unrealistically well.
+      Fine for an A/B where both arms do it, not a number to quote — use the k-sweep table above.
+      **Context is not free once you speculate:** 67.6 short → 47.6 at ~9.5k → 29.1 at ~38k. The
+      "dead flat in context" finding holds for the NON-speculative baseline only.
+- [ ] Confirm Open WebUI auto-discovers the model at `http://localhost:8000/v1` once vLLM is up
+      (it retries; may lag first start).
 - [ ] Shared store sanity: after a vLLM pull, `ls ~/.local/share/models/huggingface/hub`
       shows it, and a later lemonade pull lands in the same `hub/` (no second copy).
 
