@@ -293,12 +293,51 @@ be re-derived are kept here:
   collide with vLLM's reserved `VLLM_*` namespace. Harmless (bash reads them first). Rename
   to a non-`VLLM_` prefix if the log noise ever bothers.
 
-- [ ] Explore `--enable-prefix-caching` for agentic coding — still open. Confirmed off
-      (`enable_prefix_caching=False`) with the hybrid path active, but nothing logs *why*.
-      Testing needs a flag `vllm-serve.sh` does not expose, and the quadlet's `ExecStartPre`
-      reinstalls the launcher from `/usr` every start, so a hand-edited copy is overwritten.
-      To try it: shadow the quadlet, drop that `ExecStartPre`, add the flag to the launcher
-      copy in `~/.local/share/vllm/bin/`.
+Settled 2026-08-22, all detail and numbers in `vllm.md`:
+
+- **Prefix caching was never disabled — it is never enabled, and the reason is logged at
+  `logger.debug`.** `is_prefix_caching_supported` (`config/model.py`) returns False for any
+  `attn_type == "hybrid"` model: *"Hybrid models do not support prefix caching since the feature
+  is still experimental."* Qwen3.8-27B is `qwen3_5`, i.e. hybrid. `VLLM_LOGGING_LEVEL=DEBUG` shows
+  it. Forcing it works (7.4x TTFT on a shared prefix, correctness clean) and now ships as the
+  `VLLM_PREFIX_CACHING` knob, opt-in because it overrides an upstream experimental gate.
+- **`disable_padded_drafter_batch:true` is now the default**, +19% decode, coupled to
+  `--no-async-scheduling` because that pairing is what was measured.
+- **k sweep re-run under that default: the knee did not move, k=3 stays.** The flag lifts every k
+  by about the same amount, so it and speculation depth are independent levers.
+- **`ksweep.py` is baked** next to `bench.py` — re-running the sweep no longer means writing a
+  driver first, which is how k=1 once survived a day.
+
+Two traps that cost real time and will again:
+
+- **`vllm serve --help` is grouped in this version** and prints only section names, so
+  `--help | grep <flag>` finds nothing and reads as proof the flag is absent. Use `--help=all`.
+- **systemd strips bare double quotes from `Environment=`.** `Environment=VLLM_SPECULATIVE={"a":1}`
+  reaches vLLM as `{a:1}` and the unit dies with `status=2/INVALIDARGUMENT`. Single-quote the
+  whole `KEY=VALUE`.
+
+- [ ] **Two gfx1201-patched vLLM images, unevaluated** (surveyed 2026-08-22, nothing run):
+      [vllm-radiance](https://codeberg.org/StillDeadcode/vllm-radiance/) and `tcclaviger/vllm`.
+      The `vllm.md` dead end *"upgrading the image"* does **not** cover them — that was a stock
+      version bump on the same generic RDNA4 paths; these ship hand-written gfx1201 kernels.
+
+      Only one reason left to try radiance: `RADIANCE_GDN_WMMA` is the best candidate yet for the
+      **~15 ms unexplained**, because the 48 GDN layers hold constant-size state and so contribute
+      nothing to the GEMV term — exactly where a slow generic kernel hides without showing up in
+      the bandwidth accounting. Its other selling points (prefix caching, the drafter flag) turned
+      out to be flags our image already had, now adopted.
+
+      Swapping is a **launcher rewrite**, not a one-line `Image=` change — radiance needs
+      `ROCM_AITER_UNIFIED_ATTN` where `vllm-serve.sh` hard-codes `TRITON_ATTN` for RDNA4 numerics.
+      Test by hand with `podman run` against the shared model cache and `bench.py` before touching
+      the quadlet. tcclaviger ships **no public source**, so adopting it would pin an unauditable
+      binary into `vllm.container`; that is the objection, not competence.
+
+- [ ] Cheap side-lead on the ~15 ms: [ROCm#6347](https://github.com/ROCm/ROCm/issues/6347) reports
+      gfx1201 decode locking to ~33 **or** ~26 tok/s at process spawn, randomly, unrecoverable
+      without restart. Evidence here is against it — twelve service starts never exceeded 24.3,
+      which is one band, not two. Rule it out properly: spawn 5-6 times, record the
+      non-speculative baseline each time.
 
 ### Wake-on-WLAN — `build_files/profiles/north/wol.sh`
 

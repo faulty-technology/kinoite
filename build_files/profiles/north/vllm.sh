@@ -159,12 +159,49 @@ esac
 #
 # Costs ~1 extra layer of VRAM. Do not chase a newer image for this: vLLM 0.27.1 measured WORSE
 # (MTP 34.66 vs 40.75 on an identical prompt, with an unchanged baseline).
+#
+# disable_padded_drafter_batch:true is ON by default — measured +19.1% decode on 2026-08-22
+# (64.54 vs 54.21 tok/s mean, control reproduced three times at 54.20/54.21 against the recorded
+# 54.22). Acceptance length is UNCHANGED (3.006 vs 3.020), so this is not better speculation: it
+# is per-forward-pass padding overhead being removed. Biggest gain on the weakest workload —
+# prose 48.90 -> 62.16 (+27%). Correctness spot-check passed on every arm.
+#
+# It is COUPLED to --no-async-scheduling below and must stay that way: that pairing is what was
+# measured (upstream requires it), and the flag on its own was never tested. --no-async-scheduling
+# COSTS 3.2% by itself (52.48 vs 54.21, measured as its own arm to keep this honest), so the
+# +19.1% is already net of that. That is also why it is applied only when speculation is on —
+# with SPEC empty you would pay the 3.2% and get nothing back.
 EXTRA_ARGS=()
-SPEC_DEFAULT='{"method":"mtp","num_speculative_tokens":3}'
+SPEC_DEFAULT='{"method":"mtp","num_speculative_tokens":3,"disable_padded_drafter_batch":true}'
 SPEC="${VLLM_SPECULATIVE-$SPEC_DEFAULT}"
 if [ -n "$SPEC" ]; then
-    EXTRA_ARGS+=(--speculative-config "$SPEC")
+    EXTRA_ARGS+=(--speculative-config "$SPEC" --no-async-scheduling)
 fi
+
+# Prefix caching: OPT-IN, default off. Set VLLM_PREFIX_CACHING=true to enable.
+#
+# Worth it for agentic coding, where every request repeats a big fixed prefix (system prompt,
+# open files). Measured 2026-08-22 with a ~6K-token shared prefix and six different questions:
+# TTFT collapses from a flat 3.33 s per request to 3.47 s once, then 0.47 s — a 7.4x speedup on
+# every request after the first. Decode rate is unchanged (53.77 vs 54.21, inside noise), which
+# is the expected shape: this is a PREFILL optimisation and costs nothing at decode. Stacks
+# cleanly with the drafter flag above (64.11 tok/s AND 7.7x TTFT together).
+#
+# Off by default anyway, because upstream gates it: is_prefix_caching_supported (config/model.py)
+# returns False for any attn_type == "hybrid" model with "Hybrid models do not support prefix
+# caching since the feature is still experimental" — logged at DEBUG, which is why nothing ever
+# explained it. Qwen3.8-27B is qwen3_5, i.e. hybrid, so we are overriding an experimental gate.
+# Correctness spot-checks passed, but one afternoon is not enough to default it on.
+#
+# --mamba-cache-mode align is REQUIRED alongside it for a hybrid model (in this build: "only
+# cache the mamba state of the last token of each scheduler step and when the token is at
+# position i * block_size"). Do not enable prefix caching without it.
+PREFIX_CACHING="${VLLM_PREFIX_CACHING:-false}"
+case "$PREFIX_CACHING" in
+    true)  EXTRA_ARGS+=(--enable-prefix-caching --mamba-cache-mode align) ;;
+    false) ;;
+    *) echo "[vllm-serve] VLLM_PREFIX_CACHING must be true|false, got '$PREFIX_CACHING'" >&2; exit 1 ;;
+esac
 
 # ${EXTRA_ARGS[@]+...} guard: expanding an empty array is an unbound-variable error under `set -u`
 # on bash < 4.4, and this runs in whatever bash the upstream image ships.
@@ -317,6 +354,192 @@ else:
 PYEOF
 chmod 0755 /usr/share/kinoite/vllm/bench.py
 python3 -c 'import ast,sys; ast.parse(open("/usr/share/kinoite/vllm/bench.py").read())'
+
+### 1c. k sweep harness
+# Baked for the same reason bench.py is: vllm.md tells you to re-run the sweep after any image,
+# model or flag change, and without a harness "re-run the sweep" means writing the driver first.
+# That gap is how num_speculative_tokens=1 survived for a day at a cost of ~42%.
+#
+# Unlike bench.py this one RESTARTS THE SERVICE, so it shadows the quadlet. It backs up any
+# shadow unit you already had rather than clobbering it, and restores from a finally + SIGINT/
+# SIGTERM handler so Ctrl-C mid-sweep still puts the box back.
+cat > /usr/share/kinoite/vllm/ksweep.py << 'KSWEEPEOF'
+#!/usr/bin/env python3
+"""Sweep num_speculative_tokens and report the knee.
+
+    python3 /usr/share/kinoite/vllm/ksweep.py              # k = 1..6
+    python3 /usr/share/kinoite/vllm/ksweep.py 2 3 4        # only these k
+    python3 /usr/share/kinoite/vllm/ksweep.py --tokens 1024 3 4
+
+Runs on the HOST. For each k it shadows vllm.container with an overridden VLLM_SPECULATIVE,
+restarts the unit, waits for /v1/models, runs bench.py, and spot-checks correctness. Every other
+launcher setting (including disable_padded_drafter_batch) is inherited from the baked default, so
+this measures the knee GIVEN the current configuration rather than in isolation.
+
+Budget ~3-4 min per k with a warm compile cache. Restores the previous state on exit, including
+on Ctrl-C, and backs up a shadow unit you already had rather than clobbering it.
+"""
+import argparse, json, os, re, shutil, signal, subprocess, sys, time, urllib.request
+
+HOME = os.path.expanduser("~")
+SHADOW_DIR = f"{HOME}/.config/containers/systemd/users"
+SHADOW = f"{SHADOW_DIR}/vllm.container"
+BACKUP = f"{SHADOW}.ksweep-backup"
+BASE = "/etc/containers/systemd/users/vllm.container"
+BENCH = "/usr/share/kinoite/vllm/bench.py"
+API = "http://127.0.0.1:8000"
+
+def log(m): print(f"[{time.strftime('%H:%M:%S')}] {m}", flush=True)
+def sh(c, **kw): return subprocess.run(c, shell=True, capture_output=True, text=True, **kw)
+
+def spec_default():
+    """Read SPEC_DEFAULT out of the baked launcher so the sweep tracks it automatically."""
+    try:
+        src = open("/usr/share/kinoite/vllm/vllm-serve.sh").read()
+        m = re.search(r"^SPEC_DEFAULT='(.+)'$", src, re.M)
+        if m:
+            return json.loads(m.group(1))
+    except Exception:
+        pass
+    return {"method": "mtp", "num_speculative_tokens": 3}
+
+def save_state():
+    if os.path.exists(SHADOW):
+        shutil.copy2(SHADOW, BACKUP)
+        log(f"backed up your existing shadow unit -> {BACKUP}")
+
+def restore(*_):
+    if os.path.exists(BACKUP):
+        shutil.move(BACKUP, SHADOW)
+        log("restored your original shadow unit")
+    elif os.path.exists(SHADOW):
+        os.remove(SHADOW)
+        log("removed the sweep's shadow unit")
+    sh("systemctl --user daemon-reload")
+    sh("systemctl --user stop vllm north-llm-pod")
+    sh("systemctl --user reset-failed vllm")
+    log("restored")
+
+def write_shadow(spec):
+    os.makedirs(SHADOW_DIR, exist_ok=True)
+    unit = open(BASE).read()
+    # Single quotes are load-bearing: systemd strips bare double quotes and vLLM then rejects the
+    # mangled JSON with status=2/INVALIDARGUMENT. See vllm.md, knob 1.
+    line = "Environment='VLLM_SPECULATIVE=" + json.dumps(spec, separators=(",", ":")) + "'\n"
+    unit = unit.replace("\n[Service]", "\n" + line + "\n[Service]", 1)
+    open(SHADOW, "w").write(unit)
+    sh("systemctl --user daemon-reload")
+
+def restart_and_wait(timeout=1500):
+    sh("systemctl --user stop vllm north-llm-pod"); time.sleep(5)
+    sh("systemctl --user reset-failed vllm")
+    if sh("systemctl --user start vllm").returncode != 0:
+        return False, "start command failed"
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        try:
+            urllib.request.urlopen(f"{API}/v1/models", timeout=5).read()
+            return True, f"ready in {int(time.time() - t0)}s"
+        except Exception:
+            pass
+        if sh("systemctl --user is-active vllm").stdout.strip() not in ("active", "activating"):
+            j = sh("journalctl --user -u vllm -b --no-pager -o cat").stdout
+            bad = [l for l in j.splitlines() if "error" in l.lower()][-3:]
+            return False, "unit died: " + " | ".join(x[:200] for x in bad)
+        time.sleep(10)
+    return False, f"timeout after {timeout}s"
+
+CHECKS = [
+    ("count", "Count from 1 to 40, separated by single spaces. Output only the numbers.",
+     lambda s: all(str(n) in s for n in range(1, 41))),
+    ("arith", "What is 17 multiplied by 23? Reply with only the number.", lambda s: "391" in s),
+    ("echo", "Repeat exactly this and nothing else: purple canyon seventeen",
+     lambda s: "purple canyon seventeen" in s.lower()),
+]
+
+def correctness(model):
+    bad = []
+    for name, prompt, ok in CHECKS:
+        body = json.dumps({"model": model, "messages": [{"role": "user", "content": prompt}],
+                           "max_tokens": 300, "temperature": 0.0,
+                           "chat_template_kwargs": {"enable_thinking": False}}).encode()
+        req = urllib.request.Request(f"{API}/v1/chat/completions", data=body,
+                                     headers={"Content-Type": "application/json"})
+        try:
+            t = json.load(urllib.request.urlopen(req, timeout=300))["choices"][0]["message"]["content"]
+            if not ok(t):
+                bad.append(name)
+        except Exception:
+            bad.append(name)
+    return "ok" if not bad else "FAIL:" + ",".join(bad)
+
+def run_bench(tokens):
+    r = sh(f"python3 {BENCH} {tokens}", timeout=3600)
+    mean = re.search(r"MEAN ([0-9.]+) tok/s", r.stdout)
+    acc = re.search(r"acceptance_length ([0-9.]+)", r.stdout)
+    per = re.search(r"per_draft_token_rate ([0-9.]+)", r.stdout)
+    w = {m[0]: float(m[1]) for m in re.findall(r"^  (\w+)\s+([0-9.]+) tok/s", r.stdout, re.M)}
+    return {"mean": float(mean.group(1)) if mean else None,
+            "accept": float(acc.group(1)) if acc else None,
+            "per_draft": float(per.group(1)) if per else None, "workloads": w}
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("k", nargs="*", type=int, default=[1, 2, 3, 4, 5, 6])
+    ap.add_argument("--tokens", type=int, default=512)
+    a = ap.parse_args()
+
+    base = spec_default()
+    log(f"base speculative config (from the baked launcher): {json.dumps(base)}")
+    log(f"sweeping k={a.k} at {a.tokens} tokens")
+
+    save_state()
+    signal.signal(signal.SIGINT, lambda *x: (restore(), sys.exit(130)))
+    signal.signal(signal.SIGTERM, lambda *x: (restore(), sys.exit(143)))
+
+    rows = []
+    try:
+        for k in a.k:
+            spec = dict(base, num_speculative_tokens=k)
+            write_shadow(spec)
+            ok, msg = restart_and_wait()
+            log(f"k={k}: {msg}")
+            if not ok:
+                rows.append({"k": k, "error": msg}); continue
+            model = json.load(urllib.request.urlopen(f"{API}/v1/models", timeout=30))["data"][0]["id"]
+            b = run_bench(a.tokens)
+            c = correctness(model)
+            rows.append(dict(k=k, **b, correctness=c))
+            log(f"k={k}: MEAN={b['mean']} accept={b['accept']} per_draft={b['per_draft']} {c}")
+    finally:
+        restore()
+
+    print()
+    print("    k   " + "".join(f"{n:>8s}" for n in ("rust", "python", "prose")) +
+          f"{'MEAN':>8s}{'accept':>8s}{'per_dft':>9s}  correctness")
+    best = None
+    for r in rows:
+        if r.get("error"):
+            print(f"    {r['k']:<3d} ERROR: {r['error'][:60]}"); continue
+        w = r["workloads"]
+        print(f"    {r['k']:<3d} " + "".join(f"{w.get(n, 0):8.2f}" for n in ("rust", "python", "prose")) +
+              f"{r['mean']:8.2f}{r['accept'] or 0:8.3f}{r['per_draft'] or 0:9.3f}  {r['correctness']}")
+        if r["correctness"] == "ok" and (best is None or r["mean"] > best["mean"]):
+            best = r
+    if best:
+        print()
+        print(f"    best MEAN at k={best['k']} ({best['mean']:.2f} tok/s)")
+        print("    The knee is where the gain per extra k stops paying for the draft compute --")
+        print("    read the per_dft column, not just MEAN, and remember wasted drafts cost more")
+        print("    as batch size rises. See vllm.md, 'Decode performance'.")
+    print()
+    print("    NOT persisted. To adopt a k, set it in a shadowed unit (vllm.md 'Knobs') or change")
+    print("    SPEC_DEFAULT in build_files/profiles/north/vllm.sh and rebuild.")
+
+main()
+KSWEEPEOF
+chmod 0755 /usr/share/kinoite/vllm/ksweep.py
+python3 -c 'import ast,sys; ast.parse(open("/usr/share/kinoite/vllm/ksweep.py").read())'
 
 ### 2. Rootless Quadlet: pod + two containers
 # /etc, not /usr: podman 5.8.4 only scans /etc/containers/systemd/users{,/$UID} for rootless
@@ -491,22 +714,37 @@ NCCL_PROTO / VLLM_FUSE_NORM_QUANT / VLLM_SPECULATIVE (see "Decode performance" b
 
 All measured on-box, Qwen/Qwen3.8-27B-FP8, TP=2, batch 1.
 
-    with MTP k=3 (the default)   49.5 - 58.0 tok/s  depending on workload   (2026-08-20)
-    with MTP k=1 (old default)   36.8 - 39.2                                (2026-08-20)
-    without MTP                  24.3                                       (2026-08-19)
+    k=3 + disable_padded_drafter_batch (CURRENT default)  62.2 - 67.1 tok/s  (2026-08-22)
+    with MTP k=3 alone (old default)                      48.9 - 58.3       (2026-08-20/22)
+    with MTP k=1 (older default)                          36.8 - 39.2       (2026-08-20)
+    without MTP                                           24.3              (2026-08-19)
 
-The k sweep — num_speculative_tokens is the highest-value knob on this box, and it sat at 1 for a
-day because of a misread config field (see the launcher comment at SPEC_DEFAULT):
+THE DRAFTER-BATCH FLAG, measured 2026-08-22 (five arms, fresh load each, correctness clean;
+control reproduced 54.20/54.21 against the 54.22 recorded two days earlier):
 
-    k   rust    python  prose   MEAN    accept_len  per_draft_token
-    1   38.41   39.22   36.75   38.13   1.853       0.853
-    2   49.14   50.78   46.22   48.71   2.554       0.777
-    3   55.17   57.99   49.51   54.22   3.038       0.679     <- default
-    4   56.25   60.19   50.64   55.69   3.298       0.575
+    arm                              MEAN    vs ctl   accept   rust    python  prose
+    control (k=3)                    54.21     --     3.020    55.42   58.29   48.90
+    --no-async-scheduling alone      52.48    -3.2%   3.000     --      --      --
+    + disable_padded_drafter_batch   64.54   +19.1%   3.006    64.37   67.10   62.16   <- default
+    + prefix caching as well         64.11   +18.3%   2.975    63.52   69.14   59.67
 
-+42% mean from k=1 to k=3 for a one-line change. Past 3 the acceptance rate per draft token falls
-faster than the extra draft depth pays for it, and the wasted drafts cost more as batch grows.
-Re-run the sweep with `bench.py` (below) after any image or model change — the knee moves.
+Acceptance is flat, so the gain is padding overhead removed, not better speculation. The
+scheduling arm was run alone so the headline is quoted net of its -3.2%.
+
+K SWEEP under the current default (2026-08-22, `ksweep.py 1 2 3 4 5 6`, one run per k):
+
+    k       rust  python   prose    MEAN  accept  per_dft
+    1      48.67   49.18   46.17   48.00   1.870    0.870
+    2      59.39   61.54   55.22   58.72   2.516    0.758
+    3      64.43   67.14   62.15   64.57   3.006    0.669   <- default
+    4      65.95   72.03   59.40   65.79   3.277    0.569
+    5      59.32   72.85   55.45   62.54   3.397    0.479
+    6      65.44   67.45   53.10   61.99   3.587    0.431
+
+k=4 wins MEAN by 1.9% and is still the wrong default: per_dft 0.669 -> 0.569 means 43% of drafts
+are wasted (costlier as batch rises, and this box runs --max-num-seqs 4), it regresses the worst
+workload (prose 62.15 -> 59.40), and 1.9% is inside this harness's noise — k=5/k=6 are
+non-monotonic. One run per k shows the shape, not a 2% difference. Re-run with `ksweep.py`.
 
 k=3 does NOT cost anything at batch >1, which was the thing worth checking before making it the
 default — speculation wastes compute when it guesses wrong, and that waste is normally what makes
@@ -564,8 +802,18 @@ and kyuz0's MI300X fallback patch misses all five of this model's shapes anyway)
 thermals (mclk pinned at top DPM 1258 MHz under load, mem 58C, junction 72C, no throttling);
 gpu_memory_utilization and max_num_batched_tokens (no effect on the server); iGPU spillover (the
 iGPU holds a constant 828 MiB of desktop and never moves); CPU saturation (~5 of 24 cores, and
-both GPUs report 100% busy throughout, so the CPU is not the gate); upgrading the image
-(vLLM 0.27.1 tested: baseline unchanged at 24.34, MTP WORSE at 34.66 vs 40.75).
+both GPUs report 100% busy throughout, so the CPU is not the gate); bumping to a newer STOCK
+vLLM (0.27.1 tested — kyuz0's own `dev` tag: baseline unchanged at 24.34, MTP WORSE 34.66 vs 40.75).
+
+THAT DEAD END COVERS STOCK VERSION BUMPS ONLY — not the gfx1201-PATCHED builds
+(stilldeadcode/vllm-radiance, tcclaviger/vllm), which ship hand-written kernels. Neither has been
+run on this box; the evaluation and the one reason still worth chasing (radiance's GDN kernel vs
+the ~15 ms below) live in notes/kinoite-north-validation.md. Note radiance's prefix-caching and
+drafter-batch flags turned out to be flags THIS image already had — both adopted above.
+
+WHY PREFIX CACHING IS OFF (answered 2026-08-22): nothing disables it — it is never enabled,
+because the model is hybrid and upstream gates the feature as experimental. The reason is logged
+at logger.debug, which is why it never showed up. How to turn it on: knob 5 below.
 
 4-BIT IN vLLM — the obvious next lever, and it is weaker than it looks for THIS model. The bytes
 you actually read per token are what matter, and most 4-bit repackagings of Qwen3.8-27B barely
@@ -599,9 +847,22 @@ only the stdlib, and needs no arguments:
     python3 /usr/share/kinoite/vllm/bench.py 1024
 
 It prints decode tok/s per workload (timed first-content-token to last, so prefill and TTFT are
-excluded) and the MTP acceptance length read from vLLM's own `/metrics`. To redo the k sweep,
-change `num_speculative_tokens` in the shadowed unit, `systemctl --user restart vllm`, wait for
-`/v1/models` to answer, and run it again — about six minutes per k with a warm compile cache.
+excluded) and the MTP acceptance length read from vLLM's own `/metrics`.
+
+To redo the k sweep, do NOT drive it by hand — `ksweep.py` is baked next to it and does the whole
+thing, including restoring your state on Ctrl-C:
+
+    python3 /usr/share/kinoite/vllm/ksweep.py            # k = 1..6, ~3-4 min each
+    python3 /usr/share/kinoite/vllm/ksweep.py 3 4        # just the two that matter
+    python3 /usr/share/kinoite/vllm/ksweep.py --tokens 1024 3 4
+
+It shadows the quadlet itself (backing up one you already have), restarts vLLM per k, runs
+`bench.py`, correctness-gates each row, and prints the table. It reads `SPEC_DEFAULT` out of the
+baked launcher, so it always sweeps k around whatever the current default config is rather than in
+isolation. Nothing it does persists — adopting a k means editing `SPEC_DEFAULT` and rebuilding.
+
+One run per k is enough to see the shape but NOT to separate rows a couple of percent apart; run
+the two candidates several times before acting on a small difference.
 
 Two traps when comparing numbers: generation slows as the KV cache fills, so always compare from a
 fresh load at a fixed prompt; and a run that happens to emit `<think>` blocks is not comparable to
@@ -628,18 +889,24 @@ Knobs. A systemd drop-in does NOT work for these — this is a Quadlet container
 A shadowed unit is a full copy and will not track changes to the baked unit — re-copy after an
 image build.
 
-1. `VLLM_SPECULATIVE` — MTP speculative decoding, **ON by default at k=3**. The big one: ~3.0
-   tokens per forward pass, so the whole per-token cost is amortised. Measured 2026-08-20:
-   55.17 tok/s on rust code, 57.99 python, 49.51 prose, versus 24.3 with it off. Set to the empty
-   string to disable, or override k outright:
+1. `VLLM_SPECULATIVE` — MTP speculative decoding, **ON by default at k=3 with
+   `disable_padded_drafter_batch:true`**: 64.5 tok/s mean, versus 54.2 with k=3 alone and 24.3
+   with speculation off. Empty string disables it. To override — **the single quotes are
+   load-bearing**:
 
-       Environment='VLLM_SPECULATIVE={"method":"mtp","num_speculative_tokens":4}'
+       Environment='VLLM_SPECULATIVE={"method":"mtp","num_speculative_tokens":4,"disable_padded_drafter_batch":true}'
 
-   `num_speculative_tokens` is NOT capped by the model's `mtp_num_hidden_layers` — that field is
-   the draft head's depth, not the speculation width. See the SPEC_DEFAULT comment in the launcher
-   and the k sweep under "Decode performance". Greedy output will not be byte-identical to
-   non-speculative — that is expected, see the launcher comment; batch shape alone flips the same
-   tokens with no speculation involved.
+   Without them systemd strips the inner double quotes, vLLM gets `{method:mtp,...}`, and the unit
+   dies with `status=2/INVALIDARGUMENT`. The launcher echoes the value at startup as
+   `[vllm-serve]` — check `journalctl --user -u vllm` if an override seems to be ignored.
+
+   `--no-async-scheduling` is added whenever speculation is on; that pairing is what was measured.
+   Do not decouple without re-measuring (the scheduling flag alone costs 3.2%, and the drafter
+   flag alone was never tested).
+
+   `num_speculative_tokens` is NOT capped by `mtp_num_hidden_layers` — that is the draft head's
+   depth, not the speculation width. Greedy output will not be byte-identical to non-speculative;
+   that is expected, batch shape alone flips the same tokens.
 2. `NCCL_PROTO` — defaults to `Simple`, which MEASURED faster on this box: a 2-rank RCCL
    all-reduce benchmark gave 27.6 us/op for Simple vs 35.0 for auto at the 10 KiB size decode
    actually uses (equal by 1 MiB). Theory suggested the opposite; the theory was wrong. Note it
@@ -650,6 +917,18 @@ image build.
    requests queueing. There is room: the engine reports 426,942 KV tokens, 3.25x the 128K context.
 4. `VLLM_FUSE_NORM_QUANT=true` — re-test the fusion kyuz0 disabled for a gfx1201 crash on an older
    vLLM. Default stays `false`. If it starts and generates sane text, flip the default in vllm.sh.
+5. `VLLM_PREFIX_CACHING=true` — **opt-in, off by default.** For agentic coding, where every
+   request repeats a big fixed prefix. Measured 2026-08-22 (~6K-token shared prefix, six
+   questions): TTFT goes from a flat 3.33 s per request to 3.47 s once, then **0.47 s — 7.4x** on
+   every request after. Decode unchanged; stacks with the drafter flag. The launcher adds the
+   required `--mamba-cache-mode align` automatically.
+
+   Not the default because it overrides an upstream gate: `is_prefix_caching_supported`
+   (`config/model.py`) returns False for any `attn_type == "hybrid"` model — "Hybrid models do not
+   support prefix caching since the feature is still experimental" — and Qwen3.8-27B is `qwen3_5`,
+   i.e. hybrid. Correctness passed, but that is one afternoon; run it a while before flipping the
+   default. That same line, at `logger.debug`, is why the feature being off was never explained —
+   `VLLM_LOGGING_LEVEL=DEBUG` shows it.
 
 Not worth chasing: QuickReduce (arch-gated, never RDNA4); PP=2 instead of TP=2 (batch-1 decode
 serialises both shards, ~21 tok/s, worse); TP=1 (29 GB of weights + KV will not fit 30.4 GB
@@ -657,7 +936,10 @@ usable); PCIe tuning (already 5.0 x16); the one-shot Triton JIT warnings (not st
 Higher ceiling but invasive: this image already patches `_ON_MI3XX` in rocm.py to include gfx1201,
 so patching `use_custom_allreduce()` the same way may light up the one-shot custom all-reduce —
 generic HIP, but needs correctness checking (garbage output / hangs), and pairs with `iommu=pt`
-(`rpm-ostree kargs --append=iommu=pt`, reboot; no IOMMU kargs are set today).
+(`rpm-ostree kargs --append=iommu=pt`, reboot; no IOMMU kargs are set today). NOTE: someone
+already did this — stilldeadcode/vllm-radiance ships it as RADIANCE_FAST_REDUCE, so the cheap
+way to evaluate the idea is to run that image rather than to patch this one. See the
+gfx1201-patched-images note under DEAD ENDS above; the 11% ceiling still applies either way.
 
 Qwen3.8-27B is vision-capable; the launcher serves it text-only (--language-model-only) to save
 VRAM. To enable vision, drop that flag in the launcher copy (costs VRAM).
