@@ -427,28 +427,28 @@ SIGKILL now skips a teardown that actually matters. Nothing here has run on the 
 
 ### GPU — `build_files/profiles/north/amdgpu.sh`, `tuning.sh`
 
-- [ ] Does `70-kfd.rules` help or hurt? Observed on the laptop: `/dev/dri/renderD128`
-      is mode **0666**, and Fedora's `70-uaccess.rules` tags DRM render nodes but has
-      no `kfd` line — so the script's comment is accurate and its rule is the only
-      thing tagging `/dev/kfd`. What's unknown is whether the base rules already ship
-      `/dev/kfd` at 0666 too; if so our `MODE="0660"` *tightens* it and then hands
-      back via `uaccess`/`render` access that was never restricted. One command
-      settles it: `stat -c '%n %a %U %G' /dev/kfd /dev/dri/renderD128`. If `/dev/kfd`
-      reads `666 root render` with our rule removed, drop the rule (or set
-      `MODE="0666"`) and delete the `usermod -aG render,video` advice from the README.
+- [x] **`70-kfd.rules` HURT — REMOVED 2026-08-22.** The base rules do ship kfd:
+      `systemd-udev`'s own `/usr/lib/udev/rules.d/50-udev-default.rules:62` has
+      `SUBSYSTEM=="kfd", GROUP="render", MODE="0666"`. Our `MODE="0660"` was therefore
+      tightening it and handing the access back only via `uaccess`/`render` — which is
+      what made `usermod -aG render` look necessary for headless SSH. Rule deleted from
+      `amdgpu.sh`, README advice dropped. On-box before removal:
+      `/dev/kfd 660 root render`, `/dev/dri/renderD12[89],130 666 root render`.
 - [x] Fan control works post-flash; fan OD nodes all tested and all irrelevant; the
       ~1950 RPM floor was `coolercontrold` + `lactd` polling, not firmware; CoolerControl
       dropped from `motherboard.sh`. All four resolved 2026-08-17/18 — see Settled.
       Operationally: keep every OD node out of the LACT config, leave LACT on
       **Automatic**.
-- [ ] LACT vs quiet idle — `lactd` polls the same way, so the dGPUs won't idle while it
-      runs. Check whether it can stop polling with no GUI client attached, or poll
-      slower than 5 s. Until then it's a straight trade; `systemctl stop lactd` reclaims
-      the idle and already-applied settings persist.
-      Half-answered 2026-08-22: with `lactd` **inactive**, both R9700s do reach
-      `runtime_status=suspended` (~645 s of `runtime_suspended_time` each) while the
-      iGPU stays `active` driving the desktop. So the mechanism is confirmed and the
-      only open part is whether LACT can be made to poll politely.
+- [x] **LACT vs quiet idle — ANSWERED 2026-08-22: the poll interval IS configurable.**
+      `/etc/lact/config.yaml` carries `interval_ms: 500` (per profile) — LACT polls twice
+      a second, faster than the 1 s assumed, and it is a plain config key. Setting it well
+      past the 5 s autosuspend delay should let the dGPUs idle between polls; that trade
+      has not been measured, but "can it poll politely" is answered: yes, edit
+      `interval_ms`. Confirmed too that polling is the whole story — with `lactd` not
+      running, both R9700s sit at `runtime_status=suspended` (~645 s accumulated) while
+      the iGPU stays `active` driving the desktop.
+      Note the box currently has `lactd` **disabled**, though `tuning.sh:47` enables it
+      in the image — so this is a local override, not the shipped default.
 - [x] Virtual monitor: no-display bug fixed and the display moved to on-demand
       (2026-08-18) — see Settled. Both are code-complete and neither has run on the box;
       the hardware checks live under Sunshine above.
@@ -460,10 +460,14 @@ SIGKILL now skips a teardown that actually matters. Nothing here has run on the 
       `/etc/lact/config.yaml`, THEN bake the proven offsets into `tuning.sh`. Bake
       only after load-testing — a too-aggressive offset would make a fresh install
       unstable at boot.
-- [ ] HDR, if wanted: `mesa-vulkan-drivers-freeworld` supersedes `VK_hdr_layer`,
-      but RPM Fusion trails Fedora's mesa (26.0.3 vs 26.1.6), so we don't swap it —
-      a Vulkan downgrade on RDNA4 is the worse trade. Revisit if RPM Fusion catches
-      up and gamescope HDR turns out to matter.
+- [x] **HDR — the blocker is GONE as of 2026-08-22; what's left is a preference.**
+      RPM Fusion has caught up: `mesa-vulkan-drivers-freeworld 26.1.7-1.fc44` in
+      *RPM Fusion - Free - Updates* matches the installed Fedora `mesa-vulkan-drivers
+      26.1.7-1.fc44`, so swapping no longer downgrades the Vulkan driver on RDNA4.
+      Still not swapped because nothing here needs `VK_hdr_layer` yet — it is now a
+      straight "do you want gamescope HDR" call, not a technical objection. `codecs.sh`
+      updated to say so. Re-check the versions still match before swapping; the gap can
+      reopen.
 
 ### Containerized ROCm + lemonade — `build_files/profiles/north/lemonade.sh`
 
@@ -488,21 +492,22 @@ proven, the ROCm backend is not.
   120001`), node 3 = iGPU (`100306`). `ROCR_VISIBLE_DEVICES` indexes GPU agents only,
   so `0,1` is the pair that excludes the iGPU.
 
-- [ ] `TAG+="uaccess"` actually lands on `/dev/kfd` — it's a non-DRM device, so
-      whether logind assigns it to a seat is the open question. `getfacl -p /dev/kfd`
-      while logged in locally: the login user should appear without being in `render`.
-      No active seat (SSH) means no ACL either way. Do the `stat` check under GPU
-      above first — it may make this moot. Lower priority now that passthrough is
-      proven working for the local-login case.
-- [ ] `UserNS=keep-id:uid=10001,gid=10001` gives host-side files owned by the login
-      user: `ls -ln ~/.local/share/models/huggingface` after the first model pull. A
-      subuid owner means keep-id didn't apply and the bind mounts are pointless. Needs
-      `grep "^$USER:" /etc/subuid` non-empty and sized > 10001.
-- [ ] `GroupAdd=keep-groups` — confirm effective or delete the key. Known-flaky here:
-      containers/podman#27876 (inert in rootless Quadlets; groups come from the
-      `systemd --user` manager, so `usermod -aG` needs `loginctl terminate-user`) and
-      #28364 (device gids under keep-id). Only matters if `/dev/kfd` isn't 0666 *and*
-      the box is driven headless.
+- [x] **`TAG+="uaccess"` did land on `/dev/kfd` — CONFIRMED 2026-08-22, and now moot.**
+      With a seat0 session present, `getfacl -p /dev/kfd` showed `user:north:rw-`, so
+      logind does seat-assign this non-DRM device. Moot because the rule that set the tag
+      has been removed: at the base 0666 no ACL is needed. Recorded so nobody re-derives
+      it if a rule is ever reconsidered.
+- [x] **`keep-id` works — CONFIRMED 2026-08-22.** `ls -ln` on the model store shows
+      `hub/` and `xet/` owned by `1000:1000`, and the lemonade `config/`, `llama/`,
+      `huggingface/` dirs likewise — not subuids. `/etc/subuid` reads
+      `north:524288:65536`, comfortably sized past 10001. The bind mounts are yours to
+      inspect and prune as intended.
+- [ ] `GroupAdd=keep-groups` — **now believed unnecessary; candidate for deletion.** Its
+      own precondition was "only matters if `/dev/kfd` isn't 0666 *and* the box is driven
+      headless", and `/dev/kfd` is 0666 (see the GPU section). Left in place rather than
+      removed blind, since it is also known-flaky in rootless Quadlets
+      (containers/podman#27876, #28364). Delete it the next time lemonade is exercised
+      headless and proven to work without it.
 - [ ] Is `--load-mode mmap` in the seeded `rocm_args` actually load-bearing? It was
       pinned throughout the SELinux bisect and never isolated afterwards. Drop it and
       retry; if ROCm still loads, remove it from `lemonade-defaults.json`.
@@ -604,7 +609,14 @@ a new persistent volume `~/.local/share/vllm/cache` (`/opt/vllm-cache`). First s
   is safe. Throughput: **~22 tok/s generation, ~630 tok/s prefill** on the pair (so a FULL 256K
   prompt is ~7 min of prefill — 128K is the sane default even though 256K fits).
 - [ ] Explore `--enable-prefix-caching` for agentic coding (reuse KV of the unchanged prompt prefix
-      across turns) — currently `enable_prefix_caching=False`; may be unsupported on the hybrid arch.
+      across turns) — **still open, not settled 2026-08-22.** Confirmed from the startup log that
+      it is off (`enable_prefix_caching=False`) and that the hybrid path is active
+      (`Setting attention block size to 800 tokens to ensure that attention page size is >= mamba
+      page size`), but nothing in the log says *why* it is off. Testing it needs a launcher flag
+      that `vllm-serve.sh` does not expose, and the quadlet's `ExecStartPre` reinstalls the
+      launcher from `/usr` on every start — so a hand-edited copy is overwritten. To actually try
+      it: shadow the quadlet, drop that `ExecStartPre` line, and add `--enable-prefix-caching` to
+      the launcher copy in `~/.local/share/vllm/bin/`.
 - [x] **vLLM vs the lemonade GGUF path, and whether MTP lifts it — ANSWERED 2026-08-20.** MTP lifts
       it enormously, and the knob that mattered was not "on/off" but `num_speculative_tokens`, which
       had been pinned at 1 on a misreading of `mtp_num_hidden_layers` (that field is the draft
@@ -624,9 +636,22 @@ a new persistent volume `~/.local/share/vllm/cache` (`/opt/vllm-cache`). First s
       vLLM FP8 (27.8 GB) k=3 = **54.22**, llama.cpp IQ4_XS (14.0 GB) MTP = **56.86**. llama.cpp
       reads half the bytes per token and wins by ~5%; the quantisation advantage is almost entirely
       cancelled by vLLM being the more efficient engine. Neither is "the fast one".
-- [ ] Confirm the corrected KV estimate on-box (~0.0625 GB/1K fp16, hybrid) and push
-      `VLLM_MAX_MODEL_LEN=262144` (native 256K, ~16 GB KV) — should still fit the pair. Measure
-      actual per-card `mem_info_vram_used` at 128K and 256K; watch prompt-processing time growth.
+- [x] **256K works, and the KV estimate holds — MEASURED 2026-08-22.** Ran the shipped stack at
+      `VLLM_MAX_MODEL_LEN=262144`: it loads, serves, and generates correctly. Both runs at the
+      image's `num_speculative_tokens=1`, so they are comparable:
+
+          128K   GPU KV cache 314,572 tokens   max concurrency 2.40x
+          256K   GPU KV cache 332,781 tokens   max concurrency 1.27x   28,447 MiB/card
+
+      KV cost: 11.01 GiB/rank for 332,781 tokens = **0.033 GiB per 1K tokens per rank**, i.e.
+      ~0.066 GiB/1K across the TP pair — the ~0.0625 GB/1K estimate was right to within ~6%.
+
+      The important correction: **256K does not cost VRAM, it costs concurrency.** Per-card usage
+      barely moves (~28.1 → ~28.4 GiB) because `gpu_memory_utilization=0.95` is a *budget*, not a
+      demand — the KV pool is whatever fits in it either way. Raising `max_model_len` only lets one
+      request consume more of that fixed pool, so full-context concurrency drops 2.40x → 1.27x.
+      Enable it via a shadowed quadlet if you want the long context; there is no memory reason not
+      to, only a batching one.
 - [x] **vLLM batched tok/s — MEASURED 2026-08-20.** 4 concurrent x 384 tokens, released from a
       barrier so they genuinely overlap, `ignore_eos` so every stream is the same length, median of
       3 reps: aggregate **139.02 tok/s at k=1 → 187.11 at k=3 (+35%)**, per-stream 33.2-37.6 →
@@ -638,8 +663,17 @@ a new persistent volume `~/.local/share/vllm/cache` (`/opt/vllm-cache`). First s
       Fine for an A/B where both arms do it, not a number to quote — use the k-sweep table above.
       **Context is not free once you speculate:** 67.6 short → 47.6 at ~9.5k → 29.1 at ~38k. The
       "dead flat in context" finding holds for the NON-speculative baseline only.
-- [ ] Confirm Open WebUI auto-discovers the model at `http://localhost:8000/v1` once vLLM is up
-      (it retries; may lag first start).
+- [x] **Open WebUI → vLLM path confirmed 2026-08-22.** From inside the pod's network namespace
+      (`nsenter -t $(podman inspect north-llm-infra --format '{{.State.Pid}}') -n`),
+      `http://localhost:8000/v1/models` returns `Qwen/Qwen3.8-27B-FP8` — and that is exactly the
+      address open-webui is configured with (`OPENAI_API_BASE_URL=http://localhost:8000/v1`,
+      `ENABLE_OLLAMA_API=false`, both verified via `podman inspect`). Open WebUI's own
+      `/health` answers `{"status":true}`. Scope: this proves the network + config path; the UI
+      actually *listing* the model is unverified because `/openai/models` returns
+      `Not authenticated` and confirming it would mean creating an account on the box.
+      Note `podman exec` into these containers fails under `runuser` (`OCI permission denied`
+      writing the payload cgroup) — no session cgroup delegation. Use `nsenter` on the infra
+      container instead, or a real login session.
 - [x] **Shared store — CONFIRMED 2026-08-22.** One `hub/` holds both runtimes' models:
       `models--Qwen--Qwen3.8-27B-FP8` (vLLM) next to `models--unsloth--*-GGUF`
       (lemonade), 41 GB total, no second copy.
@@ -737,6 +771,7 @@ Constraints worth not re-discovering:
 
 ### Build
 
-- [ ] If a build fails on a GPG mismatch, re-verify every pinned fingerprint with
-      `build_files/scripts/lib/check-keys.sh` (it diffs pins against the live vendor
-      keys and exits nonzero on drift).
+Standing procedure, not a verification: if a build fails on a GPG mismatch, run
+`build_files/scripts/lib/check-keys.sh` — it diffs the pins against the live vendor keys
+and exits nonzero on drift. Last run 2026-08-22: **all 6 pinned keys match** (bazzite-org,
+pvermeer/sunshine, ilyaz/LACT, 1Password, Google Chrome x9, Tailscale x2).

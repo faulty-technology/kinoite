@@ -20,12 +20,17 @@ set -ouex pipefail
 install_pkgs amd-gpu-firmware amdsmi
 
 ### Compute device access for containerized ROCm
-# Only /dev/kfd needs a rule — systemd's 70-uaccess.rules already tags the DRM
-# render nodes, so logind ACLs those to the active seat user. uaccess grants
-# nothing without an active seat, so GROUP="render" stays as the headless path.
+# Deliberately NO udev rule. systemd-udev's own 50-udev-default.rules already ships
+#     SUBSYSTEM=="kfd", GROUP="render", MODE="0666"
+# so /dev/kfd is world-accessible out of the box, exactly like the DRM render nodes.
 #
-# TODO(hardware): confirm uaccess lands on /dev/kfd — it's a non-DRM device, so
-# seat assignment is the open question. See notes/kinoite-north-validation.md.
-cat > /usr/lib/udev/rules.d/70-kfd.rules << 'EOF'
-KERNEL=="kfd", TAG+="uaccess", GROUP="render", MODE="0660"
-EOF
+# This image used to ship 70-kfd.rules with MODE="0660" + TAG+="uaccess", and that was a
+# net LOSS: it TIGHTENED the base 0666, then handed the access back only to the
+# active-seat user (via the uaccess ACL) or to members of `render`. The practical cost
+# was that a headless SSH session, having no seat, needed `usermod -aG render` for
+# something that was never restricted in the first place. Dropping the rule restores 0666
+# and removes that fallback. Before re-adding any rule here, check what the base already
+# gives you: `stat -c '%a %G' /dev/kfd` and `grep -r kfd /usr/lib/udev/rules.d/`.
+#
+# (For the record the uaccess tag did work — getfacl on a seated login showed the user
+# ACL land on /dev/kfd. It is simply redundant at mode 0666.)

@@ -15,7 +15,11 @@ set -ouex pipefail
 install_pkgs_erasing ffmpeg
 install_pkgs mesa-va-drivers-freeworld gstreamer1-plugins-bad-freeworld
 
-# Deliberately NOT swapping mesa-vulkan-drivers for the freeworld build: RPM
-# Fusion trails Fedora's mesa (26.0.3 vs 26.1.6), and downgrading the Vulkan
-# driver on RDNA4 costs more than the VK_hdr_layer it would bring.
+# Deliberately NOT swapping mesa-vulkan-drivers for the freeworld build — but note the
+# reason has changed. It used to be a version argument (RPM Fusion trailed Fedora, and
+# downgrading the Vulkan driver on RDNA4 cost more than the VK_hdr_layer it brought).
+# That gap has closed: RPM Fusion's -updates now carries mesa-vulkan-drivers-freeworld
+# at the same version Fedora ships. So this is now purely "nothing here needs HDR yet".
+# Swap it if gamescope HDR becomes wanted, after re-checking the versions still match:
+#   dnf repoquery mesa-vulkan-drivers-freeworld && rpm -q mesa-vulkan-drivers
 
