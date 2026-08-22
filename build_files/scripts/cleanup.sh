@@ -13,3 +13,12 @@ fi
 
 # Shipped by the base image, not by us.
 rm -f /etc/yum.repos.d/_copr:copr.fedorainfracloud.org:phracek:PyCharm.repo
+
+### Build residue in runtime-only and machine-local paths (both are bootc lint warnings)
+# /run and /tmp are tmpfs at runtime, so anything baked into them is masked at boot and can
+# never be read — dnf, systemctl and mcstrans all leave directories behind. Content under
+# /var only seeds a fresh machine's /var, which makes dnf's repo cache and the `countme`
+# files it writes equally pointless. rpm's own db under /var/lib/rpm is deliberately left
+# alone: bake_sbom runs after this and queries it.
+find /run /tmp -mindepth 1 -delete 2>/dev/null || true
+rm -rf /var/lib/dnf/repos
