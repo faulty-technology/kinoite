@@ -465,8 +465,10 @@ Endpoints, loopback only, unauthenticated:
     http://127.0.0.1:3000        Open WebUI
     http://127.0.0.1:8000/v1     vLLM OpenAI-compatible API (for coding agents)
 
-If `start north-llm-pod` doesn't bring up both containers on this podman, start a member
-instead — it pulls in the pod: `systemctl --user start vllm`.
+Starting the pod brings both containers with it: podman 5.8.4's Quadlet gives the POD service
+`Wants=` + `Before=` its members, and each MEMBER `BindsTo=` + `After=` the pod. So either
+direction works — `systemctl --user start vllm` starts the pod too, and stopping the pod tears
+both members down through that `BindsTo`.
 
 First run is slow: the vLLM image is ~32 GB and the model ~27 GB, both downloaded once.
 The unit pre-pulls the image itself (an ExecStartPre `podman pull`, since podman hard-caps the
@@ -744,4 +746,49 @@ machine-local state, not image content — so it is re-asserted each boot. Confi
 `loginctl show-user $USER -p Linger`. To opt out, mask the service AND disable-linger; the
 second alone is undone at the next boot. Linger starts no LLM by itself: the Quadlets have
 no [Install] section.
+
+## Suspend / resume
+
+Handled automatically by `kinoite-llm-sleep.service`. Not a power tweak — **with a model loaded
+and this hook off, suspending hangs the machine.** amdgpu evicts VRAM into system RAM to suspend;
+vLLM holds ~28 GiB on each R9700 against 64 GB of RAM, and it does not fit. The kernel stops after
+`PM: suspend entry` / `Filesystems sync`, never reaches `Freezing user space processes`, and logs
+no error at all — fans on, no video, no network, recoverable only by holding the power button.
+
+    before sleep   stops north-llm-pod + vllm + open-webui + lemonade (whichever are up),
+                   recording what was running to /run/kinoite-llm-sleep/<uid>
+    after resume   starts back exactly those units, with --no-block
+
+It **restores state, it does not enforce policy**: stop vLLM by hand before suspending and it
+stays stopped after you wake, so waking the box to stream a game leaves both dGPUs free. Restore
+goes through the MEMBER units, never the pod. `/run` is tmpfs on purpose — after a cold boot
+nothing starts, matching the missing `[Install]` sections.
+
+Expect **1-2 minutes** before the API answers again; the weights reload even though the
+torch.compile cache survives. `journalctl --user -u vllm -f` and wait for `Application startup
+complete` — because the restore is `--no-block`, the hook's own journal only proves the start job
+was accepted, not that the server came up.
+
+One hook covers suspend, hibernate and hybrid-sleep (all four sleep services `Requires=sleep.target`).
+
+Both edges can be tested **without suspending the box** — call the helper, not the unit:
+
+    systemctl --user start vllm                    # wait for Application startup complete
+    sudo /usr/libexec/kinoite-llm-sleep pre
+    cat /run/kinoite-llm-sleep/$UID                # vllm.service / open-webui.service
+    grep . /sys/class/drm/card*/device/mem_info_vram_used   # ~28 GiB -> ~57 MiB in a few seconds
+    sudo /usr/libexec/kinoite-llm-sleep post
+
+`systemctl start kinoite-llm-sleep` is *not* the first half of that: `StopWhenUnneeded=yes` makes
+a manual start immediately unneeded, so both edges fire ~40 ms apart. Only manual starts behave
+that way — during a real sleep cycle sleep.target holds the unit until resume, which is exactly
+what drives the restore. `journalctl -u kinoite-llm-sleep -b` shows both edges either way;
+interleaved `pam_unix(runuser:session)` lines are the transport, not a problem.
+
+To opt out: `systemctl disable kinoite-llm-sleep.service` — **disable, not mask.** The unit is
+`RequiredBy=sleep.target`, so masking leaves sleep.target requiring a masked unit and the box
+cannot suspend at all. Once it is off, stop the LLM stack yourself before suspending. It also
+depends on `kinoite-linger.service` for the user bus it talks to, so masking linger disables this
+too.
+
 EOF

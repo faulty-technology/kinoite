@@ -515,4 +515,18 @@ nothing by itself: this Quadlet has no [Install] section.
 To opt out, `systemctl mask kinoite-linger.service` and then `loginctl disable-linger <user>`.
 Doing only the second half does not stick — the service re-asserts linger on the next boot,
 which is the whole point of it.
+
+## Suspend / resume
+
+Handled automatically by `kinoite-llm-sleep.service`, the same hook that covers the vLLM stack.
+If lemonade was running when the box went to sleep, it will be running again a minute or so after
+you wake it; if you stopped it by hand first, it stays stopped.
+
+It is not optional politeness. amdgpu evicts VRAM into system RAM to suspend, and this box has
+64 GB of RAM against 64 GB of VRAM across the two R9700s. A loaded model does not fit, and the
+result is not a failed suspend but a **hung machine** that needs the power button. lemonade holds
+`/dev/kfd` and real VRAM, so it is torn down alongside vLLM.
+
+Full detail, the manual-test recipe that exercises both edges without suspending, and the opt-out
+are in `/usr/share/kinoite/vllm.md` under "Suspend / resume".
 EOF

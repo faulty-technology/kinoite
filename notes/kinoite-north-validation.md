@@ -445,6 +445,10 @@ SIGKILL now skips a teardown that actually matters. Nothing here has run on the 
       runs. Check whether it can stop polling with no GUI client attached, or poll
       slower than 5 s. Until then it's a straight trade; `systemctl stop lactd` reclaims
       the idle and already-applied settings persist.
+      Half-answered 2026-08-22: with `lactd` **inactive**, both R9700s do reach
+      `runtime_status=suspended` (~645 s of `runtime_suspended_time` each) while the
+      iGPU stays `active` driving the desktop. So the mechanism is confirmed and the
+      only open part is whether LACT can be made to poll politely.
 - [x] Virtual monitor: no-display bug fixed and the display moved to on-demand
       (2026-08-18) — see Settled. Both are code-complete and neither has run on the box;
       the hardware checks live under Sunshine above.
@@ -636,8 +640,9 @@ a new persistent volume `~/.local/share/vllm/cache` (`/opt/vllm-cache`). First s
       "dead flat in context" finding holds for the NON-speculative baseline only.
 - [ ] Confirm Open WebUI auto-discovers the model at `http://localhost:8000/v1` once vLLM is up
       (it retries; may lag first start).
-- [ ] Shared store sanity: after a vLLM pull, `ls ~/.local/share/models/huggingface/hub`
-      shows it, and a later lemonade pull lands in the same `hub/` (no second copy).
+- [x] **Shared store — CONFIRMED 2026-08-22.** One `hub/` holds both runtimes' models:
+      `models--Qwen--Qwen3.8-27B-FP8` (vLLM) next to `models--unsloth--*-GGUF`
+      (lemonade), 41 GB total, no second copy.
 
 ### Wake-on-WLAN — `build_files/profiles/north/wol.sh`
 
@@ -651,23 +656,84 @@ Already ruled out, don't re-add: `ethtool -s <wlan> wol g` (mac80211's
 driver) and `iw dev ... set power_save off` (runtime power save, not a wake
 trigger). Both look like they work because the failure is silent.
 
-- [ ] The trigger is actually armed: `iw phy0 wowlan show` should report
-      `Wake-on-WLAN is enabled: * magic packet`. If it says disabled, check
-      `journalctl -u NetworkManager | grep -i wake` — NM logs an invalid default
-      and falls back to `ignore`. The value has to be numeric `8`; the word
-      `magic` parses as 0.
-- [ ] End to end: `systemctl suspend`, then `wol <wlan-mac>` from another host on
-      the same L2 segment. Must be the *Wi-Fi* MAC, and the sender must be on the
-      same broadcast domain — this is not routable, so it won't work over
-      Tailscale (a suspended box isn't running tailscaled anyway).
-- [ ] If armed but not waking, the PCIe function may not be enabled as a wakeup
-      source: `cat /sys/bus/pci/devices/<wifi-bdf>/power/wakeup`. Drivers arm this
-      via cfg80211's `set_wakeup` op; whether rtw89 implements it is unverified. If
-      it reads `disabled`, that's the gap — a udev rule writing `enabled` is the
-      fix, and it belongs in `wol.sh`.
-- [ ] Suspend type matters: confirm whether the box uses S3 or s2idle
-      (`cat /sys/power/mem_sleep`). Under s2idle the wake is a PCIe interrupt
-      rather than an ACPI event, and the ASUS BIOS WoL setting may only govern S3.
+- [x] **Trigger is armed — CONFIRMED 2026-08-22.** `iw phy0 wowlan show` reports
+      `WoWLAN is enabled: * wake up on magic packet`, so the numeric `8` in the NM
+      connection default parsed correctly.
+- [x] **End to end — WORKS, confirmed 2026-08-22.** `systemctl suspend` then a magic
+      packet to the Wi-Fi MAC from a host on the same L2 segment woke the box, across
+      several suspend/resume cycles. Still not routable, so it will not work over
+      Tailscale (a suspended box isn't running tailscaled anyway) — the sender has to be
+      on the same broadcast domain.
+
+      **WoL recovers a SUSPENDED box, not a HUNG one.** The wedge documented under the LLM
+      suspend hook below — suspend with a model loaded and the hook off — leaves the
+      machine powered with the network dead, and no magic packet reaches it; only the
+      power button does. That asymmetry is the practical reason the hook is
+      `RequiredBy=sleep.target`: a hook that cannot do its job refuses the suspend and
+      leaves the box awake and reachable, rather than suspending into a state you cannot
+      recover remotely.
+- [x] **PCIe wakeup source — CONFIRMED 2026-08-22, no udev rule needed.**
+      `0000:0d:00.0` (`rtw89_8922ae`, `wlp13s0`) reads `power/wakeup = enabled`, so
+      rtw89 does implement cfg80211's `set_wakeup`. The feared gap does not exist.
+      For contrast both r8169 NICs (`eno1`, `eno2`) read `disabled` — if wired WoL is
+      ever wanted, that is where a udev rule would go.
+- [x] **Suspend type — ANSWERED 2026-08-22: `deep` (S3), not s2idle.**
+      `cat /sys/power/mem_sleep` → `s2idle [deep]`. So the wake is an ACPI event and the
+      ASUS BIOS WoL setting is the relevant one. See the LLM suspend hook section below,
+      where the same fact decides the VRAM eviction path.
+
+### LLM suspend hook — `build_files/profiles/north/services-north.sh`
+
+`kinoite-llm-sleep.service` stops the LLM stacks before sleep and restores what was
+running on resume. **Verified end to end 2026-08-22**: three real S3 cycles with a model
+loaded, plus the negative control below. Nothing here is open.
+
+**Why it is mandatory, not a nicety.** A loaded `Qwen/Qwen3.8-27B-FP8` holds ~28.1 GiB on
+each R9700 — ~56 GB against 62.8 GB of RAM — and `/sys/power/mem_sleep` is `deep`, so S3
+takes the full amdgpu eviction path. `pre` drains both cards to ~57 MiB in 2-3 s, and
+ExecStart completes ~23 ms before `PM: suspend entry`.
+
+**The failure it prevents is a hard hang, not a failed suspend.** Negative control, hook
+disabled, model loaded: the kernel log ends and never resumes —
+
+    PM: suspend entry (deep)
+    Filesystems sync: 0.009 seconds
+    <nothing>
+
+Every *successful* cycle continues `Freezing user space processes` → `PM: suspend devices
+took 0.116 seconds` → `PM: suspend exit`. The wedge dies in the device-suspend phase with
+no error, no OOM, no eviction warning. At the desk: powered, fans audible, blank monitor,
+no network; only a held power button recovers it. Nothing is lost (ostree + persistent
+journal). **This is why the unit is `RequiredBy=sleep.target`** — a soft `Wants=` would let
+a failed hook suspend into that hang. It also means opting out is `systemctl disable`, not
+`mask`; masking leaves sleep.target requiring a masked unit and the box cannot suspend.
+
+Constraints worth not re-discovering:
+
+- **`systemctl --user --machine=<user>@.host` does not work on this image.** sd-bus
+  implements it by spawning a transient system unit running `systemd-stdio-bridge`
+  (`-pUser=… -pPAMName=login`), and that spawn fails with `Connection reset by peer`.
+  `systemd-run -M` fails identically, so it is not systemctl; zero AVCs, so not SELinux.
+  Root exporting `XDG_RUNTIME_DIR` and calling `systemctl --user` is refused too, and
+  systemd's own hint is to use `--machine`. What works, including from a service context
+  (`initrc_t`): `runuser -u <user> -- env XDG_RUNTIME_DIR=/run/user/<uid> systemctl --user`.
+  `setpriv` works too and skips the PAM session pairs that runuser logs. runuser inherits
+  the caller's cwd, hence the `cd /` in the helper.
+- **systemd freezes `user.slice` across sleep** (`Successfully froze/thawed unit
+  'user.slice'`). That rules out a `/usr/lib/systemd/system-sleep/` drop-in, which runs
+  inside `systemd-suspend.service` — inside the frozen window — and is why the hook is a
+  unit ordered `Before=sleep.target` instead.
+- **Quadlet dependency directions** (podman 5.8.4): members get
+  `BindsTo=north-llm-pod.service`, the pod gets `Wants=` + `Before=` its members, and
+  `Upholds=` is empty everywhere. So stopping the pod tears down members, and starting any
+  one member starts *both*.
+- **`StopWhenUnneeded=yes` self-stops a manually started unit** (~40 ms), so `systemctl
+  start kinoite-llm-sleep` runs both edges back to back and is not a pausable test — call
+  `kinoite-llm-sleep pre` / `post` directly. The real path is unaffected: during a sleep
+  cycle sleep.target holds a reference until resume.
+- **Hibernate is unavailable.** `/sys/power/state` is `freeze mem` with no `disk`, and
+  logind logs `Lockdown: … hibernation is restricted`. Secure Boot lockdown, not config.
+
 
 ### Build
 
