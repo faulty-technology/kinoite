@@ -196,30 +196,6 @@ security grounds (#1539) and the text-only proposal as `not_planned` (#5384).
 
 ## Open
 
-### Sunshine — `build_files/profiles/north/sunshine.sh`
-
-None of these have run on the box. They all need a real streaming client, and they matter
-because the current design makes teardown load-bearing: the display is on-demand, `undo` is
-`down`, and a SIGKILL skips a teardown that actually restores your desk.
-
-- [ ] Crash safety, the one that matters most: `systemctl --user kill -s KILL
-      app-dev.lizardbyte.app.Sunshine.service` mid-*exclusive* stream, then confirm
-      `ExecStopPost` drops the monitor and re-enables the physical output. Reboot after
-      it and confirm the outputs are still on — that second leg is what proves the
-      `$XDG_STATE_HOME` restore-list fix. Failure here means a black desk.
-- [ ] Clean restore on normal disconnect — physical output back, previous primary
-      restored (`down` is what reads `$PRIMARYFILE`; `ensure` never did), desk window
-      layout intact after `--exclusive`.
-- [ ] `ExecStopPost` is now `down`, was `ensure` (fixed 2026-08-18). `ensure` creates the
-      monitor when none exists, so stopping Sunshine without ever streaming spawned krfb
-      on the way out and pinned a GPU awake. Check: `systemctl --user stop
-      app-dev.lizardbyte.app.Sunshine.service` after a login with no stream, then confirm
-      no `krfb-virtualmonitor` survives and both dGPUs reach `runtime_status: suspended`.
-- [ ] Refresh rate follows the client: a 120Hz client should get `addCustomMode` +
-      `mode` applied (krfb only ever creates the monitor at 60Hz). Only 60Hz seen
-      so far, where the mode already exists and `addCustomMode` is correctly
-      skipped. Check `kscreen-doctor -o` mid-stream for the `*` on `WxH@120.00`.
-
 ### GPU — `build_files/profiles/north/amdgpu.sh`, `tuning.sh`
 
 Settled and now explained at the code: `70-kfd.rules` was **removed** — it tightened the
