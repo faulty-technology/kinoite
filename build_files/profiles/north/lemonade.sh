@@ -8,9 +8,7 @@ set -ouex pipefail
 # hand with `systemctl --user start lemonade`. Runbook and gotchas are in
 # /usr/share/kinoite/lemonade.md, written below.
 #
-# TODO(hardware): none of this has run on the box yet. See notes/.
-
-# crun specifically — GroupAdd=keep-groups is a crun-only feature.
+# crun is still required: podman needs an OCI runtime and crun is what this image ships.
 for bin in podman crun; do
     command -v "$bin" >/dev/null || { echo "lemonade.sh: missing $bin" >&2; exit 1; }
 done
@@ -18,24 +16,24 @@ done
 ### 1. Seeded lemonade defaults
 # nightly channel is correctness, not preference: stable has no gfx1201 support and
 # silently runs on CPU at ~1/7th speed. ctx_size because lemonade auto-tunes to 157140
-# on a 27B — raise per-model if you have headroom. rocm_args is the one combination
-# measured working (~35 tok/s vs ~29 on vulkan); whether --load-mode mmap is actually
-# load-bearing was never isolated after the SELinux fix landed, so it stays.
+# on a 27B — raise per-model if you have headroom. No rocm_args: `--load-mode mmap` was pinned
+# throughout the SELinux bisect and carried forward untested. Isolated afterwards by loading a
+# model without it under full confinement — ROCm loads fine, so it is gone. (lemonade passes its
+# own `--no-mmap` to llama-server regardless, which is probably why it never mattered.)
 mkdir -p /usr/share/kinoite
 cat > /usr/share/kinoite/lemonade-defaults.json << 'EOF'
 {
   "ctx_size": 131072,
   "rocm_channel": "nightly",
   "llamacpp": {
-    "backend": "rocm",
-    "rocm_args": "--load-mode mmap"
+    "backend": "rocm"
   }
 }
 EOF
 
 ### 1b. Curated custom-model recipes (always-present superset)
-# Baked to /usr/share/kinoite/lemonade-recipes, conditionally seeded into the user's
-# lemonade config on first start (see the ExecStartPre lines in the Quadlet below).
+# Baked to /usr/share/kinoite/lemonade-recipes and merged into the user's lemonade config
+# on every start, per key (see kinoite-lemonade-seed and the ExecStartPre in the Quadlet).
 # Names become user.<name> at runtime — run one with `lemonade run user.<name>`.
 #
 # This is a coding/testing box: Q6 quality floor AND big context — with ONE deliberate
@@ -221,6 +219,72 @@ EOF
 # for rootless units — the /usr/share equivalent is documented but not scanned.
 # users/ (not users/$UID/) — the UID isn't knowable at build time.
 mkdir -p /etc/containers/systemd/users
+### Recipe seeding
+# Merges the image's seeds into the user's config PER KEY, and is why this is a script rather
+# than the obvious `test -f <file> || install <file>`. That form is all-or-nothing per FILE:
+# lemonade's Web UI writes user_models.json the first time anyone adds a custom model, and from
+# then on every image seed is blocked forever — silently, because the conditional is doing
+# exactly what it says. Observed on the box: one user-added model kept all five seeded recipes
+# out of the model list indefinitely. Merging per key keeps user entries untouched and still
+# delivers seeds the user has never seen. Never overwrites an existing key.
+install -D -m 0755 /dev/stdin /usr/libexec/kinoite-lemonade-seed << 'SEEDEOF'
+#!/usr/bin/python3
+"""Merge baked lemonade recipe seeds into the user's config, per key."""
+import json
+import os
+import sys
+import tempfile
+
+PAIRS = (
+    ("/usr/share/kinoite/lemonade-recipes/user_models.json", "user_models.json"),
+    ("/usr/share/kinoite/lemonade-recipes/recipe_options.json", "recipe_options.json"),
+)
+dest_dir = os.path.join(os.path.expanduser("~"), ".local/share/lemonade/config")
+
+
+def load(path):
+    try:
+        with open(path) as fh:
+            obj = json.load(fh)
+        return obj if isinstance(obj, dict) else None
+    except FileNotFoundError:
+        return {}
+    except (ValueError, OSError) as exc:
+        print(f"kinoite-lemonade-seed: cannot read {path}: {exc}", file=sys.stderr)
+        return None
+
+
+os.makedirs(dest_dir, exist_ok=True)
+for src, name in PAIRS:
+    seeds = load(src)
+    if not seeds:
+        continue
+    dest = os.path.join(dest_dir, name)
+    cur = load(dest)
+    # A corrupt or non-dict user file is left strictly alone: overwriting it would be the
+    # data loss this whole approach exists to avoid.
+    if cur is None:
+        print(f"kinoite-lemonade-seed: leaving {name} untouched", file=sys.stderr)
+        continue
+    added = [k for k in seeds if k not in cur]
+    if not added:
+        continue
+    merged = dict(cur)
+    for k in added:
+        merged[k] = seeds[k]
+    try:
+        fd, tmp = tempfile.mkstemp(dir=dest_dir, prefix=f".{name}.")
+        with os.fdopen(fd, "w") as fh:
+            json.dump(merged, fh, indent=2)
+            fh.write("\n")
+        os.replace(tmp, dest)      # atomic; lemonade reads this file on every start
+        os.chmod(dest, 0o644)
+        print(f"kinoite-lemonade-seed: {name}: added {', '.join(added)}")
+    except OSError as exc:
+        print(f"kinoite-lemonade-seed: cannot write {name}: {exc}", file=sys.stderr)
+SEEDEOF
+python3 -c 'import ast,sys; ast.parse(open("/usr/libexec/kinoite-lemonade-seed").read())'
+
 cat > /etc/containers/systemd/users/lemonade.container << 'EOF'
 [Unit]
 Description=Lemonade Server (local LLM, containerized ROCm)
@@ -236,9 +300,10 @@ ContainerName=lemonade
 # (a recursive chown on every start).
 UserNS=keep-id:uid=10001,gid=10001
 
-# Headless/SSH fallback for render/video membership; no active seat means no ACL.
-# May be inert here (containers/podman#27876, #28364) — confirm or drop.
-GroupAdd=keep-groups
+# No GroupAdd=keep-groups. It was a headless fallback for render/video membership, and it is
+# measured unnecessary: /dev/kfd and the render nodes are mode 0666 from systemd-udev's base
+# rules, so no group membership is involved. Removing it also sidesteps the known rootless
+# flakiness (containers/podman#27876, #28364). Verified by loading a model with it absent.
 
 # Directory: podman adds every node under it, iGPU included. See notes/.
 AddDevice=/dev/kfd
@@ -267,12 +332,10 @@ TimeoutStartSec=900
 ExecStartPre=/usr/bin/mkdir -p %h/.local/share/models/huggingface %h/.local/share/lemonade/llama %h/.local/share/lemonade/config
 ExecStartPre=/usr/bin/install -m 0644 /usr/share/kinoite/lemonade-defaults.json %h/.local/share/lemonade/config/defaults.json
 
-# Recipe seeds, conditional (unlike defaults.json above): lemonade reads user_models.json
-# every start and the user may add their own custom models to it, so only seed when
-# absent — first run only, like the defaults.json note in lemonade.md. %h is expanded by
-# systemd before bash sees it.
-ExecStartPre=/bin/bash -c 'test -f %h/.local/share/lemonade/config/user_models.json || install -m 0644 /usr/share/kinoite/lemonade-recipes/user_models.json %h/.local/share/lemonade/config/user_models.json'
-ExecStartPre=/bin/bash -c 'test -f %h/.local/share/lemonade/config/recipe_options.json || install -m 0644 /usr/share/kinoite/lemonade-recipes/recipe_options.json %h/.local/share/lemonade/config/recipe_options.json'
+# Recipe seeds, merged PER KEY (unlike defaults.json above, which is ours to overwrite):
+# lemonade reads user_models.json every start and its Web UI writes the same file when a
+# user adds a custom model, so the seeder adds only keys that are absent. See the helper.
+ExecStartPre=/usr/libexec/kinoite-lemonade-seed
 
 # No [Install] — hand-started on purpose.
 EOF
@@ -419,7 +482,7 @@ If it is, pin to the R9700s. Re-derive the indices rather than trusting these �
 `grep -H gfx_target_version /sys/class/kfd/kfd/topology/nodes/*/properties`, where
 120001 is an R9700 and 100306 the iGPU:
 
-    llamacpp.rocm_args="--load-mode mmap -ts 1,1,0"     # zero weight to device 2
+    llamacpp.rocm_args="-ts 1,1,0"                      # zero weight to device 2
     # or, on the container: Environment=ROCR_VISIBLE_DEVICES=...
 
 Not baked, because these indices move with kernel and slot changes.

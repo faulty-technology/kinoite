@@ -135,7 +135,12 @@ error by agent node-0 … Reason: Memory in use` → exit 134. Node 0 is the **C
 is why every llama.cpp-level knob missed it for a week. The only AVC in the whole trace was
 `denied { map } tclass=chr_file tcontext=…:hsa_device_t`. Three things fix it and one does
 not: `container_use_devices=on` (the baked fix), `SecurityLabelDisable=true`, and `--ipc=host`
-all pass; `SeccompProfile=unconfined` never mattered. Two traps: `Ulimit=memlock` as a Quadlet
+all pass; `SeccompProfile=unconfined` never mattered. **The baked boolean alone is verified
+sufficient** — a model loads and generates under `Enforcing` with zero AVCs and none of the
+other overrides present. That went untested for a while because a leftover user drop-in
+(`~/.config/containers/systemd/lemonade.container.d/`) from the original bisect was still
+applying `SecurityLabelDisable=true` and `--ipc=host`, silently masking it. Check for stray
+user drop-ins before trusting any container-confinement result. Two traps: `Ulimit=memlock` as a Quadlet
 key is not the `PodmanArgs` form and was inert throughout — not part of the fix; and any
 bisect must pin `llamacpp.rocm_args` first, since a leftover `-sm row` made six consecutive
 tests fail for an unrelated reason. Don't re-chase: `ctx_size` capping, `-mg 0 -sm none`,
@@ -237,29 +242,33 @@ If it ever earns auto-start, the change is `[Install] WantedBy=default.target` i
 plus linger — *not* a line in `services-north.sh`, since `systemctl --global enable` does not
 apply to generator-produced units.
 
-**Baked recipe set.** `lemonade.sh` seeds four Unsloth Qwen models into
-`~/.local/share/lemonade/config/{user_models,recipe_options}.json` (conditional install, so
-user edits survive). Profile is **Q6 + big context** for coding: three 27–35B at 128K and
-`Qwen3-Coder-30B` Q6_K at 256K. Sizing math, verified against the Qwen3.8-27B config (64
-layers, 4 KV heads, head_dim 256): dense KV ≈ 0.25 GB/1K, MoE ≈ 0.10 GB/1K — so 27B Q6 @128K
-is ~22.9 GB weights + ~33 GB KV ≈ 56 GB. That **exceeds one card** and depends on the
-automatic layer split, so no pinning is baked.
+**Baked recipe set, and it fits.** `lemonade.sh` seeds four Unsloth Qwen models into
+`~/.local/share/lemonade/config/{user_models,recipe_options}.json`, merged per key by
+`kinoite-lemonade-seed`. Profile is **Q6 + big context** for coding. Sizing read from each
+model's own `config.json` — note two of the three are HYBRID, which an earlier dense-only
+estimate here got badly wrong:
 
-- [ ] Do the seeded contexts actually fit and stay off the iGPU at full size? The "nothing on
-      the iGPU" measurement was at ctx 32768; the seeds are 128K–256K, where KV is 10–20 GB
-      larger. Load `user.Qwen3-Coder-30B` (256K) and a 128K dense, watch `mem_info_vram_used`
-      per card plus `podman logs lemonade | grep -iE 'buffer size|assigned'`. If it OOMs or
-      spills onto the iGPU, lower `ctx_size` or pin `ROCR_VISIBLE_DEVICES=0,1`. **Gating check
-      for the baked defaults.**
+| seed | arch | KV/1K | weights | KV | total |
+|---|---|---|---|---|---|
+| Qwen3.6-27B Q6_K @128K | qwen3_5, 16/64 full-attn | 0.066 | 22.9 G | 8.4 G | **31.3 G** |
+| Qwen3.6-35B-A3B UD-Q6_K @128K | qwen3_5_moe, 10/40, kv=2 | 0.020 | 30.0 G | 12.5 G | **42.5 G** |
+| Qwen3-Coder-30B Q6_K @256K | qwen3_moe, dense attn | 0.098 | 25.1 G | 25.1 G | **50.2 G** |
+
+All fit the 64 GB pair. The only pessimistic case is Qwen3.6-27B if llama.cpp fails to engage
+`llama_memory_hybrid` and falls back to dense KV (0.262/1K): 56.4 GB — still fits, but with
+little margin. Every case exceeds ONE card, so all of them ride on the automatic layer split;
+no pinning is baked. **vLLM independently demonstrates the envelope**: 28.1 GiB/card, ~56 GB
+across the pair, iGPU untouched at ~320 MiB.
+
+Residual risk, not worth an open item: llama.cpp's iGPU exclusion is *emergent* (no pinning),
+verified at ctx 32768 and again at 131072, whereas vLLM's is enforced via
+`HIP_VISIBLE_DEVICES`. If a near-full load ever spills onto the iGPU, the fix is one line —
+`llamacpp.rocm_args="-ts 1,1,0"` or `ROCR_VISIBLE_DEVICES=0,1`.
+
 - [ ] Flash-attention on gfx1201: does `-fa -ctk q8_0 -ctv q8_0` load and roughly halve KV? If
       so it ~doubles every seed and is worth baking into `recipe_options.json`.
 - [ ] Q6 tok/s vs the measured Q5_K_M ~31–35 — bigger weights and far bigger KV will be
       slower; confirm it is still usable for agentic loops, from a fresh load at a fixed prompt.
-- [ ] Is `--load-mode mmap` in the seeded `rocm_args` load-bearing? It was pinned throughout
-      the SELinux bisect and never isolated. Drop it and retry; if ROCm still loads, remove it.
-- [ ] `GroupAdd=keep-groups` — believed unnecessary now that `/dev/kfd` is 0666, and
-      known-flaky in rootless Quadlets (containers/podman#27876, #28364). Delete it next time
-      lemonade is exercised headless and proven to work without it.
 - [ ] Narrow `container_use_devices` to a CIL module granting only `container_domain
       hsa_device_t:chr_file map`. The boolean grants `map` on every device node to every
       container — fine for a single-user box, worth tightening if that stops being true.
