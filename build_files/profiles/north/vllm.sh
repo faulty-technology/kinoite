@@ -136,59 +136,29 @@ esac
 # LM and the (unused, language-model-only) ViT numerically healthy on RDNA4. Otherwise lifted
 # verbatim from start_vllm.py's launch path.
 #
-# --max-num-seqs default is 4, NOT kyuz0's 1. Measured 2026-08-19: the engine reports 426,942 KV
-# tokens available (13.33 GiB/rank), which is 3.25x the 131072 context — so ~3 full-context or many
-# short sequences fit with VRAM to spare, and at 1 the log shows real requests queueing
-# ("Waiting: 1 reqs, Deferred: 1 reqs"). Batch-1 decode here is bound by a FIXED per-token cost
-# (weights + 128 all-reduces), not by context, so batching amortises both and buys aggregate
-# throughput for parallel agent tool calls at ~no single-stream cost. Set VLLM_MAX_SEQS=1 to get
-# kyuz0's single-stream benchmarking behaviour back.
-# MTP speculative decoding — ON by default, at num_speculative_tokens=3. This is the single
-# biggest win found on this box: it emits ~3 tokens per forward pass, so the ENTIRE per-token cost
-# is amortised across them, whatever that cost is made of.
+# --max-num-seqs default is 4, NOT kyuz0's 1. Batch-1 decode here is bound by a FIXED per-token
+# cost (weights + 128 all-reduces), not by context, so batching amortises it and buys aggregate
+# throughput for parallel agent tool calls at ~no single-stream cost; at 1 the log shows real
+# requests queueing. VLLM_MAX_SEQS=1 restores kyuz0's single-stream benchmarking behaviour.
 #
-# k SWEEP, measured on-box 2026-08-20 (batch 1, this image, streaming first-to-last-token so
-# prefill and TTFT are excluded; best of 2 after a discarded warm-up, 512 tokens per run):
-#     k   rust    python  prose   MEAN    accept_len  per_draft_token
-#     1   38.41   39.22   36.75   38.13   1.853       0.853
-#     2   49.14   50.78   46.22   48.71   2.554       0.777
-#     3   55.17   57.99   49.51   54.22   3.038       0.679     <- default
-#     4   56.25   60.19   50.64   55.69   3.298       0.575
-# k=1->2 is +27.7%, 2->3 +11.3%, 3->4 only +2.7%. The knee is at 3: k=4 buys almost nothing while
-# burning 33% more draft compute at a much worse per-draft acceptance (0.575), which is wasted
-# work that gets *more* expensive as batch size rises. 3 is also what the upstream vLLM recipe for
-# this model specifies (recipes.vllm.ai/Qwen/Qwen3.8-27B).
+# MTP speculative decoding, ON at k=3 — the single biggest win on this box, emitting ~3 tokens per
+# forward pass so the whole per-token cost is amortised across them. The knee is at 3: k=4 buys
+# ~2.7% for 33% more draft compute at much worse per-draft acceptance. Sweep table, the numbers
+# behind that, and how to re-measure after an image bump: vllm.md, "Decode performance".
+# VLLM_SPECULATIVE= (explicitly empty) turns speculation off.
 #
-# WHY THIS WAS 1 UNTIL NOW — the old comment inferred "mtp_num_hidden_layers = 1 -> so k must be
-# 1". That is wrong, and it cost ~42% of achievable throughput. mtp_num_hidden_layers is the DEPTH
-# of the MTP module (how many transformer layers the draft head has), not a ceiling on how many
-# tokens you may speculate. vLLM runs that one module autoregressively k times. Read the actual
-# constraint at vllm/config/speculative.py:765-780 — n_predict (= mtp_num_hidden_layers) is only
-#   (a) the DEFAULT when num_speculative_tokens is unset, and
-#   (b) a DIVISIBILITY requirement when k > n_predict ("Ensure divisibility for MTP module reuse")
-# and with n_predict=1 every k divides cleanly. There is no upper bound here. Verified in the
-# running container, not inferred.
+# TWO TRAPS, both already paid for once:
+#   - k is NOT capped by the checkpoint's mtp_num_hidden_layers. That field is the draft head's
+#     DEPTH; vLLM runs the one module autoregressively k times. Misreading it as a cap pinned k=1
+#     and cost ~42% of achievable throughput. The real constraint (vllm/config/speculative.py:
+#     765-780) is only a divisibility rule when k > n_predict, and n_predict=1 divides cleanly.
+#   - Do NOT gate correctness on byte-identical greedy output. Batch shape alone flips tokens with
+#     no speculation involved (FP8 near-ties; argmax follows reduction order), so the
+#     non-speculative baseline is not shape-stable either and the test cannot pass. Spot-check
+#     semantics instead.
 #
-# Verified available for THIS checkpoint (not inferred from a sibling model):
-#   - config.json text_config.mtp_num_hidden_layers = 1  -> the draft head is 1 layer deep
-#   - the FP8 checkpoint really ships the weights: 22 mtp.* tensors in the safetensors index with
-#     FP8 weight_scale_inv (mtp.fc.weight is unquantised BF16, matching the workaround noted at
-#     vllm/model_executor/models/qwen3_5_mtp.py:81)
-#   - vllm/config/speculative.py:460 maps model_type "qwen3_5" -> "qwen3_5_mtp", which is in
-#     MTPModelTypes; registry.py:637 registers Qwen3_5MTP (dense; MoeMTP is the MoE sibling)
-#
-# Correctness: greedy output does NOT match non-speculative byte-for-byte, and that is EXPECTED,
-# not a bug. A control on this box proved batch shape alone flips the same tokens with no
-# speculation involved: the same prompt, greedy, run alone vs. batched with 3 others diverged at
-# the identical character offset with the identical alternatives. FP8 logits produce near-ties and
-# the argmax follows whatever reduction order the batch shape implies. Spot checks all pass
-# (counting 1-40 exact, 17*23=391). Do not re-run a bit-identity test as a correctness gate — the
-# non-speculative baseline is not shape-stable either, so the test cannot pass.
-#
-# Costs ~1 extra layer of VRAM. Caveat: qwen3_5_mtp.py:373 says it does not support 'all' prefix
-# caching (already off — the hybrid arch disables it). Set VLLM_SPECULATIVE= (explicitly empty)
-# to turn speculation off. Do NOT chase a newer image for this: vLLM 0.27.1 was tested and is
-# WORSE here (MTP 34.66 vs 40.75 on the identical prompt), with an unchanged 24.34 baseline.
+# Costs ~1 extra layer of VRAM. Do not chase a newer image for this: vLLM 0.27.1 measured WORSE
+# (MTP 34.66 vs 40.75 on an identical prompt, with an unchanged baseline).
 EXTRA_ARGS=()
 SPEC_DEFAULT='{"method":"mtp","num_speculative_tokens":3}'
 SPEC="${VLLM_SPECULATIVE-$SPEC_DEFAULT}"
@@ -693,12 +663,21 @@ Qwen3.8-27B is vision-capable; the launcher serves it text-only (--language-mode
 VRAM. To enable vision, drop that flag in the launcher copy (costs VRAM).
 
 Context: this is a HYBRID model (qwen3_5) — 48 of 64 layers are linear-attention (constant state),
-only 16 are full-attention, so the growing KV cache is ~0.0625 GB/1K at fp16, a QUARTER of a
-classic 27B. Native max is 262144 (256K). The default seeds 131072 (128K ≈ 8 GB KV, on top of
-~27 GB FP8 weights). To go to the full 256K (~16 GB KV — still fits the 64 GB pair, no rope-scaling
-needed), just set it:
+only 16 are full-attention, so the growing KV cache is a QUARTER of a classic 27B. Measured on the
+pair: 0.033 GiB per 1K tokens per rank, ~0.066 GiB/1K across both. Native max is 262144 (256K);
+the default seeds 131072. To go to the full 256K, set it in a shadowed unit:
 
-    Environment=VLLM_MAX_MODEL_LEN=262144      # in the shadowed unit; 256K native
+    Environment=VLLM_MAX_MODEL_LEN=262144      # 256K native, no rope-scaling needed
+
+**256K does not cost VRAM — it costs concurrency.** Per-card usage barely moves (~28.1 → ~28.4 GiB)
+because `gpu_memory_utilization=0.95` is a *budget*, not a demand: the KV pool is whatever fits in
+it either way. Raising the limit just lets one request consume more of that fixed pool. Measured:
+
+    128K   KV pool 314,572 tokens   max concurrency 2.40x
+    256K   KV pool 332,781 tokens   max concurrency 1.27x
+
+So there is no memory reason to stay at 128K, only a batching one. Note a full 256K prompt is also
+several minutes of prefill, which is the better argument for the 128K default.
 
 No fp8 KV-quant needed at these sizes; add `--kv-cache-dtype fp8` in the launcher only if you also
 want vision or many concurrent sequences. (The model ships an MTP draft head and the launcher uses
@@ -733,6 +712,15 @@ The default has tool-calling (--enable-auto-tool-choice, qwen3_coder parser) ena
 
 Separate stack, separate ports (lemonade is :13305). They only share the model store above.
 Run whichever you want; running both at once contends for VRAM, so stop one first.
+
+Neither is "the fast one". Head to head on this pair, same day, batch 1:
+
+    vLLM FP8       27.8 GB weights, MTP k=3   54.22 tok/s
+    llama.cpp      14.0 GB IQ4_XS,   MTP      56.86 tok/s
+
+llama.cpp reads half the bytes per token and wins by only ~5% — its quantisation advantage is
+almost entirely cancelled out by vLLM being the more efficient engine. Pick on features (batching,
+tool-calling, OpenAI API) rather than on speed.
 
 ## Surviving logout
 
