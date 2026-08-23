@@ -104,6 +104,111 @@ four out of any LACT profile. `pp_table` does not exist on gfx1201 — no soft P
 override. Also ruled out as causes: the ppfeaturemask karg, processes holding DRM nodes, the
 HDMI audio function, and the kernel itself.
 
+**`kargs.d` is bootc-only, and this box is updated with `rpm-ostree` — so the powerplay karg
+never landed.** `/usr/lib/bootc/kargs.d` is read by `bootc install`/`switch`/`upgrade` and by
+nothing else; `rpm-ostree rebase`/`upgrade` ignores the directory outright. The README bootstraps
+with `rpm-ostree rebase`, so all three entries (`10-amdgpu`, `20-sensors`, `30-gaming`) sat in
+`/usr` while `/proc/cmdline` carried only `split_lock_detect=off` — that one having arrived by
+some earlier path. Nothing logs the omission.
+
+The cost was the entire GPU tuning story. Without `amdgpu.ppfeaturemask` there is no
+`pp_od_clk_voltage` and no `gpu_od/` directory at all, so LACT drops the voltage offset with
+`custom clock settings are present but will be ignored, could not get clocks table … Could not
+read file pp_od_clk_voltage` at ERROR, once per card, and keeps running as if healthy. Both cards
+also read `power1_cap = 300000000` (stock) rather than the configured 210 W, because `lactd` is
+disabled locally. **The undervolt in `/etc/lact/config.yaml` had never executed a single time.**
+
+Note this does *not* contradict "ruled out as causes" above — the karg was correctly ruled out as
+a cause of the ~1950 RPM floor. It is the cause of the missing OD nodes, which is a different
+question, and it also makes the earlier "vBIOS flash fixed fan control" reading unsafe: `gpu_od/`
+is OverDrive-gated, so an absent `gpu_od/fan_ctrl/` cannot distinguish a firmware limitation from
+a locked OverDrive. Re-test fan control only with the karg live.
+
+Fix is one command per machine, `rpm-ostree kargs --append=amdgpu.ppfeaturemask=0xfff7ffff` plus a
+reboot: that writes it into the ostree deployment, which persists across updates from either tool.
+Keep the kargs.d file anyway — it is still correct for a fresh `bootc install`.
+
+Loose end from the same probe: `acpi_enforce_resources=lax` never landed either, yet `nct6775` is
+loaded and `sensors` reports `nct6799-isa-0290` with fan RPM. That karg looks unnecessary on this
+board/kernel — a candidate for removal from `motherboard.sh`, unverified.
+
+**The undervolt does not survive an idle cycle. The power cap does.** Measured 2026-08-23 with the
+karg live, `lactd` stopped, and both values written by hand straight to sysfs, so LACT is not in
+the picture at all. Apply `power1_cap=210000000` and `vo -25`+`c` to an awake card, let it
+runtime-suspend (~9-12 s), wake it, re-read: the cap is still 210 W, `OD_VDDGFX_OFFSET` is back to
+`0mV`. Reproducible over two consecutive cycles. So amdgpu restores the power cap across a D3→D0
+transition and drops the OverDrive table.
+
+**The fan curve goes the same way.** A committed 5-point curve reads back as `0C 0%` on all
+five points after one idle cycle. It is the same OverDrive table, so the rule is simply: *`power1_cap`
+is durable, everything in the OD table is not.*
+
+This is the fact the whole tuning design has to be built around, and it is not a suspend/resume
+edge case — it fires every time the cards go idle for ten seconds, many times a day. A "set it and
+forget it" undervolt or fan curve is impossible here. What *is* possible is re-applying the offset once the
+card is awake for a workload: a loaded vLLM pins both cards in D0 for the life of the session, so
+an offset applied after the model loads holds for exactly as long as it matters. At idle the card
+is in D3 drawing nearly nothing, where an undervolt buys nothing anyway.
+
+**`lactd` reverts the power cap when it stops.** `systemctl stop lactd` → `power1_cap` goes
+straight back to 300000000 on both cards. README used to claim "already-applied settings persist";
+it does not. That rules out any "start LACT, let it apply, stop it" design, and it means LACT can
+only own a setting for as long as LACT is resident.
+
+**LACT 0.10.0 no longer holds the dGPUs awake — the old finding is superseded.** With `lactd`
+resident, no GUI client, `fan_control_enabled: false`, and the LLM stack down, both R9700s sat at
+`runtime_status=suspended` for a straight 100 s sample. The earlier measurement stands for whatever
+version was installed at the time; upstream #828 was fixed by PR #836 and v0.8.4 carries "the
+daemon no longer needlessly keeps AMD GPUs … awake". **Re-test this on LACT bumps rather than
+assuming it either way.** It does apply both values correctly at startup — `power1_cap` 210 W and
+`OD_VDDGFX_OFFSET -70mV` were both live seconds after `systemctl start lactd`.
+
+**Fan curves work. "R9700 fan control is dead" was the missing karg, not the vBIOS.** With
+OverDrive unlocked `gpu_od/fan_ctrl/` exists on both cards and contains **`fan_curve`**, which the
+earlier "every fan OD node is irrelevant" survey never listed because without the karg the
+directory did not exist at all. A full curve commits cleanly:
+
+    for pt in "0 40 30" "1 50 40" "2 60 55" "3 70 75" "4 80 100"; do echo "$pt" > fan_curve; done
+    echo c > fan_curve      # rc=0
+
+**All five points must be in range before you commit.** Staging one point and committing returns
+EINVAL — the staged value still reads back, which makes it look like it worked. Worse, the
+rejected commit poisons the table: the next `c` on `pp_od_clk_voltage` also fails with EINVAL until
+the curve is reset. If a commit ever returns nonzero, `echo r > fan_curve; echo c > fan_curve`
+before doing anything else. Ranges are hotspot `25C 100C` and speed `30% 100%`.
+
+hwmon still has no `pwm1_enable`, so manual fixed-PWM remains dead; the PMFW curve is the whole
+interface. `fan_zero_rpm_enable` is still an empty stub that fails to parse.
+
+**And this finally explains the ~1950 RPM floor mechanically.** `fan_minimum_pwm` reads 30 with
+OD_RANGE `30 100`, the curve's own speed floor is 30%, and `pwm1` idles at 76/255 = 29.8%. 30% of
+`fan1_max` 6500 RPM = 1950. So the floor is a firmware minimum PWM that **cannot be lowered by any
+curve** — `fan_minimum_pwm` will not accept a value below 30, and a curve point below 30% is
+rejected. A curve can only make an awake card louder than 1950 RPM, never quieter. Letting the card
+runtime-suspend remains the only way to get below it, exactly as the Settled entry above says.
+
+**Smaller results from the same session:**
+- `power1_cap_max` rises 300 W → 330 W with the karg. The OverDrive headroom is real, so 210 W is a
+  cap against 330, not 300.
+- OD writes need no `performance_level=manual`. `vo -25` + `c` commits at `auto`, rc=0, and `vo 0`
+  + `c` cleanly reverts. Keep LACT on Automatic as before.
+- **`pp_od_clk_voltage` and `power1_cap` return EBUSY on a runtime-suspended card rather than
+  waking it.** They are passive instruments, unlike `sensors` — read them first, and do not read an
+  EBUSY as an error. It also means you cannot verify a setting without first waking the card;
+  `echo on > power/control`, read, `echo auto` is the controlled way, and leaving it at `on` is the
+  exact stray pin warned about above.
+- **`amd-smi` is not an option for any of this, in two independent ways.** It *aborts* on
+  gfx1201 once OverDrive is unlocked — `amd-smi metric` dumps core on `rocm_smi.cc:1595 … Assertion
+  'txt_power_dev_od_voltage.contains_title_key(kTAG_GFXCLK) || … kTAG_OD_SCLK' failed`, because it
+  parses `pp_od_clk_voltage` and gfx1201 exposes `OD_SCLK_OFFSET`, which it does not know
+  (`amd-smi list` still works; anything touching OD info does not). And even working, `amd-smi set`
+  has **no voltage-offset argument at all** and no curve concept — its `--fan` sets a fixed PWM
+  through hwmon, which needs the `pwm1_enable` this card does not have. Tool version 26.2.0.
+  Read and write sysfs directly.
+- LACT's config still errors on `pmfw_options.zero_rpm`/`zero_rpm_threshold`:
+  `fan_zero_rpm_enable` is an empty stub that fails to parse, and `fan_zero_rpm_stop_temperature`
+  does not exist. Drop both keys from `/etc/lact/config.yaml`.
+
 **Measurement gotchas — each of these cost hours:**
 - **Reading hwmon wakes the GPU.** `sensors` is not a passive instrument. Read
   `power/runtime_status` FIRST, `sensors` second, or you measure your own observation.
@@ -208,25 +313,48 @@ Settled and now explained at the code: `70-kfd.rules` was **removed** — it tig
 `usermod -aG render` look necessary headless (rationale in `amdgpu.sh`; verified `666
 render` on the box). HDR is unblocked — RPM Fusion's `mesa-vulkan-drivers-freeworld` has
 caught up to Fedora's mesa, so swapping no longer downgrades Vulkan; it is now purely a
-"do you want gamescope HDR" call (rationale in `codecs.sh`). Fan control and the ~1950 RPM
-floor are in Settled; operationally, keep OD nodes out of the LACT config and leave LACT on
-**Automatic**.
+"do you want gamescope HDR" call (rationale in `codecs.sh`).
 
-**LACT can be made to poll politely.** `/etc/lact/config.yaml` carries `interval_ms: 500`
-per profile — it polls twice a second, and it is a plain config key. Pushing it past the 5 s
-autosuspend delay should let the dGPUs idle between polls (untested). Polling really is the
-whole story: with `lactd` stopped both R9700s reach `runtime_status=suspended` while the iGPU
-stays active driving the desktop. Note the box has `lactd` disabled locally even though
-`tuning.sh` enables it in the image.
+Tuning is now applied by **`kinoite-gpu-tune.service`** (`tuning.sh` section 4), not by LACT: a
+oneshot that writes `power1_cap` per discrete card at boot, with optional `VOLTAGE_OFFSET_MV` and
+`FAN_CURVE` knobs shipped unset. Defaults live in the script, overrides in
+`/etc/kinoite/gpu-tune.conf`, documented example at `/usr/share/kinoite/gpu-tune.conf.example`.
+`lactd` ships **disabled** — it is the GUI for experiments, and it reverts the cap when it stops.
+Everything behind that decision is in Settled: the durability asymmetry, the LACT 0.10.0 re-test,
+the `interval_ms` refutation, the karg mechanism, and the fan-curve unlock.
 
-- [ ] Undervolt is the actual tuning goal (not a fan curve). The ppfeaturemask karg
-      already baked is what unlocks the mV offset — no karg change needed. Tune a
-      per-card negative GPU voltage offset in LACT (start −50 mV, step −25 mV under
-      sustained load until unstable, back off one step; two dies may differ), pair
-      with the existing 210 W PPT cap, confirm stable across a reboot via
-      `/etc/lact/config.yaml`, THEN bake the proven offsets into `tuning.sh`. Bake
-      only after load-testing — a too-aggressive offset would make a fresh install
-      unstable at boot.
+Current cap is **235 W** against a 330 W ceiling, chosen to leave vLLM throughput alone. Note the
+box also has `/etc/lact/config.yaml` carrying `power_cap: 210` and `voltage_offset: -70` from the
+earlier hand-tuning; those only take effect if you start `lactd`, and the two sources will fight.
+Reconcile or clear that file before doing any serious measurement.
+
+- [ ] **Measure what the power cap actually costs.** Unmeasured, and the prediction is
+      "almost nothing": decode here is bandwidth-bound (baseline flat at 30.40 tok/s
+      across workloads), and mclk was already observed pinned at top DPM 1258 MHz under
+      load with junction at 72C and no throttling. If that holds, a cap only bites once
+      it is low enough to force memory clock down. Run `bench.py` at the default cap,
+      235 W and 210 W from a fresh load at a fixed prompt, and record tok/s and
+      `power1_average`. If the draw under load never approaches 235 W, the cap is
+      cosmetic and the number can be chosen for acoustics instead.
+
+- [ ] **Decide whether an undervolt is worth maintaining at all.** It is no longer
+      blocked — the karg is applied and `vo N`+`c` commits cleanly at
+      `performance_level=auto` — but it is *wiped on every idle cycle* (Settled), so it
+      cannot simply be baked. Keeping one applied means re-running
+      `kinoite-gpu-tune apply` once the cards are pinned awake by a loaded model, either
+      by hand or from a trigger on the LLM start path. Decide after the cap measurement
+      above: if the cards are not power-limited in this workload, an undervolt buys
+      little and the machinery is not worth it. If it does earn its keep, tune per card
+      (start -50 mV, step -25 mV under sustained load until unstable, back off one step;
+      two dies may differ) and load-test before baking a default — a too-aggressive
+      offset would make a fresh install unstable.
+
+- [ ] **Fan curve is available but unused.** `gpu_od/fan_ctrl/fan_curve` accepts a
+      committed 5-point curve (Settled), and the knob is wired in
+      `kinoite-gpu-tune`. Also wiped on every idle cycle, and bounded below by the 30%
+      firmware floor, so it can only shape ramp-up on an already-awake card. Worth a
+      curve only if the cards turn out to sit awake and audible under sustained load;
+      the idle case is already solved by letting them runtime-suspend.
 
 ### Containerized ROCm + lemonade — `build_files/profiles/north/lemonade.sh`
 
