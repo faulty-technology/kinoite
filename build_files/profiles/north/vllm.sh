@@ -176,6 +176,49 @@ SPEC_DEFAULT='{"method":"mtp","num_speculative_tokens":3,"disable_padded_drafter
 SPEC="${VLLM_SPECULATIVE-$SPEC_DEFAULT}"
 if [ -n "$SPEC" ]; then
     EXTRA_ARGS+=(--speculative-config "$SPEC" --no-async-scheduling)
+
+    # Strict tool calling OFF whenever speculation is on — they are broken together in this
+    # image, and it is the speculation we want to keep. Upstream bug, fixed on 2026-07-04 by
+    # vllm-project/vllm#44297, which this 2026-06-13 build predates by three weeks.
+    #
+    # An image WITH the fix already exists and we are deliberately not taking it: kyuz0's `dev` /
+    # `rocm7.14.0-torch2.11.0-vllm0.27.1` tags are a 2026-08-12 build of vLLM 0.27.1, and 0.27.1
+    # is well past the fix (first release after it was 0.25.0 on 07-11). But 0.27.1 is the image
+    # already measured ~15% SLOWER at MTP decode — 34.66 vs 40.75 on an identical prompt, see the
+    # "Decode performance" note — so upgrading trades 15% of throughput to regain a tool-calling
+    # guarantee we barely use. This knob is the cheaper side of that trade. Revisit when a build
+    # lands that is both post-07-04 AND not a decode regression. (Tags checked 2026-08-23; the
+    # date-stamped tags stop at 20260613-143121, the newer builds are only under dev/version tags,
+    # so `skopeo inspect` the tag rather than trusting the tag list to be chronological.)
+    #
+    # THE FAILURE, end to end. Open WebUI defaults to NATIVE function calling, so an ordinary
+    # chat carries `tools` (its builtin web_search among them). VLLM_ENFORCE_STRICT_TOOL_CALLING
+    # defaults to True in this build (envs.py:204), so the tool parser hands the request an
+    # xgrammar STRUCTURAL TAG (tool_parsers/abstract_tool_parser.py get_structural_tag) to
+    # constrain tool-call syntax. Reasoning models are supposed to be exempt until the model
+    # leaves its thinking block: should_advance (v1/structured_output/__init__.py) defers the FSM
+    # advance by one step at the </think> boundary, "advancing on the closing boundary token can
+    # accept tokens that still belong to the reasoning stream". But that deferral has an explicit
+    # escape hatch for speculative decoding + STRUCTURAL_TAG which returns True instead — so with
+    # MTP on, the FSM is advanced ON the boundary step and fed the whole accepted batch,
+    # reasoning text and closing tag included. xgrammar rejects it and the request dies 500:
+    #   backend_xgrammar.py:162 Failed to advance FSM ... for tokens 248069     <- 248069=</think>
+    #   scheduler.py:1531 grammar rejected tokens [10429, 13, 198, 248069]      <- " honest.\n</think>"
+    # Batches are always 1+num_speculative_tokens long, which is the tell. Reproduced on-box
+    # 2026-08-23 at 3/12 requests; the identical signature, same token id, is upstream #44006.
+    #
+    # Setting this to 0 makes get_structural_tag return None, so no grammar is attached and the
+    # boundary is never reached. Tool calls fall back to the qwen3_coder parser's
+    # extract_tool_calls — how vLLM did tool calling before strict mode existed — so we lose
+    # grammar-guaranteed syntax, not the feature. Only the `tools` path was ever affected:
+    # response_format/json_schema takes the ordinary deferral (no structural tag) and measured
+    # clean, as did plain chat.
+    #
+    # Coupled to speculation on purpose. Set VLLM_SPECULATIVE= to turn MTP off and strict tool
+    # calling comes back by itself, because without spec decode the deferral is correct. An
+    # explicit VLLM_ENFORCE_STRICT_TOOL_CALLING in the environment still wins over both. Delete
+    # this whole block once the image carries a build newer than 2026-07-04.
+    export VLLM_ENFORCE_STRICT_TOOL_CALLING="${VLLM_ENFORCE_STRICT_TOOL_CALLING:-0}"
 fi
 
 # Prefix caching: OPT-IN, default off. Set VLLM_PREFIX_CACHING=true to enable.
@@ -980,6 +1023,74 @@ SELinux label separation for the container — so the /dev/kfd `map` denial that
 doesn't apply here. lemonade-selinux.service (container_use_devices) is enabled anyway as belt and
 suspenders. If vLLM ever can't see the GPUs, check `sudo ausearch -m AVC -ts recent | grep
 hsa_device_t`.
+
+## Tool calling: strict mode is OFF while MTP is on
+
+Symptom, if you ever see it again: Open WebUI web search (or any tool call) dies partway with
+"Provider returned error (streaming) ... code 500", and the vLLM journal says
+
+    backend_xgrammar.py:162 Failed to advance FSM for request ... for tokens 248069
+    scheduler.py:1531 Unexpected: grammar rejected tokens [10429, 13, 198, 248069] ...
+
+248069 is `</think>`, and the rejected batch is always 1+num_speculative_tokens long — that length
+is the tell that speculation is involved, and it tracks k as you retune: this box's journal has
+`[198, 248069]` (2 = k1) on 2026-08-19 and `[4757, 13, 198, 248069]` (4 = k3) from 08-20 onward.
+
+NOT an Open WebUI problem — it is any client that sends `tools`, so a coding agent pointed at
+:8000 (see "Coding / agent use" below) hits it just as hard. The 08-19 cluster was 16 failures in
+45 minutes from a client hitting /v1/chat/completions directly while Open WebUI sat idle (its only
+traffic that hour was version.json polls). If an agent is failing on "think grammar" or dying
+mid-tool-call, look here first.
+
+Reading those access logs: the source address is NOT a remote client. Both ports publish to
+127.0.0.1 only, but pasta rewrites loopback-forwarded connections to the host's own LAN address,
+so on-box traffic shows up as 192.168.0.152 — this box. Don't chase it as an intrusion or assume
+the API is LAN-exposed; `ss -ltn` is the honest answer for what is reachable.
+
+Open WebUI defaults to NATIVE function calling, so an
+ordinary chat carries `tools`; VLLM_ENFORCE_STRICT_TOOL_CALLING defaults True in this image, which
+attaches an xgrammar structural tag to constrain tool-call syntax. Structured output is meant to
+stay out of the thinking block — should_advance() defers the FSM by one step at the `</think>`
+boundary — but that deferral has an escape hatch for speculative decoding + structural tags that
+advances anyway, so with MTP on the grammar is fed the reasoning text and the closing tag and
+rejects them. Upstream vllm-project/vllm#44006, fixed by #44297 on 2026-07-04; this image is the
+2026-06-13 build, three weeks short of it. Only the `tools` path is affected —
+response_format/json_schema and plain chat take the ordinary deferral and measured clean.
+
+The launcher therefore exports VLLM_ENFORCE_STRICT_TOOL_CALLING=0 whenever speculation is on. No
+grammar is attached, so the boundary is never reached; tool calls fall back to the qwen3_coder
+parser's extract_tool_calls, which is how vLLM did tool calling before strict mode existed.
+Measured on-box 2026-08-23: 3/12 requests failed before, 0/16 after, with MTP still at k=3 and
+tool calls still parsing to well-formed JSON arguments.
+
+WHAT IT COSTS: tool-call syntax is no longer grammar-guaranteed, and `tool_choice="required"` or a
+named function is no longer binding — with strict mode off the serving layer treats both as "auto"
+(abstract_tool_parser.py `supports_required_and_named`), so a request that demands a tool call can
+come back without one. Open WebUI only ever sends "auto", so its web search is unaffected; an agent
+that relies on forced tool choice is not. Turning MTP off (VLLM_SPECULATIVE=) restores strict mode
+by itself, because without speculation the deferral is correct.
+
+WHEN TO UNDO THIS. An image with the fix already exists — kyuz0's `dev` and
+`rocm7.14.0-torch2.11.0-vllm0.27.1` tags are a 2026-08-12 build of vLLM 0.27.1, comfortably past
+the 2026-07-04 fix (the first release after it was 0.25.0 on 07-11). We are NOT on it on purpose:
+0.27.1 is the build already measured ~15% slower at MTP decode (34.66 vs 40.75, see "Decode
+performance"), so taking it trades throughput for a tool-calling guarantee this box barely uses.
+Revisit when a build is both post-07-04 and not a decode regression.
+
+Don't judge that from the tag name — the date-stamped tags stop at 20260613-143121 while the newer
+builds hide under `dev`/version tags, so the tag list is not chronological:
+
+    skopeo inspect docker://docker.io/kyuz0/vllm-therock-gfx1201:<tag> | grep -i created
+
+And confirm the fix is actually in a candidate image rather than inferring from a version string —
+#44297 added a `trim_reasoning_for_advance` helper, so it is present iff this prints something:
+
+    podman run --rm --entrypoint "" docker.io/kyuz0/vllm-therock-gfx1201:<tag> \
+        grep -rl trim_reasoning_for_advance /opt/venv/lib64/python3.12/site-packages/vllm
+
+To undo: delete the `export VLLM_ENFORCE_STRICT_TOOL_CALLING` block from the launcher in
+build_files/profiles/north/vllm.sh, rebuild, and remove any shadowed vllm.container that carries
+the same Environment= line.
 
 ## Coding / agent use
 
