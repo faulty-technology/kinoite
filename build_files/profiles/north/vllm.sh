@@ -160,19 +160,39 @@ esac
 # Costs ~1 extra layer of VRAM. Do not chase a newer image for this: vLLM 0.27.1 measured WORSE
 # (MTP 34.66 vs 40.75 on an identical prompt, with an unchanged baseline).
 #
-# disable_padded_drafter_batch:true is ON by default — measured +19.1% decode on 2026-08-22
-# (64.54 vs 54.21 tok/s mean, control reproduced three times at 54.20/54.21 against the recorded
-# 54.22). Acceptance length is UNCHANGED (3.006 vs 3.020), so this is not better speculation: it
-# is per-forward-pass padding overhead being removed. Biggest gain on the weakest workload —
-# prose 48.90 -> 62.16 (+27%). Correctness spot-check passed on every arm.
+# disable_padded_drafter_batch:true was ON by default from 2026-08-22 and is now OFF (removed, so
+# upstream's false applies). IT CRASHES THE ENGINE UNDER CONCURRENCY — bisected on-box 2026-08-24
+# with four parallel 16K-token prompts:
+#     TRUE : n=2 OK | n=3 CRASH (4 assertions) | n=4 CRASH
+#     FALSE: n=4 OK, 12/12 across three rounds, 0 assertions, 0 restarts
+# The drafter dies preparing a batched step:
+#     vllm/v1/spec_decode/llm_base_proposer.py:1082 in prepare_inputs
+#     assert common_attn_metadata.seq_lens_cpu_upper_bound is not None   -> AssertionError
+# which takes EngineCore with it, so every in-flight request 500s and the server exits. --max-num-seqs
+# is 4, i.e. the flag was incompatible with the concurrency this same file configures. The 2026-08-22
+# benchmark never caught it because every arm was measured SINGLE-STREAM.
 #
-# It is COUPLED to --no-async-scheduling below and must stay that way: that pairing is what was
-# measured (upstream requires it), and the flag on its own was never tested. --no-async-scheduling
-# COSTS 3.2% by itself (52.48 vs 54.21, measured as its own arm to keep this honest), so the
-# +19.1% is already net of that. That is also why it is applied only when speculation is on —
-# with SPEC empty you would pay the 3.2% and get nothing back.
+# What we gave up: +19.1% decode (64.54 vs 54.21 tok/s mean, control reproduced three times at
+# 54.20/54.21 against the recorded 54.22). Acceptance length was UNCHANGED (3.006 vs 3.020), so it
+# was never better speculation, just per-forward-pass padding overhead removed. Biggest gain on the
+# weakest workload — prose 48.90 -> 62.16 (+27%). Correctness spot-checks passed on every arm.
+#
+# THE OTHER SIDE OF THE TRADE was keeping the flag and capping concurrency at the tested-safe
+# VLLM_MAX_SEQS=2. DECIDED AGAINST, deliberately, 2026-08-24: concurrency is worth more here than
+# 19.1% of single-stream decode, because the box exists to serve parallel agent tool calls and
+# --max-num-seqs 4 was chosen for exactly that reason. This is a settled choice, not a default
+# nobody looked at — do not "restore" the flag on the strength of the 08-22 throughput table alone.
+# If you ever do want that trade back, it is BOTH lines together or neither:
+#     Environment='VLLM_SPECULATIVE={"method":"mtp","num_speculative_tokens":3,"disable_padded_drafter_batch":true}'
+#     Environment=VLLM_MAX_SEQS=2
+#
+# It WAS coupled to --no-async-scheduling below (upstream requires that pairing; the flag on its own
+# was never tested). With the flag gone that coupling no longer applies, and --no-async-scheduling
+# COSTS 3.2% by itself (52.48 vs 54.21, measured as its own arm). So there is likely ~3% sitting
+# there for whoever re-tests async scheduling with plain MTP — UNTESTED, hence left as-is: it is
+# still applied whenever speculation is on, which is the conservative choice, not a measured one.
 EXTRA_ARGS=()
-SPEC_DEFAULT='{"method":"mtp","num_speculative_tokens":3,"disable_padded_drafter_batch":true}'
+SPEC_DEFAULT='{"method":"mtp","num_speculative_tokens":3}'
 SPEC="${VLLM_SPECULATIVE-$SPEC_DEFAULT}"
 if [ -n "$SPEC" ]; then
     EXTRA_ARGS+=(--speculative-config "$SPEC" --no-async-scheduling)
@@ -246,6 +266,56 @@ case "$PREFIX_CACHING" in
     *) echo "[vllm-serve] VLLM_PREFIX_CACHING must be true|false, got '$PREFIX_CACHING'" >&2; exit 1 ;;
 esac
 
+# --gpu-memory-utilization default is 0.80, DOWN from 0.95 on 2026-08-24.
+#
+# 0.95 is a "fill the card" instruction: vLLM claims that fraction and hands every leftover byte to
+# the KV cache, so the KV cache expands until it has eaten the headroom a large prefill needs. At
+# 0.95 it had reached 344,064 tokens — 2.63x the 128K max context — while sitting 8% used. That is
+# what left 0 bytes for the 538 MiB buffer in the OOM below. Lowering it is the only knob that
+# reserves headroom the KV cache cannot reclaim (see max-num-batched-tokens: lowering THAT just
+# moves memory into KV).
+#
+# Measured on-box 2026-08-24 at 0.80: KV 7.87 GiB = 225,652 tokens, still 1.72x a full 128K
+# request; idle VRAM 30.09 -> 24.41 GiB/card, freeing ~7.4 GiB/card (~14.9 GB across the pair)
+# for a second smaller model alongside this one. KV bytes/token measured at 36.6 KiB/token/card,
+# so pick a value with:  KV_GiB ~= 31.86*util - 18.26
+#
+# HARD FLOOR ~0.72. The KV cache must hold at least max_model_len (131,072) tokens or vLLM refuses
+# to start; 0.70 lands at ~115,900 and will not boot. 0.80 keeps a real band above that rather
+# than sitting on the limit. Costs nothing measurable — concurrency is bounded by --max-num-seqs 4
+# long before 225K KV tokens are in play.
+
+# --max-num-batched-tokens default is 8192, DOWN from 16384 after a VRAM OOM on 2026-08-24.
+#
+# THE FAILURE. A 16,146-token prompt arrived and the scheduler put the whole thing in ONE prefill
+# step (dump_input showed total_num_scheduled_tokens=16146, under the 16384 budget) — so "chunked
+# prefill is enabled" chunked nothing. Both TP ranks then died in w8a8_triton_block_scaled_mm
+# allocating that step's bf16 GEMM output, 16146 x 17472 x 2B = 538.00 MiB exactly:
+#   torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 538.00 MiB.
+#   GPU 1 has a total capacity of 31.86 GiB of which 0 bytes is free.
+# The KV cache was 8% used, so this was NOT context length or concurrency. Per-card ledger at the
+# time: weights 14.68 + KV 10.96 + graph capture 0.81 + non-torch (HIP ctx, RCCL, hipBLASLt/triton)
+# ~4.12 = ~30.6 of 31.86, leaving ~1.3 GiB for the whole prefill activation set.
+#
+# NOTE the 64 GB does not help: TP=2 shards weights/KV/activations per card, it does not pool them.
+# The binding constraint is always one card's 31.86 GiB, and the ~4.1 GiB of non-torch overhead is
+# DUPLICATED per rank rather than shared.
+#
+# 8192 halves the largest possible prefill step, so that buffer is ~269 MiB and a >8K prompt
+# actually chunks. Costs one extra chunk of TTFT on long prompts, nothing at decode. Verified
+# on-box 2026-08-24: a 16,030-token prompt (the size that OOMed) answers in 7 s.
+#
+# IT DOES NOT, BY ITSELF, BUY MUCH HEADROOM — vLLM profiles at max_num_batched_tokens and hands
+# whatever is left to the KV cache, so lowering it just moved memory into KV: 10.96 -> 12.01 GiB,
+# 308,317 -> 344,064 tokens. Against a ledger-derived ~30.6 GiB/card before, measured idle after is
+# 28.5 GiB/card — call it ~1-2 GiB gained, and the real win is that the peak step is half the size
+# rather than the headroom. If a bigger GUARANTEED margin is wanted, that is
+# VLLM_GPU_UTIL (0.95 -> 0.90, ~1.6 GiB/card that KV cannot reclaim); concurrency is 2.62x the
+# 128K context against --max-num-seqs 4, so there is plenty to give back. Also unset and worth a
+# try: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, which targets the 786 MiB that was
+# reserved-but-unallocated (fragmentation) at the moment of the OOM. Both need [Container]
+# Environment= in a shadowed unit — see the header note.
+
 # ${EXTRA_ARGS[@]+...} guard: expanding an empty array is an unbound-variable error under `set -u`
 # on bash < 4.4, and this runs in whatever bash the upstream image ships.
 exec vllm serve "$VLLM_MODEL" \
@@ -253,8 +323,8 @@ exec vllm serve "$VLLM_MODEL" \
     --tensor-parallel-size "${VLLM_TP:-2}" \
     --max-num-seqs "${VLLM_MAX_SEQS:-4}" \
     --max-model-len "${VLLM_MAX_MODEL_LEN:-131072}" \
-    --gpu-memory-utilization "${VLLM_GPU_UTIL:-0.95}" \
-    --max-num-batched-tokens "${VLLM_MAX_BATCHED_TOKENS:-16384}" \
+    --gpu-memory-utilization "${VLLM_GPU_UTIL:-0.80}" \
+    --max-num-batched-tokens "${VLLM_MAX_BATCHED_TOKENS:-8192}" \
     --dtype auto \
     --trust-remote-code \
     --language-model-only \
@@ -643,6 +713,14 @@ Environment=VLLM_MODEL=Qwen/Qwen3.8-27B-FP8
 Exec=/opt/kinoite/vllm-serve.sh
 
 [Service]
+# Restart=ALWAYS, not on-failure. Load-bearing distinction, learned from the 2026-08-24 OOM: when
+# a worker dies, EngineCore raises EngineDeadError and the API server shuts itself down CLEANLY —
+# container exit 0, systemd records Result=success. on-failure sees a successful exit and does
+# nothing, so the box sat with vLLM dead and Open WebUI happily serving 500s against it. Only
+# `always` recovers. RestartSec gives podman time to tear the old container down first.
+Restart=always
+RestartSec=10
+
 # First start pre-pulls the ~32 GB image (ExecStartPre below) AND vLLM downloads the ~27 GB model;
 # both must finish within this window, so give it an hour of headroom.
 TimeoutStartSec=3600
@@ -1007,6 +1085,88 @@ several minutes of prefill, which is the better argument for the 128K default.
 No fp8 KV-quant needed at these sizes; add `--kv-cache-dtype fp8` in the launcher only if you also
 want vision or many concurrent sequences. (The model ships an MTP draft head and the launcher uses
 it by default — see `VLLM_SPECULATIVE` above.)
+
+## VRAM / OOM
+
+`torch.OutOfMemoryError: CUDA out of memory` in the journal is a **VRAM** OOM, not host RAM (the
+box has 59 GB and has never kernel-OOM'd). Confirm which:
+
+    journalctl --user -u vllm -o short-iso | grep -E 'OutOfMemoryError|Tried to allocate'
+    for c in /sys/class/drm/card1 /sys/class/drm/card2; do \
+        awk '{printf "%.2f GiB\n", $1/1073741824}' $c/device/mem_info_vram_used; done
+
+**64 GB is not one 64 GB pool.** TP=2 shards weights, KV and activations across the pair; it never
+aggregates them. The binding constraint is always ONE card's 31.86 GiB, and the ~4.1 GiB of
+non-torch overhead (HIP context, RCCL, hipBLASLt/triton workspaces) is paid PER RANK, not shared.
+
+Per-card ledger, from the startup log (`Model loading took`, `Available KV cache memory`,
+`Graph capturing finished`), measured 2026-08-24 at the current 0.80 / 8192 defaults:
+
+    weights + MTP head   14.68 GiB
+    KV cache              7.87 GiB   (225,652 tokens = 1.72x the 128K context)
+    CUDA graph capture    0.81 GiB
+    non-torch            ~1.0  GiB cold, grows to ~4.1 GiB in use (duplicated per rank)
+    ------------------------------
+    idle                 24.41 GiB of 31.86  ->  ~7.4 GiB/card free (~14.9 GB across the pair)
+
+WATCH THE NON-TORCH ROW. It is ~1 GiB at startup and settles around 4 GiB once real traffic has
+loaded hipBLASLt/triton workspaces, and those are never released — measured idle climbing
+28.5 -> 30.1 GiB/card over one afternoon at the old 0.95. It is NOT in vLLM's profiled budget, so
+it eats the safety margin silently. This is the main reason not to run close to the limit.
+
+The one OOM so far (2026-08-24) was a 16,146-token prompt prefilled in a single step under the
+then-16384 token budget, dying on a 538 MiB GEMM output buffer with the KV cache only 8% used —
+i.e. an ACTIVATION problem, not a context-length one. Fixed by 8192 + 0.80.
+
+Sizing the KV cache: 36.6 KiB/token/card, so `KV_GiB ~= 31.86*util - 18.26`.
+
+    util   KV GiB   KV tokens   x128K
+    0.95    12.01     344,064    2.63
+    0.90    10.42     298,428    2.28
+    0.85     8.82     252,791    1.93
+    0.80     7.23     207,155    1.58   <- current default (measured 7.87 / 225,652)
+    0.75     5.64     161,518    1.23
+    0.72     4.68     134,136    1.02   <- hard floor
+    0.70     4.05     115,882    0.88   <- will NOT start
+
+The floor is real: the KV cache must hold at least `max_model_len` (131,072) or vLLM refuses to
+start. Below ~0.72 you must lower `VLLM_MAX_MODEL_LEN` too.
+
+If an OOM happens again — all via `[Container] Environment=` in a shadowed unit (see "Switching
+models" for the mechanism; a `[Service] Environment=` drop-in silently does nothing):
+
+    Environment=VLLM_GPU_UTIL=0.75                               # per the table above
+    Environment=PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True # untried; targets fragmentation
+    Environment=VLLM_MAX_BATCHED_TOKENS=4096                     # halves the peak prefill step
+
+Note that lowering `VLLM_MAX_BATCHED_TOKENS` alone does not simply free memory: vLLM profiles at
+that size and gives whatever is left to the KV cache, so most of the saving reappears as KV.
+`VLLM_GPU_UTIL` is the only knob that reserves headroom the KV cache cannot reclaim.
+
+Changing `VLLM_MAX_BATCHED_TOKENS` changes `compile_ranges_endpoints`, so the first start after
+it misses the compile cache — expect ~80 s of `init engine` instead of ~12 s, once. Changing
+`VLLM_GPU_UTIL` does not; it restarts in ~10 s.
+
+## Concurrency: the MTP drafter crashes if disable_padded_drafter_batch is on
+
+Symptom — several parallel requests all 500 at once, and the server exits (systemd restarts it):
+
+    vllm/v1/spec_decode/llm_base_proposer.py:1082 in prepare_inputs
+    assert common_attn_metadata.seq_lens_cpu_upper_bound is not None   -> AssertionError
+    vllm.v1.engine.exceptions.EngineDeadError
+
+Bisected on-box 2026-08-24 with four parallel 16K prompts: with the flag TRUE, n=2 is fine, n=3
+and n=4 crash; with it removed, n=4 passed 12/12 across three rounds with zero assertions. It is
+now removed from `SPEC_DEFAULT`, which costs the +19.1% decode measured on 2026-08-22 — that
+benchmark was single-stream, which is why it never caught this.
+
+To take the other side of that trade (keep the 19.1%, give up parallel tool calls):
+
+    Environment='VLLM_SPECULATIVE={"method":"mtp","num_speculative_tokens":3,"disable_padded_drafter_batch":true}'
+    Environment=VLLM_MAX_SEQS=2
+
+Single quotes are load-bearing — systemd strips bare double quotes and vLLM then rejects the
+mangled JSON with status=2/INVALIDARGUMENT. Do not run that flag at `VLLM_MAX_SEQS` above 2.
 
 ## GPU selection
 
