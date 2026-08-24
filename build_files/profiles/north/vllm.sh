@@ -425,7 +425,13 @@ def run(prompt):
                 usage = chunk["usage"].get("completion_tokens") or usage
             for ch in chunk.get("choices", []):
                 delta = ch.get("delta", {})
-                if delta.get("content") or delta.get("reasoning_content"):
+                # Field is `reasoning`, NOT `reasoning_content` — this build emits the former
+                # (verified 2026-08-24: streaming delta keys are content/reasoning/role/tool_calls).
+                # Inert while run() pins enable_thinking:false below, but it is a live trap if that
+                # pin is ever removed: usage.completion_tokens counts reasoning tokens, so timing
+                # only the content window would divide all tokens by part of the elapsed time and
+                # silently inflate tok/s. See vllm.md, "Thinking / the reasoning field".
+                if delta.get("content") or delta.get("reasoning"):
                     now = time.perf_counter()
                     if t_first is None:
                         t_first = now
@@ -1227,8 +1233,22 @@ WHAT IT COSTS: tool-call syntax is no longer grammar-guaranteed, and `tool_choic
 named function is no longer binding — with strict mode off the serving layer treats both as "auto"
 (abstract_tool_parser.py `supports_required_and_named`), so a request that demands a tool call can
 come back without one. Open WebUI only ever sends "auto", so its web search is unaffected; an agent
-that relies on forced tool choice is not. Turning MTP off (VLLM_SPECULATIVE=) restores strict mode
-by itself, because without speculation the deferral is correct.
+that relies on forced tool choice is not.
+
+MEASURED 2026-08-24, thinking on, an unambiguous "what is the weather in Paris?" against a
+get_weather tool, three runs each:
+
+    tool_choice="auto"        3/3 returned get_weather({"city":"Paris"}), arguments parsed as JSON
+    tool_choice="required"    1/3 returned a tool call; the other 2 returned NO tool call and
+                              empty content — reasoning was produced, then nothing usable
+
+So "required" is not merely downgraded to "auto", it is actively unreliable: the model is free to
+answer without calling, and on a prompt this obvious it still failed two thirds of the time. Treat
+forced tool choice as unavailable while strict mode is off, rather than as best-effort. A client
+needing it must send "auto" and tolerate a missing call, or give up speculation.
+
+Turning MTP off (VLLM_SPECULATIVE=) restores strict mode by itself, because without speculation
+the deferral is correct.
 
 WHEN TO UNDO THIS. An image with the fix already exists — kyuz0's `dev` and
 `rocm7.14.0-torch2.11.0-vllm0.27.1` tags are a 2026-08-12 build of vLLM 0.27.1, comfortably past
@@ -1251,6 +1271,41 @@ And confirm the fix is actually in a candidate image rather than inferring from 
 To undo: delete the `export VLLM_ENFORCE_STRICT_TOOL_CALLING` block from the launcher in
 build_files/profiles/north/vllm.sh, rebuild, and remove any shadowed vllm.container that carries
 the same Environment= line.
+
+## Thinking / the reasoning field
+
+Thinking is ON by default for Qwen3.8 and works with tools. The FSM bug above was what broke it;
+since that workaround landed there have been zero recurrences. Verified 2026-08-24 across ~25
+thinking-enabled requests with tools: 0 FSM failures, 0 500s, 0 restarts, tool arguments parsing
+as JSON every time.
+
+THE FIELD IS `reasoning`, NOT `reasoning_content`. This build puts reasoning in `message.reasoning`
+(non-streaming) and `delta.reasoning` (streaming); `reasoning_content` — the older vLLM/DeepSeek
+spelling most OpenAI-compatible clients implement — does not exist here and always reads empty.
+
+    non-streaming  message.reasoning = "We need answer classic riddle. Need final concise..."
+                   message.content   = "\n\nThe ball costs **$0.05**..."
+    streaming      delta keys = ['content', 'reasoning', 'role', 'tool_calls']
+
+If a client shows no thinking, or appears to "lose" output, check which spelling it expects before
+concluding anything is wrong server-side. The symptom is easy to misread: `content` is clean and
+correct, so the reply looks fine but truncated of its reasoning. A client reading the wrong field
+sees nothing, and one that concatenates raw deltas sees reasoning inline in the answer.
+
+Reading the wrong field also makes token accounting look alarming — `usage.completion_tokens`
+counts reasoning, so comparing it against only the visible `content` suggests hundreds of tokens
+are being discarded when nothing is.
+
+How the template drives it (`tokenizer_config.json`, chat_template):
+
+    enable_thinking=false  ->  prompt ends '<think>\n\n</think>\n\n'   (empty, pre-closed block)
+    otherwise              ->  prompt ends '<think>\n'                 (model starts INSIDE it)
+
+So with thinking on the OPENING tag is in the prompt and only `</think>` appears in the output —
+which is why a reasoning parser that requires a start tag would fail. The `qwen3` parser handles
+both styles. There is also a `reasoning_effort` kwarg, `'xhigh' | 'medium' | 'low'`, defaulting to
+`xhigh`; at xhigh the model will happily spend most of a small max_tokens budget reasoning and
+return little or no content, so raise max_tokens or lower the effort rather than assuming a bug.
 
 ## Coding / agent use
 
