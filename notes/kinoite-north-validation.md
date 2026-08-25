@@ -104,12 +104,15 @@ four out of any LACT profile. `pp_table` does not exist on gfx1201 — no soft P
 override. Also ruled out as causes: the ppfeaturemask karg, processes holding DRM nodes, the
 HDMI audio function, and the kernel itself.
 
-**`kargs.d` is bootc-only, and this box is updated with `rpm-ostree` — so the powerplay karg
-never landed.** `/usr/lib/bootc/kargs.d` is read by `bootc install`/`switch`/`upgrade` and by
-nothing else; `rpm-ostree rebase`/`upgrade` ignores the directory outright. The README bootstraps
-with `rpm-ostree rebase`, so all three entries (`10-amdgpu`, `20-sensors`, `30-gaming`) sat in
-`/usr` while `/proc/cmdline` carried only `split_lock_detect=off` — that one having arrived by
-some earlier path. Nothing logs the omission.
+**`kargs.d` did not deliver the powerplay karg — the mechanism is unexplained.**
+`/usr/lib/bootc/kargs.d` is read by `bootc install`/`switch`/`upgrade` and by nothing else;
+`rpm-ostree rebase`/`upgrade` ignores the directory outright. That was the original explanation
+recorded here, and it is wrong: this box updates with `bootc upgrade` —
+`bootc-fetch-apply-updates.timer` active and enabled, `rpm-ostreed-automatic.timer` masked, in
+place since 2026-03-04 — while all three entries (`10-amdgpu`, `20-sensors`, `30-gaming`) were
+added 2026-08-08 through 2026-08-23. All three sat in `/usr` while `/proc/cmdline` carried only
+`split_lock_detect=off`. Re-measured 2026-08-24: `20-sensors` is still absent from the booted
+*and* staged deployments, so it is not a pending-reboot artifact. Nothing logs the omission.
 
 The cost was the entire GPU tuning story. Without `amdgpu.ppfeaturemask` there is no
 `pp_od_clk_voltage` and no `gpu_od/` directory at all, so LACT drops the voltage offset with
@@ -123,6 +126,16 @@ a cause of the ~1950 RPM floor. It is the cause of the missing OD nodes, which i
 question, and it also makes the earlier "vBIOS flash fixed fan control" reading unsafe: `gpu_od/`
 is OverDrive-gated, so an absent `gpu_od/fan_ctrl/` cannot distinguish a firmware limitation from
 a locked OverDrive. Re-test fan control only with the karg live.
+
+**ANSWERED 2026-08-25 — it was the locked OverDrive, not the firmware.** With the karg live
+(`rpm-ostree kargs` fix applied, `amdgpu.ppfeaturemask=0xfff7ffff` on `/proc/cmdline`),
+`gpu_od/fan_ctrl/fan_curve` is present on both cards, reads five `0C 0%` points and an `OD_RANGE`
+of `25C-100C` / `30%-100%`, and accepts a curve: writing `45:40 55:55 65:70 75:85 85:100` through
+`kinoite-gpu-tune` took both cards from 33-39% PWM at 88-93C hotspot to 89% PWM at 70-78C under an
+unchanged vLLM load. So fan control is fully available and the "vBIOS flash fixed it" reading can
+be retired. The one thing the curve still cannot do is go **below** ~30% on an awake card — that
+is the `fan_minimum_pwm` firmware floor and the real source of the ~1950 RPM figure, which stands
+as previously recorded.
 
 Fix is one command per machine, `rpm-ostree kargs --append=amdgpu.ppfeaturemask=0xfff7ffff` plus a
 reboot: that writes it into the ostree deployment, which persists across updates from either tool.
@@ -429,12 +442,46 @@ Settled 2026-08-22, all detail and numbers in `vllm.md`:
   is still experimental."* Qwen3.8-27B is `qwen3_5`, i.e. hybrid. `VLLM_LOGGING_LEVEL=DEBUG` shows
   it. Forcing it works (7.4x TTFT on a shared prefix, correctness clean) and now ships as the
   `VLLM_PREFIX_CACHING` knob, opt-in because it overrides an upstream experimental gate.
-- **`disable_padded_drafter_batch:true` is now the default**, +19% decode, coupled to
-  `--no-async-scheduling` because that pairing is what was measured.
+- ~~**`disable_padded_drafter_batch:true` is now the default**, +19% decode, coupled to
+  `--no-async-scheduling` because that pairing is what was measured.~~ **REVERTED 2026-08-24 — it
+  crashes EngineCore under concurrency** (n>=3 parallel prompts, `llm_base_proposer.py:1082`
+  assertion), which the 08-22 benchmark missed by measuring every arm single-stream. The +19.1%
+  is real but only available at `--max-num-seqs 2`; this box keeps 4 for parallel agent tool
+  calls. Full bisect and the deliberate trade in `vllm.sh`'s `SPEC_DEFAULT` comment.
 - **k sweep re-run under that default: the knee did not move, k=3 stays.** The flag lifts every k
   by about the same amount, so it and speculation depth are independent levers.
 - **`ksweep.py` is baked** next to `bench.py` — re-running the sweep no longer means writing a
   driver first, which is how k=1 once survived a day.
+
+Settled 2026-08-25:
+
+- **Reasoning effort was never set, and unset means MAXIMUM.** Qwen3.8's chat template resolves
+  `reasoning_effort|default('xhigh')` (`'xhigh' | 'medium' | 'low'`, with `'high'` aliased onto
+  `'xhigh'`), so the absent knob was not neutral — it selected the highest of the three. Nothing in
+  the stack set it and Open WebUI sends no `chat_template_kwargs` at all, so every real request ran
+  at xhigh; only `bench.py` and `ksweep.py` escaped, by pinning thinking off. `--reasoning-parser
+  qwen3` was never evidence to the contrary: it is a *parser*, it splits `<think>` out of the
+  response and sets nothing.
+
+  Now pinned to `medium` server-side (`--default-chat-template-kwargs`, exposed as
+  `VLLM_REASONING_EFFORT`). **UNMEASURED** — no quality A/B has been run on this box, so treat it
+  as a default someone chose, not one someone proved. The argument for it is the context model
+  above: reasoning tokens stay in the context and are re-read on every later forward pass, and at
+  70K the context term is 64% of `ms/pass`. The decode tables are unaffected — every one of them
+  was measured with `enable_thinking: false`.
+
+  Three things worth not re-deriving:
+    - Request-level `chat_template_kwargs` **override** the server default, so the harness pins
+      still hold and any client can ask for xhigh per request.
+    - Upstream shipped a window where the flag *parsed but was silently ignored* (`[Frontend]
+      [Bugfix] respect server-level default chat template kwargs`, merged 2026-01-05). This
+      2026-06-13 image is well past it, but that is what to re-check after a bump — and per the
+      `--help` trap below, finding the flag does not prove it applies. Verify by watching
+      `usage.completion_tokens` on a fixed prompt.
+    - The launcher **guards** the flag (greps the installed vLLM source, and if it is missing
+      starts without it and warns) because this unit is `Restart=always`: an unrecognised argument
+      is `2/INVALIDARGUMENT` in a restart loop, not a message you notice. It greps the *source*
+      rather than `--help` for exactly the reason in the first trap below.
 
 Two traps that cost real time and will again:
 
@@ -454,6 +501,13 @@ Two traps that cost real time and will again:
       nothing to the GEMV term — exactly where a slow generic kernel hides without showing up in
       the bandwidth accounting. Its other selling points (prefix caching, the drafter flag) turned
       out to be flags our image already had, now adopted.
+
+      **RE-WEIGHTED 2026-08-25, and it is worth less than it looks for agentic work.** The context
+      model measured that day (`ms/pass = 1.186*ctxK + 47.2`, see `vllm.md`) says the whole fixed
+      term is 47.2 ms, so at the 70K context this box actually runs at, the ~15 ms is ~11.5% of a
+      130 ms forward pass — and the context term is 64% of it. Radiance is a fix for the ctx->0
+      intercept, which is the regime we are *least* in. Chase it for short-prompt work; for the
+      agentic loop, capping working context is worth ~1.8x and costs a launcher rewrite of zero.
 
       Swapping is a **launcher rewrite**, not a one-line `Image=` change — radiance needs
       `ROCM_AITER_UNIFIED_ATTN` where `vllm-serve.sh` hard-codes `TRITON_ATTN` for RDNA4 numerics.

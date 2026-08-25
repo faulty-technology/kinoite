@@ -25,16 +25,30 @@ EOF
 # Re-derive from amd_shared.h if a kernel bump changes the default.
 #
 # THIS FILE ALONE IS NOT ENOUGH, and the way it fails is silent. kargs.d is a
-# *bootc* mechanism: only `bootc install`/`switch`/`upgrade` read it. `rpm-ostree
-# rebase`/`upgrade` ignores the directory entirely — and `rpm-ostree rebase` is
-# what the README tells you to bootstrap with. A box updated that way gets the
-# file in /usr and the karg nowhere, with nothing logged about it.
+# *bootc* mechanism: only `bootc install`/`switch`/`upgrade` read it, and
+# `rpm-ostree rebase`/`upgrade` ignores the directory entirely. That is not the
+# whole story here, though — this box updates with `bootc upgrade` (its timer
+# enabled since 2026-03-04, `rpm-ostreed-automatic.timer` masked) and all three
+# entries were added 2026-08-08 through 2026-08-23, months later, yet they still
+# did not all apply. The mechanism is unexplained: verify against /proc/cmdline
+# rather than trusting the directory.
 #
 # Measured on the box 2026-08-23: all three kargs.d entries present in /usr,
-# only `split_lock_detect=off` on /proc/cmdline. With OverDrive locked there is
+# only `split_lock_detect=off` on /proc/cmdline. Re-measured 2026-08-24:
+# `acpi_enforce_resources=lax` still absent from the booted *and* staged
+# deployments, so it is not waiting on a reboot. With OverDrive locked there is
 # no `pp_od_clk_voltage` and no `gpu_od/` at all, so LACT's voltage offset
 # cannot apply — it logs "custom clock settings are present but will be ignored"
 # at ERROR, once per card, and carries on. The undervolt had never once run.
+#
+# RESOLVED on this box as of 2026-08-25: the `rpm-ostree kargs` fix below has been
+# applied, `amdgpu.ppfeaturemask=0xfff7ffff` is on /proc/cmdline, and
+# `gpu_od/fan_ctrl/fan_curve` now exists on both cards (reading `0C 0%` x5, i.e.
+# present and unset). So the two OD-gated knobs in section 4 are live rather than
+# silently discarded, and a fan curve written there demonstrably applies — verified
+# by writing one and watching hotspot fall 18C. The paragraph above is kept because
+# it describes the DEFAULT state of a freshly-installed box, which is still locked:
+# treat it as the thing to check first, not as a description of this machine.
 #
 # Fix, once per machine — this writes the karg into the ostree deployment, where
 # it persists across updates whichever tool drives them:
@@ -90,6 +104,26 @@ systemctl disable lactd.service 2>/dev/null || true
 # So only the power cap is genuinely "apply at boot and forget". The other two are
 # shipped unset, with the knobs present and documented, because maintaining them
 # would mean re-applying every time a card wakes for a workload.
+#
+# WHAT THE FAN CURVE IS ACTUALLY FOR, measured under vLLM load 2026-08-25. It is a
+# thermal and efficiency knob and NOT a performance one. Under a sustained 27B decode
+# the stock firmware curve is far too quiet — it settles at 88-93C hotspot with the
+# fans at 33-39% PWM — and at that temperature the cards leak enough extra current to
+# sit pinned against the 235 W cap below, which clamps sclk to ~2360 MHz against a
+# ~3360 MHz ceiling. Writing `FAN_CURVE="45:40 55:55 65:70 75:85 85:100"` at an
+# unchanged cap moved all of it:
+#     hotspot 88-93C -> 70-78C | power 234/235W -> 184-203W | sclk ~2360 -> ~3370MHz
+# ...and changed vLLM throughput by -0.1%, i.e. not at all, because batch-1 decode is
+# memory-bandwidth bound and mclk never left top DPM either way. See the "GPU clocks
+# and thermals" dead end in vllm.md for the A/B.
+#
+# So: worth applying for ~18C and ~90 W across the pair, and worth knowing that a
+# THROTTLED flag here costs nothing in tok/s. That curve is deliberately aggressive
+# (it pins the fans near 100% at these temperatures) because it was built to remove
+# thermals as a variable for the A/B; something like
+# `FAN_CURVE="50:35 65:45 75:60 85:80 95:100"` lands ~80C at far lower RPM for daily
+# use. Still shipped unset for the D3->D0 reason above — a baked default would
+# silently evaporate ~10 s after the cards go idle, which is worse than not having one.
 install -D -m 0755 /dev/stdin /usr/libexec/kinoite-gpu-tune << 'EOF'
 #!/bin/bash
 # Apply the baked AMD GPU tunings to the discrete cards. `apply` from the unit's
@@ -269,7 +303,7 @@ do_apply() {
     if ! od_unlocked; then
         warn "amdgpu.ppfeaturemask is NOT on /proc/cmdline — OverDrive is locked."
         warn "The power cap still applies; the voltage offset and fan curve cannot."
-        warn "kargs.d is bootc-only and this box is updated with rpm-ostree, so fix it once with:"
+        warn "kargs.d does not reliably deliver this karg — fix it once with:"
         warn "    rpm-ostree kargs --append=amdgpu.ppfeaturemask=0xfff7ffff && systemctl reboot"
     fi
 

@@ -31,9 +31,9 @@ cat > /usr/share/kinoite/vllm/vllm-serve.sh << 'EOF'
 #!/bin/bash
 # Headless vLLM launcher — reproduces the exec that kyuz0's interactive start_vllm.py wizard
 # ends in, for the model in $VLLM_MODEL. Overridable knobs: VLLM_TP, VLLM_MAX_SEQS,
-# VLLM_MAX_MODEL_LEN, VLLM_GPU_UTIL, VLLM_MAX_BATCHED_TOKENS, plus the three perf experiments
-# NCCL_PROTO, VLLM_FUSE_NORM_QUANT and VLLM_SPECULATIVE (see the comments at each, and the
-# "Decode performance" section of vllm.md).
+# VLLM_MAX_MODEL_LEN, VLLM_GPU_UTIL, VLLM_MAX_BATCHED_TOKENS, VLLM_REASONING_EFFORT, plus the
+# three perf experiments NCCL_PROTO, VLLM_FUSE_NORM_QUANT and VLLM_SPECULATIVE (see the comments
+# at each, and the "Decode performance" section of vllm.md).
 #
 # HOW TO OVERRIDE THESE — this is a QUADLET container, and the obvious way does not work.
 # A systemd drop-in (~/.config/systemd/user/vllm.service.d/*.conf) with [Service] Environment=
@@ -265,6 +265,68 @@ case "$PREFIX_CACHING" in
     false) ;;
     *) echo "[vllm-serve] VLLM_PREFIX_CACHING must be true|false, got '$PREFIX_CACHING'" >&2; exit 1 ;;
 esac
+
+# Reasoning effort: baked to MEDIUM, down from the model's own default, 2026-08-25.
+#
+# An unset knob here is not "neutral" — Qwen3.8's chat template resolves
+# `reasoning_effort|default('xhigh')`, and xhigh is the HIGHEST of the three levels
+# ('xhigh' | 'medium' | 'low'; 'high' is accepted and aliased onto 'xhigh'). Nothing in this stack
+# was setting it and Open WebUI sends no chat_template_kwargs at all, so every real request ran at
+# maximum effort by omission. Only bench.py and ksweep.py escaped it, by pinning thinking off.
+#
+# TWO COSTS, and the second is the one that makes this a throughput knob rather than a taste one:
+#   - At xhigh the model will spend most of a small max_tokens budget inside <think> and return
+#     little or no content. That reads as a bug and is not one.
+#   - Reasoning tokens land in the context and are then re-read on EVERY subsequent forward pass.
+#     Against the context model measured 2026-08-25 (vllm.md, "Decode performance"),
+#     ms/pass = 1.186*ctxK + 47.2, so at the ~70K an agentic loop actually runs at, context is 64%
+#     of the forward pass. Thinking is not paid for once; it is paid for again by every turn after
+#     it. That is the same arithmetic behind "context management beats kernel tuning" there.
+#
+# UNMEASURED, and deliberately so: medium is the conservative middle, NOT a benchmarked optimum,
+# and no quality A/B has been run on this box. The decode tables in vllm.md are untouched by it —
+# they were all measured with `enable_thinking: false`. If a task regresses, put it back with
+# Environment=VLLM_REASONING_EFFORT=xhigh in a shadowed unit (see the header note), or let the
+# client ask per request: request-level chat_template_kwargs OVERRIDE the server default, which is
+# also why the two harnesses' thinking-off pins still hold.
+#
+# THE FLAG IS GUARDED, because getting it wrong is a restart LOOP rather than an error anyone
+# notices: this unit is Restart=always and vLLM exits 2/INVALIDARGUMENT on an unrecognised
+# argument. Upstream also shipped a window where the flag PARSED but was silently ignored —
+# "[Frontend][Bugfix] respect server-level default chat template kwargs" merged 2026-01-05, which
+# this 2026-06-13 build is comfortably past, so it should both parse AND apply here. The grep is
+# the same trick the "Tool calling" section of vllm.md uses to test an image for a fix. If it ever
+# fires the server still starts — at the model's xhigh. VLLM_REASONING_EFFORT= (explicitly empty)
+# skips the flag entirely, for the same reason NCCL_PROTO= and VLLM_SPECULATIVE= do.
+#
+# Do NOT "simplify" this to `vllm serve --help | grep`: this version's help is GROUPED and prints
+# only section names, so grepping it finds nothing and reads as proof the flag is absent. That trap
+# is already recorded in notes/kinoite-north-validation.md. `--help=all` is the working form, but
+# it costs a full vLLM import on every start, which the source grep does not.
+REASONING_EFFORT="${VLLM_REASONING_EFFORT-medium}"
+if [ -n "$REASONING_EFFORT" ]; then
+    case "$REASONING_EFFORT" in
+        xhigh|high|medium|low) ;;
+        *) echo "[vllm-serve] VLLM_REASONING_EFFORT must be xhigh|high|medium|low (or empty to" \
+                "leave the model's default), got '$REASONING_EFFORT'" >&2; exit 1 ;;
+    esac
+    # Glob, not `ls ... | head` — under this script's `set -o pipefail` a non-matching ls fails the
+    # whole pipeline, the assignment inherits that, and `set -e` kills the launcher. Which would be
+    # the restart loop this guard exists to prevent. `if` keeps the -d test in condition context.
+    VLLM_PKG=""
+    for d in /opt/venv/lib*/python3*/site-packages/vllm; do
+        if [ -d "$d" ]; then VLLM_PKG="$d"; break; fi
+    done
+    if [ -n "$VLLM_PKG" ] \
+       && ! grep -rqsE --include='*.py' 'default[-_]chat[-_]template[-_]kwargs' "$VLLM_PKG"; then
+        echo "[vllm-serve] WARNING: this image's vLLM has no --default-chat-template-kwargs, so" >&2
+        echo "[vllm-serve] VLLM_REASONING_EFFORT=$REASONING_EFFORT cannot be applied server-side." >&2
+        echo "[vllm-serve] Starting at the model's own xhigh default; send chat_template_kwargs" >&2
+        echo "[vllm-serve] per request instead. See vllm.md, 'Thinking / the reasoning field'." >&2
+    else
+        EXTRA_ARGS+=(--default-chat-template-kwargs "{\"reasoning_effort\":\"$REASONING_EFFORT\"}")
+    fi
+fi
 
 # --gpu-memory-utilization default is 0.80, DOWN from 0.95 on 2026-08-24.
 #
@@ -833,9 +895,14 @@ Verified model IDs and their per-model configs (tp / ctx / util / parser flags) 
 benchmarks/models.py. The baked launcher's flags match the default FP8 dense 27B
 (Qwen/Qwen3.8-27B-FP8, mirroring kyuz0's verified RedHatAI/Qwen3.6-27B-FP8): --language-model-only,
 graph-compiled (no --enforce-eager), full-precision KV, qwen3_coder tool parser, qwen3 reasoning
-parser. FP8 is 8-bit — NOT the 4-bit AWQ path. Other knobs are env-overridable: VLLM_TP,
-VLLM_MAX_SEQS, VLLM_MAX_MODEL_LEN, VLLM_GPU_UTIL, VLLM_MAX_BATCHED_TOKENS, plus the perf knobs
-NCCL_PROTO / VLLM_FUSE_NORM_QUANT / VLLM_SPECULATIVE (see "Decode performance" below).
+parser, reasoning effort pinned to `medium`. FP8 is 8-bit — NOT the 4-bit AWQ path. Other knobs are
+env-overridable: VLLM_TP, VLLM_MAX_SEQS, VLLM_MAX_MODEL_LEN, VLLM_GPU_UTIL,
+VLLM_MAX_BATCHED_TOKENS, VLLM_REASONING_EFFORT (see "Thinking / the reasoning field" below), plus
+the perf knobs NCCL_PROTO / VLLM_FUSE_NORM_QUANT / VLLM_SPECULATIVE (see "Decode performance").
+
+A different model family means re-checking the reasoning-effort pin as well as the parsers: the
+level names are Qwen3.8's, and a template that does not take a `reasoning_effort` kwarg will just
+ignore it rather than fail.
 
 ## Decode performance
 
@@ -899,6 +966,35 @@ depth — 67.6 short, 47.6 at ~9.5k, 29.1 at ~38k (same method, k=3). Both arms 
 proportion, so k=3 stays ~40% ahead everywhere, but do not quote a short-prompt tok/s as what an
 agent with a full context window will see.
 
+THE CONTEXT COST, MEASURED IN SITU 2026-08-25. The line above says "falls off hard"; this says by
+how much. Fitted against a live agentic workload (single stream throughout, one request growing
+its own context), reading `Drafted throughput`/k out of the `metrics.py:116` log line to get the
+target-model forward pass directly — that is the number that is deterministic in context depth,
+unlike tok/s, which also carries acceptance-length noise:
+
+    ms/forward_pass = 1.186 * (context in K tokens) + 47.2
+
+55 points fitted over 45-58K, then VALIDATED against 41 further points at 62-70K collected after
+an unrelated intervention: mean residual -0.09 ms (-0.1%), worst |residual| 1.6 ms. Convert with
+`tok/s = 1000 * acceptance_length / ms_per_pass`; acceptance ran 2.5-2.8 on real prose+code.
+
+    ctx     ms/pass   tok/s @ acc 2.8
+      20K      71          39
+      40K      95          30
+      70K     130          22
+     128K     199          14
+
+AT 70K THE CONTEXT TERM IS 83 OF THE 130 ms — 64% of the forward pass. Past ~40K the KV, not the
+weights, is the thing you are paying for, which inverts the advice in the budget breakdown below:
+that ledger is the ctx->0 intercept, and it stops being the whole story exactly where agents live.
+The practical consequence is that CONTEXT MANAGEMENT BEATS KERNEL TUNING HERE — holding a working
+context at 20K instead of 70K is ~1.8x decode for free, more than the drafter-batch flag (+19.1%)
+and the k=1->3 move (+35%) put together, and it needs no image, no flag and no measurement.
+
+Do NOT extrapolate the fit below its range: the 47.2 ms intercept implies ~64 tok/s at zero
+context against a measured 54.22, so it is optimistic by ~15% once context stops dominating.
+Quote it for 40-130K and use the sweep table for short prompts.
+
 24.3 is dead flat in context — 24.35 at a 15-token prompt down to 22.99 at 32K, a 4% decline over
 a 2000x context increase — because 48 of the 64 layers are linear-attention with constant-size
 state, so per-token cost is FIXED, not context-driven. Confirmed independently by vLLM's own
@@ -926,11 +1022,42 @@ NCCL_PROTO / all-reduce protocol (comm is only 11% of the budget); context lengt
 cudagraph capture (CUDAGraphMode.NONE changed nothing); FP8 kernel configs (the "Performance might
 be sub-optimal!" warning is cosmetic — the default Triton config already hits 96% of achievable,
 and kyuz0's MI300X fallback patch misses all five of this model's shapes anyway); GPU clocks and
-thermals (mclk pinned at top DPM 1258 MHz under load, mem 58C, junction 72C, no throttling);
+thermals (now settled by a controlled A/B, see below — +43% sclk bought 0.0%);
 gpu_memory_utilization and max_num_batched_tokens (no effect on the server); iGPU spillover (the
 iGPU holds a constant 828 MiB of desktop and never moves); CPU saturation (~5 of 24 cores, and
 both GPUs report 100% busy throughout, so the CPU is not the gate); bumping to a newer STOCK
 vLLM (0.27.1 tested — kyuz0's own `dev` tag: baseline unchanged at 24.34, MTP WORSE 34.66 vs 40.75).
+
+GPU CLOCKS AND THERMALS, re-opened and re-closed 2026-08-25. The old evidence for this dead end
+(mclk top DPM, mem 58C, junction 72C, no throttling) WENT STALE when the 235 W power cap landed in
+tuning.sh, and the box now looks alarming under load: both cards pinned at exactly 234/235 W,
+`THROTTLE_STATUS: THROTTLED` continuously, hotspot 88-93C, and sclk held at ~2360 MHz against a
+~3360 MHz DPM ceiling. That is a real 43% clock deficit and it is NOT costing throughput.
+
+Settled by direct A/B on a live workload rather than by argument. Applying an aggressive
+`FAN_CURVE` (see tuning.sh) at an UNCHANGED 235 W cap moved every hardware number and no
+performance number:
+
+    hotspot      88-93C   ->  70-78C
+    socket power 234/235W ->  184-203W   (cap stops binding entirely)
+    sclk         ~2360MHz ->  ~3370MHz   (+43%, at the DPM ceiling)
+    ms/pass      121.5    ->  122.0      (matched context; mean residual -0.09 ms over 41 points)
+
+THE MECHANISM IS LEAKAGE, NOT PERFORMANCE. At 90C the cards leak enough extra current to pin
+themselves against the cap, which clamps clocks; cooling them drops leakage ~45 W/card, which
+releases the cap, which lets clocks rise — and none of it matters, because batch-1 decode is
+memory-bandwidth bound and `mclk` sat at top DPM 1258 MHz throughout, before AND after. GFX clock
+is not on the critical path at batch 1. Neither is the power cap: do not raise it hoping for
+tok/s, and do not let a THROTTLED flag or a 90C hotspot send you back here.
+
+THE TRAP THAT MADE THIS LOOK LIKE A REGRESSION, because it will catch the next person too: an
+in-flight request at 58K context was compared against the fresh-load short-prompt sweep figure,
+which is exactly the "compare from a fresh load at a fixed prompt" trap flagged under
+"Re-measuring". It manufactured a ~17 ms/pass phantom deficit out of nothing but context depth.
+Fit the context model above and compare against IT, or compare two runs at the same depth.
+
+Keep the fan curve anyway — it is worth ~18C and ~90 W across the pair for identical work, which
+is a thermal and efficiency win. It is just not a throughput knob, and tuning.sh says so.
 
 THAT DEAD END COVERS STOCK VERSION BUMPS ONLY — not the gfx1201-PATCHED builds
 (stilldeadcode/vllm-radiance, tcclaviger/vllm), which ship hand-written kernels. Neither has been
@@ -1303,9 +1430,51 @@ How the template drives it (`tokenizer_config.json`, chat_template):
 
 So with thinking on the OPENING tag is in the prompt and only `</think>` appears in the output —
 which is why a reasoning parser that requires a start tag would fail. The `qwen3` parser handles
-both styles. There is also a `reasoning_effort` kwarg, `'xhigh' | 'medium' | 'low'`, defaulting to
-`xhigh`; at xhigh the model will happily spend most of a small max_tokens budget reasoning and
-return little or no content, so raise max_tokens or lower the effort rather than assuming a bug.
+both styles.
+
+### Reasoning effort is pinned to `medium` here
+
+The template's other kwarg is `reasoning_effort`, `'xhigh' | 'medium' | 'low'` — it resolves
+`reasoning_effort|default('xhigh')`, so leaving it unset selects the HIGHEST level, not a neutral
+one. (`'high'` is accepted and aliased onto `'xhigh'`.) Since 2026-08-25 the launcher pins it:
+
+    --default-chat-template-kwargs '{"reasoning_effort":"medium"}'
+
+WHY, and it is not only about answer style. At xhigh the model will spend most of a small
+max_tokens budget inside `<think>` and return little or no content — that reads as a bug and is
+not one. The bigger cost is that reasoning tokens stay in the context and are re-read on every
+later forward pass: against the context model in "Decode performance"
+(`ms/pass = 1.186*ctxK + 47.2`), context is 64% of the forward pass at the ~70K an agentic loop
+actually runs at. Thinking is paid for once when it is generated and again by every turn after it.
+
+UNMEASURED on this box. `medium` is the conservative middle, not a benchmarked optimum, and no
+quality A/B has been run — treat it as a default someone chose, not one someone proved. The decode
+numbers elsewhere in this file are unaffected either way: they are all measured with
+`enable_thinking: false`.
+
+To change it, either ask per request — request-level `chat_template_kwargs` OVERRIDE the server
+default, which is also why `bench.py` and `ksweep.py` still get thinking off:
+
+    {"chat_template_kwargs": {"reasoning_effort": "xhigh"}}
+
+or move the server default in a shadowed unit (see "Switching models"):
+
+    Environment=VLLM_REASONING_EFFORT=xhigh     # xhigh|high|medium|low
+    Environment=VLLM_REASONING_EFFORT=          # empty: don't pass the flag, model default (xhigh)
+
+The launcher GUARDS the flag rather than trusting it, because the unit is `Restart=always` and
+vLLM exits 2/INVALIDARGUMENT on an unrecognised argument — a bad flag here is a restart loop, not
+a message. It greps the installed vLLM for the option and, if it is missing, starts WITHOUT it and
+says so in the journal:
+
+    [vllm-serve] WARNING: this image's vLLM has no --default-chat-template-kwargs
+
+If you see that line, the box is running at xhigh regardless of the knob. There was also an
+upstream window where the flag parsed but was silently ignored ("[Frontend][Bugfix] respect
+server-level default chat template kwargs", merged 2026-01-05); this 2026-06-13 build is past it,
+but that is the thing to re-check after an image bump, and greppability does not prove it. Confirm
+the effort actually moved by watching `usage.completion_tokens` on a fixed prompt, not by reading
+the flag back out of `ps`.
 
 ## Coding / agent use
 

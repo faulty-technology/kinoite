@@ -44,6 +44,10 @@ Third-party repo files are removed after install — updates come from CI image 
 
 - `intel-media-driver` — Intel hardware video acceleration
 - `powertop` — laptop power tuning
+- **No S3 / deep sleep.** Firmware reports `ACPI: PM: (supports S0 S4 S5)` and `/sys/power/mem_sleep`
+  offers only `s2idle`. A `mem_sleep_default=deep` karg does not buy deep sleep here — it selects a
+  mode the kernel never made available, so every suspend logs a failed `PM: suspend entry (deep)`
+  and falls back to s2idle. Removed 2026-08-24; don't re-add it.
 
 ### Battlestation image (`kinoite-north`) extras
 
@@ -61,7 +65,7 @@ Third-party repo files are removed after install — updates come from CI image 
 > - Lemonade is installed but not running: `systemctl --user start lemonade`, then `http://127.0.0.1:13305` (first start pulls a multi-GB image; the unit allows 15 minutes). GPU passthrough needs no setup — no group changes, no SELinux booleans, and it survives logout: `kinoite-linger.service` asserts `loginctl enable-linger` for every regular account at boot (linger lives in `/var`, which is machine-local rather than part of the image, so it has to be re-asserted rather than baked). It starts nothing on its own — neither Quadlet has an `[Install]` section — it only keeps a hand-started server alive. If a model load dies instantly with `Memory critical error … Reason: Memory in use` and exit 134, that's SELinux denying `map` on `/dev/kfd` — check `systemctl status lemonade-selinux.service` before anything else, since nothing about the error points at permissions. Suspend needs no setup either — `kinoite-llm-sleep.service` parks whatever is running before the box sleeps and brings it back on wake. Full detail in `/usr/share/kinoite/lemonade.md`.
 > - Sunshine: **pairing is the only manual step.** Capture method (`kwin`), output name (`Virtual-sunshine-vm`), and the virtual-display prep command are seeded into `~/.config/sunshine/sunshine.conf` on service start — existing settings are never overwritten, so if a stream arrives at the wrong aspect ratio, check those three under **Configuration → Advanced / General**. The virtual display is persistent from login and made primary so new windows open on the streamed monitor. Existing windows stay on the physical output; to pull them onto the virtual display (and stream with the panels off), change the Do command to `/usr/libexec/sunshine-virtual-display ensure --exclusive`, globally or for a single app entry; disabling the physical outputs is what makes KWin migrate their windows. Undo is seeded as `/usr/libexec/sunshine-virtual-display ensure` — it restores physical outputs when the stream ends (Do without `--exclusive` runs the same logic). ExecStopPost does the same as a backup if Sunshine stops while a stream is still active. If you already have a config with `global_prep_cmd` pointing to `sunshine-virtual-display up` (pre-persistent design), edit `~/.config/sunshine/sunshine.conf` and set both `do` and `undo` to `/usr/libexec/sunshine-virtual-display ensure`; otherwise every stream will teardown and recreate the display instead of resizing it.
 > - Gaming: Proton-GE is already in Steam's **Properties → Compatibility** dropdown — nothing to install. `protontricks <appid> --gui` for per-prefix fixes, `umu-run` for Windows games outside Steam. Note **3DMark** hangs at startup collecting system info — disable hardware monitoring in its settings (SystemInfo is genuinely Wine-incompatible). It has a second, unresolved stall once the benchmark starts; see `notes/kinoite-north-validation.md`.
-> - **Apply the powerplay karg by hand — `kargs.d` will not do it for you on an `rpm-ostree` box.** `/usr/lib/bootc/kargs.d` is a bootc-only mechanism: `bootc install`/`switch`/`upgrade` read it, `rpm-ostree rebase`/`upgrade` ignores it completely. Since the bootstrap above is an `rpm-ostree rebase`, the karg silently never lands, and the failure is invisible — OverDrive stays locked, `pp_od_clk_voltage` and `gpu_od/` don't exist, and LACT's voltage offset is dropped with only an ERROR line in its journal. Check with `grep -o 'amdgpu.ppfeaturemask=\S*' /proc/cmdline`; if it's empty, `sudo rpm-ostree kargs --append=amdgpu.ppfeaturemask=0xfff7ffff` and reboot. That writes it into the ostree deployment, where it persists across updates whichever tool drives them. `kinoite-gpu-tune.service` asserts this at every boot and says so in its journal, so it cannot go quiet again. The 235 W power cap applies with or without it; only the voltage offset and fan curve need OverDrive. For interactive experiments, `sudo systemctl start lactd` and open LACT — the daemon ships disabled on purpose.
+> - **Apply the powerplay karg by hand — `kargs.d` does not reliably deliver it.** `/usr/lib/bootc/kargs.d` is a bootc mechanism: `bootc install`/`switch`/`upgrade` read it, `rpm-ostree rebase`/`upgrade` ignores it. That alone does not explain what happens here — north updates with `bootc upgrade` (`bootc-fetch-apply-updates.timer` active and enabled since 2026-03-04, `rpm-ostreed-automatic.timer` masked) and all three entries were added months later, yet measured 2026-08-24 only `30-gaming` had landed: `20-sensors` was missing from the booted *and* staged deployments, and `10-amdgpu` was present only because it had been applied by hand. Why remains unexplained, so treat `kargs.d` as best-effort and check `/proc/cmdline` rather than trusting it. The failure is invisible — OverDrive stays locked, `pp_od_clk_voltage` and `gpu_od/` don't exist, and LACT's voltage offset is dropped with only an ERROR line in its journal. Check with `grep -o 'amdgpu.ppfeaturemask=\S*' /proc/cmdline`; if it's empty, `sudo rpm-ostree kargs --append=amdgpu.ppfeaturemask=0xfff7ffff` and reboot. That writes it into the ostree deployment, where it persists across updates whichever tool drives them. `kinoite-gpu-tune.service` asserts this at every boot and says so in its journal, so it cannot go quiet again. The 235 W power cap applies with or without it; only the voltage offset and fan curve need OverDrive. For interactive experiments, `sudo systemctl start lactd` and open LACT — the daemon ships disabled on purpose.
 
 ## Rebasing to an image
 
@@ -75,16 +79,49 @@ rpm-ostree rebase ostree-unverified-registry:ghcr.io/faulty-technology/kinoite:l
 rpm-ostree rebase ostree-image-signed:docker://ghcr.io/faulty-technology/kinoite:latest
 ```
 
-Once on the image, you can also use `bootc switch` for future switches:
+Once on the image you can also use `bootc switch` for future switches — but **pass
+`--enforce-container-sigpolicy`**. Without it `bootc switch` sets the deployment origin to
+`ostree-unverified-registry:` and every subsequent update is pulled with no signature check at
+all. Nothing warns you; the origin line in `rpm-ostree status` is the only place it shows. This
+is how `kinoite-north` ended up unverified, caught 2026-08-24.
 
 ```bash
-bootc switch ghcr.io/faulty-technology/kinoite:latest
+bootc switch --enforce-container-sigpolicy ghcr.io/faulty-technology/kinoite:latest
 ```
 
-**`bootc` and `rpm-ostree` are not interchangeable for kernel arguments.** Only `bootc` reads
-`/usr/lib/bootc/kargs.d`, so an `rpm-ostree`-updated box never receives the kargs baked there —
-see the powerplay karg note above. Kernel arguments set with `rpm-ostree kargs` live in the ostree
-deployment and survive updates from either tool, which makes that the reliable place to put one.
+Verify afterwards — the origin must read `ostree-image-signed:docker://…` and not
+`ostree-unverified-registry:…`:
+
+```bash
+rpm-ostree status | grep -E 'ostree-(image-signed|unverified)'
+```
+
+**Don't rely on `kargs.d` for a kernel argument you actually need.** Only `bootc` reads
+`/usr/lib/bootc/kargs.d`, so an `rpm-ostree`-updated box never receives the kargs baked there — and
+even on a bootc-updated box, entries have been measured not to land; see the powerplay karg note
+above for what was observed on north. Kernel arguments set with `rpm-ostree kargs` live in the
+ostree deployment and survive updates from either tool, which makes that the dependable place to
+put one. Keep the `kargs.d` files regardless — they are still what makes a fresh `bootc install`
+come up correct.
+
+**btrfs compression lives in `rootflags=`, not `/etc/fstab`.** Under composefs the fstab options for
+`/` are ignored, and btrfs mount options are per-filesystem rather than per-subvolume — the first
+mount wins. The initramfs mounts the filesystem as `/sysroot` using `rootflags=`, so `/`, `/home` and
+`/var` all inherit whatever that karg says and the `compress=zstd:1` sitting in fstab does nothing.
+Set it once per machine:
+
+```bash
+sudo rpm-ostree kargs --delete-if-present=rootflags=subvol=root \
+                      --append=rootflags=subvol=root,compress=zstd:1
+```
+
+Verify with `grep -c compress=zstd:1 /proc/mounts` — every btrfs line should carry it. Only new
+writes are compressed; existing data needs `btrfs filesystem defragment -r -czstd`, which unshares
+reflinks and can raise usage where snapshots share extents.
+
+This is deliberately *not* baked into `kargs.d`. That mechanism is additive and `rootflags` already
+exists from installation, so an entry there would duplicate the argument rather than amend it — like
+`root=`, it is install-time machine state, not image state.
 
 ## Building
 

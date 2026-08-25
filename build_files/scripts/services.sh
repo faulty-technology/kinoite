@@ -45,3 +45,14 @@ systemctl enable var-nix.service
 systemctl enable nix.mount
 systemctl enable nix-selinux.service
 systemctl enable nix-daemon.socket
+
+### 6. Mask systemd-remount-fs.service — it cannot succeed on a composefs root
+# systemd-fstab-generator pulls this unit in because /etc/fstab has a `/` entry, but `/` is a
+# composefs overlay and the kernel refuses to reconfigure an overlay mount, so every boot ends:
+#     mount: /: fsconfig() failed: overlay: No changes allowed in reconfigure.
+# Upstream's fix is to comment the `/` line out of /etc/fstab, but fstab is anaconda-created
+# machine state the image does not ship (there is no /usr/etc/fstab), so the image cannot manage
+# it. Masking is the declarative equivalent and survives a reinstall. Root mount options come
+# from the rootflags= karg rather than fstab — see the btrfs compression note in the README.
+# Refs: fedora-silverblue/issue-tracker#605, ostreedev/ostree#3193, RHBZ 2348934.
+systemctl mask systemd-remount-fs.service
