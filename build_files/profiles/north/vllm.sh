@@ -141,10 +141,13 @@ esac
 # throughput for parallel agent tool calls at ~no single-stream cost; at 1 the log shows real
 # requests queueing. VLLM_MAX_SEQS=1 restores kyuz0's single-stream benchmarking behaviour.
 #
-# MTP speculative decoding, ON at k=3 — the single biggest win on this box, emitting ~3 tokens per
-# forward pass so the whole per-token cost is amortised across them. The knee is at 3: k=4 buys
-# ~2.7% for 33% more draft compute at much worse per-draft acceptance. Sweep table, the numbers
-# behind that, and how to re-measure after an image bump: vllm.md, "Decode performance".
+# MTP speculative decoding, ON at k=4 — the single biggest win on this box, emitting ~3.4 tokens
+# per forward pass so the whole per-token cost is amortised across them. Full sweep 2026-08-26
+# (single stream, 512 tok): k=2 47.2, k=3 52.1, k=4 55.9, k=5 54.4, k=6 51.7 tok/s mean. Tokens per
+# pass saturates after k=4 (3.35 -> 3.48 -> 3.47), so past it you buy draft compute and no tokens.
+# CAVEAT: the k=4 gain is single-stream and code-shaped (python +12%, rust +9%, prose flat to -0.4%);
+# at concurrency >=2 k=3 and k=4 are within noise. This box is single-user, hence k=4. Sweep table
+# and how to re-measure after an image bump: vllm.md, "Decode performance".
 # VLLM_SPECULATIVE= (explicitly empty) turns speculation off.
 #
 # TWO TRAPS, both already paid for once:
@@ -192,7 +195,7 @@ esac
 # there for whoever re-tests async scheduling with plain MTP — UNTESTED, hence left as-is: it is
 # still applied whenever speculation is on, which is the conservative choice, not a measured one.
 EXTRA_ARGS=()
-SPEC_DEFAULT='{"method":"mtp","num_speculative_tokens":3}'
+SPEC_DEFAULT='{"method":"mtp","num_speculative_tokens":4}'
 SPEC="${VLLM_SPECULATIVE-$SPEC_DEFAULT}"
 if [ -n "$SPEC" ]; then
     EXTRA_ARGS+=(--speculative-config "$SPEC" --no-async-scheduling)
@@ -582,7 +585,7 @@ def spec_default():
             return json.loads(m.group(1))
     except Exception:
         pass
-    return {"method": "mtp", "num_speculative_tokens": 3}
+    return {"method": "mtp", "num_speculative_tokens": 4}
 
 def save_state():
     if os.path.exists(SHADOW):
@@ -908,8 +911,9 @@ ignore it rather than fail.
 
 All measured on-box, Qwen/Qwen3.8-27B-FP8, TP=2, batch 1.
 
-    k=3 + disable_padded_drafter_batch (CURRENT default)  62.2 - 67.1 tok/s  (2026-08-22)
-    with MTP k=3 alone (old default)                      48.9 - 58.3       (2026-08-20/22)
+    MTP k=4 (CURRENT default)                             55.9 mean         (2026-08-26)
+    k=3 + drafter-batch (flag gone 08-24)                 62.2 - 67.1 tok/s (2026-08-22)
+    with MTP k=3 (previous default)                       48.9 - 58.3       (2026-08-20/22)
     with MTP k=1 (older default)                          36.8 - 39.2       (2026-08-20)
     without MTP                                           24.3              (2026-08-19)
 
@@ -1143,10 +1147,10 @@ Knobs. A systemd drop-in does NOT work for these — this is a Quadlet container
 A shadowed unit is a full copy and will not track changes to the baked unit — re-copy after an
 image build.
 
-1. `VLLM_SPECULATIVE` — MTP speculative decoding, **ON by default at k=3 with
-   `disable_padded_drafter_batch:true`**: 64.5 tok/s mean, versus 54.2 with k=3 alone and 24.3
-   with speculation off. Empty string disables it. To override — **the single quotes are
-   load-bearing**:
+1. `VLLM_SPECULATIVE` — MTP speculative decoding, **ON by default at k=4**: 55.9 tok/s mean
+   single-stream, versus 52.1 at k=3 and 24.3 with speculation off (2026-08-26 sweep; the
+   `disable_padded_drafter_batch` numbers below predate its removal on 08-24). Empty string
+   disables it. To override — **the single quotes are load-bearing**:
 
        Environment='VLLM_SPECULATIVE={"method":"mtp","num_speculative_tokens":4,"disable_padded_drafter_batch":true}'
 
