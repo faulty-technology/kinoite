@@ -319,6 +319,54 @@ security grounds (#1539) and the text-only proposal as `not_planned` (#5384).
 
 ## Open
 
+### Unsloth fine-tuning — `build_files/profiles/north/unsloth.sh`
+
+**Nothing here has run on the box.** The whole stack is derived from documentation and from
+reading unsloth's `pyproject.toml`, not from a build. The Quadlet itself is the one part that
+*has* been checked: it round-trips through podman 5.8.4's Quadlet generator on the box and
+`systemd-analyze verify` reports no unknown keys, and the generated `podman run` carries the
+expected devices, five `:z` volumes, both loopback publishes and `--shm-size=16g`.
+
+Design decisions worth not re-litigating blind: the image is built **on the box** because no
+Unsloth image exists for gfx1201 (`unsloth/unsloth` is CUDA-only; community ROCm rebuilds ship
+gfx942 and gfx1100 only). AMD's torch **must** be installed before `unsloth[amd,...]`, because
+that extra resolves to `unsloth[huggingfacenotorch]` + `bitsandbytes>=0.50.0` and deliberately
+keeps whatever torch it finds. `bitsandbytes>=0.50.0` is a correctness floor, not a preference —
+upstream's own comment calls it the first PyPI release with the full RDNA 4-bit path.
+
+- [ ] **Does `unsloth[amd,studio]` resolve against AMD's gfx1201 wheels?** The two halves are
+      documented separately and have never been installed together here. This is the single
+      biggest unknown; everything else is downstream of it.
+- [ ] **Is `triton` present after the torch install?** Known soft spot. Unsloth's `amd` extra
+      does not pin triton — only its `rocm*-torch*` extras do, and those pin a whole
+      repo.radeon.com torch stack that would fight the gfx1201 wheels. So triton arrives only if
+      AMD's torch depends on it. `podman exec unsloth python -c "import triton"`. If it fails,
+      the AMD index has a `triton/` directory — add an explicit `--index-url` install to the
+      Containerfile.
+- [ ] **Does the `gcnArchName` filter actually exclude the gfx1036 iGPU?** The launcher keeps
+      only devices whose arch is `gfx1201`, splitting on `:` because the string reads like
+      `gfx1201:sramecc-:xnack-`. Expect `device_count()==2` and two gfx1201 entries. The filter
+      handles non-contiguous indices (verified against a stub emitting `0,2`), which matters
+      because the iGPU need not be last.
+- [ ] **How does Unsloth Studio surface its first-run password under systemd?** `_password_prompt.py`
+      plus `diceware` in the `studio` extra imply an interactive prompt, which a service cannot
+      answer. The assumption baked into the docs is that it prints to stdout and therefore the
+      journal. If it instead blocks on a TTY, the unit will hang at start and the fix is likely a
+      `-t`-style flag or a pre-seeded credential file.
+- [ ] **What does a 4B LoRA actually cost in VRAM, and is one card enough?** AMD's playbook says
+      24 GB minimum for Radeon on Linux; each R9700 has 32 GB. Untested. This governs whether the
+      "stop the other stacks first" rule can ever be relaxed.
+- [ ] **Multi-GPU training is untested and currently unsupported by choice.** The container runs
+      without `--ipc=host` and without `--group-add`, following lemonade's measured finding that
+      both are unnecessary and that `--ipc=host` drops SELinux label separation. If a distributed
+      RCCL run is ever wanted, it needs host IPC in a shadowed unit — and that turns the
+      confinement off, so measure whether it is worth it.
+- [ ] **`Restart=on-failure` vs the vLLM lesson.** vllm.container needs `Restart=always` because a
+      dead engine exits *cleanly* and `on-failure` never fires. No equivalent silent-success exit
+      is known for Studio/Jupyter, so `on-failure` is the choice here — but it is an assumption,
+      not an observation. If the container is ever found dead with `Result=success`, this is why.
+
+
 ### GPU — `build_files/profiles/north/amdgpu.sh`, `tuning.sh`
 
 Settled and now explained at the code: `70-kfd.rules` was **removed** — it tightened the
