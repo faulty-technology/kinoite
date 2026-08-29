@@ -30,7 +30,8 @@ install_pkgs umu-launcher
 GE_VERSION="GE-Proton11-3"
 GE_SHA512="528ae7831f909c0a4fff5d83889ac6dab3c9706746cd148f05f3064ac042763853d68277e2a815f18f16c17285d5d128864a03c563956c0dce30bafcd16aa77c"
 
-curl -fsSL -o /tmp/ge-proton.tar.gz \
+curl -fsSL --retry 6 --retry-delay 5 --retry-all-errors --connect-timeout 15 --max-time 600 \
+    -o /tmp/ge-proton.tar.gz \
     "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/${GE_VERSION}/${GE_VERSION}.tar.gz"
 
 echo "${GE_SHA512}  /tmp/ge-proton.tar.gz" | sha512sum -c -
