@@ -44,11 +44,15 @@ mkdir -p /usr/share/kinoite/unsloth
 # cryptography), but that is NOT enough to run `unsloth studio`. The frontend is not shipped as
 # package data — `site-packages/studio/frontend/dist` does not exist, and upstream gitignores
 # it — and the CLI additionally gates on an installer-managed venv at
-# $UNSLOTH_STUDIO_HOME/unsloth_studio, built by studio/setup.sh. That script downloads a
-# bundled Node, builds the Vite frontend, builds llama.cpp, and installs its OWN torch from the
-# generic download.pytorch.org/whl/rocm7.2 index — which would fight the gfx1201 wheels this
-# whole recipe exists to get right. So it is deliberately not baked in, and the unit defaults to
-# UNSLOTH_UI=jupyter; `unsloth studio update` installs it by hand. See unsloth.md.
+# $UNSLOTH_STUDIO_HOME/unsloth_studio. Only unsloth.ai/install.sh builds that venv, and pip
+# ships the package rather than the repo, so the installer is not in the image either. Hence
+# UNSLOTH_UI=jupyter by default, with Studio one documented command away. See unsloth.md.
+#
+# That installer builds a SECOND, self-contained stack inside the venv — its own torch, its own
+# unsloth, a Vite frontend, a prebuilt llama.cpp — so it cannot disturb the wheels below. Told
+# the arch, it routes torch to repo.amd.com/rocm/whl/gfx120X-all (torch 2.11.x), which is NOT
+# the whl-multi-arch gfx1201 set this recipe pins: Studio trains on its own stack, not this one.
+# Telling it the arch is what UNSLOTH_ROCM_GFX_ARCH on the unit is for — see the quadlet.
 cat > /usr/share/kinoite/unsloth/Containerfile << 'CONTAINERFILEEOF'
 # Built on the box by unsloth.container's ExecStartPre, not in CI. See unsloth.sh.
 FROM docker.io/library/python:3.12-slim
@@ -57,8 +61,14 @@ FROM docker.io/library/python:3.12-slim
 # libatomic1 + libgomp1: AMD's TheRock wheels link against both and python:3.12-slim carries
 # neither. Without them `import torch` dies in _dlopen and the launcher's gfx1201 filter takes
 # its "no device found" branch — which silently leaves training on the iGPU.
+#
+# curl + pciutils are for the opt-in Studio install, not for anything the image runs. curl
+# fetches unsloth.ai/install.sh and backs that script's own download() helper, which exits
+# without curl or wget. pciutils gives it lspci: with no rocminfo or amd-smi in here (the
+# wheels bundle ROCm, they do not install its tools) lspci is the only GPU probe it has left.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git ca-certificates libatomic1 libgomp1 \
+ && apt-get install -y --no-install-recommends \
+      git ca-certificates curl pciutils libatomic1 libgomp1 \
  && rm -rf /var/lib/apt/lists/*
 
 # gfx1201 (Radeon AI PRO R9700). This trio is the set AMD's playbook documents TOGETHER;
@@ -192,17 +202,23 @@ fi
 # Jupyter dies the container stays up and `systemctl --user restart unsloth` brings it back.
 #
 # STUDIO IS NOT RUNNABLE from the plain pip install this image performs — the CLI gates on an
-# installer-managed venv that only studio/setup.sh creates, and without it `unsloth studio`
-# exits 1 with "Unsloth Studio not set up. Run install.sh first." Being the exec'd process in
-# `both`, that took Jupyter down with it and crash-looped the unit until StartLimitBurst. So
-# check first and fall back: asking for a Studio you don't have costs a warning, not the
-# container. See the Containerfile note above for why setup.sh isn't baked in.
+# installer-managed venv that only unsloth.ai/install.sh creates, and without it every `unsloth
+# studio` subcommand, `update` included, exits 1 with "venv not found at .../unsloth_studio".
+# Being the exec'd process in `both`, that took Jupyter down with it and crash-looped the unit
+# until StartLimitBurst. So check first and fall back: asking for a Studio you don't have costs
+# a warning, not the container. See the Containerfile note above for why it isn't baked in.
+#
+# The check is the venv's interpreter because that is the path the CLI itself resolves, and the
+# installer puts EVERYTHING there — venv, frontend, sqlite, launcher — under $UNSLOTH_STUDIO_HOME
+# rather than in site-packages. That is what makes one install survive Quadlet's new container.
 studio_ready() { [ -x "${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}/unsloth_studio/bin/python" ]; }
 
 studio_missing_note() {
     warn "Unsloth Studio is not installed (no venv under \$UNSLOTH_STUDIO_HOME)."
     warn "Install it once — it lands on the persistent studio volume, so it survives restarts:"
-    warn "  podman exec -it unsloth unsloth studio update"
+    warn "  podman exec -it unsloth sh -c 'curl -fsSL https://unsloth.ai/install.sh | \\"
+    warn "      UNSLOTH_SKIP_AUTOSTART=1 sh'"
+    warn "Several GB, and it builds a second torch stack of its own. See unsloth.md."
     warn "falling back to Jupyter Lab on :8889"
 }
 
@@ -331,6 +347,18 @@ Volume=%h/.local/share/unsloth/bin:/opt/kinoite:z
 # restart would silently discard your runs, datasets and settings.
 Volume=%h/.local/share/unsloth/studio:/opt/unsloth-studio:z
 Environment=UNSLOTH_STUDIO_HOME=/opt/unsloth-studio
+
+# Read by unsloth.ai/install.sh and by install_llama_prebuilt.py, both of which run only if you
+# opt into Studio — and both of which would otherwise guess wrong IN HERE. Their GPU probes are
+# rocminfo, then amd-smi, then lspci, then /proc/cpuinfo for Strix APU model names: this image
+# has no ROCm tools (the wheels bundle the runtime without them) and this box is neither Strix
+# nor named in cpuinfo, so every probe comes up empty and the installer takes its documented
+# CPU-only branch — a Studio that trains on the CPU and never says why. Set here rather than in
+# the install command so `podman exec` inherits it and a re-run cannot forget it.
+#
+# gfx1201 is the R9700; the installer maps it to repo.amd.com/rocm/whl/gfx120X-all. The iGPU is
+# not a concern for once: this names the arch outright, so nothing walks a device list.
+Environment=UNSLOTH_ROCM_GFX_ARCH=gfx1201
 
 # Persistent triton/inductor kernel caches, so the first training step's compile is paid once
 # rather than on every container start. Version-hashed, so a rebuild misses and recompiles
@@ -473,17 +501,38 @@ inventing a labelling rubric and generating a bespoke dataset.
 
 STUDIO NEEDS AN EXTRA INSTALL PASS, which is why it is not the default. `pip install
 unsloth[studio]` gets the server stack but not a runnable Studio: the frontend is not shipped
-as package data, and the CLI gates on an installer-managed venv under $UNSLOTH_STUDIO_HOME that
-only `studio/setup.sh` creates. Without it you get `Unsloth Studio not set up. Run install.sh
-first.` and exit 1. Install it once — it writes to the persistent studio volume, so it survives
-restarts:
+as package data, and the CLI gates on an installer-managed venv under $UNSLOTH_STUDIO_HOME.
+Only unsloth.ai/install.sh builds that venv, and EVERY `unsloth studio` subcommand is behind
+the same gate — `update` included, so the CLI cannot install itself:
 
-    podman exec -it unsloth unsloth studio update
+    python  venv not found at /opt/unsloth-studio/unsloth_studio
+            Run install.sh first to create the environment:
+            curl -fsSL https://unsloth.ai/install.sh | sh
 
-Know what that pulls in before you run it: a bundled Node, a Vite frontend build, a llama.cpp
-build, and its own torch from the generic download.pytorch.org/whl/rocm7.2 index — NOT the
-gfx1201 wheels the image is built on. It is sandboxed in its own venv, but treat a working
-Studio on this box as unproven; the Jupyter path is the supported one.
+Do exactly that, inside the container. Once, on the persistent studio volume:
+
+    systemctl --user start unsloth        # it must be up to exec into
+    podman exec -it unsloth sh -c \
+        'curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_SKIP_AUTOSTART=1 sh'
+
+A piped install takes its options as environment variables (a bare `--flag` after the pipe
+would be read by sh itself), which is why they sit before `sh` rather than after the script.
+UNSLOTH_SKIP_AUTOSTART stops it trying to launch a browser and a desktop entry on a headless
+box. The other two variables it needs, UNSLOTH_STUDIO_HOME and UNSLOTH_ROCM_GFX_ARCH, are
+already in the unit and `podman exec` inherits them — see the quadlet for why the arch matters.
+
+Know what that pulls in: a bundled Node, a Vite frontend build, a prebuilt llama.cpp, and its
+OWN torch — several GB, all of it under $UNSLOTH_STUDIO_HOME. It installs whatever apt packages
+it still needs as root, into the container layer, so those evaporate on the next restart; only
+what lands in the volume persists, which is everything that matters. Nothing here touches the
+image's site-packages, so the gfx1201 wheels the image was built on are not at risk.
+
+The flip side, and the reason to keep Jupyter as the supported path: STUDIO TRAINS ON ITS OWN
+STACK, not the one this image pins. Told UNSLOTH_ROCM_GFX_ARCH=gfx1201 it routes torch to
+repo.amd.com/rocm/whl/gfx120X-all and takes torch 2.11.x, where the image runs 2.12.0+rocm7.14
+from whl-multi-arch. Both are AMD's own gfx1201 wheels and neither can disturb the other, but a
+result reproduced in Studio was not produced by the stack `pip freeze` in the image describes.
+Treat a working Studio on this box as unproven.
 
 Once installed, set UNSLOTH_UI to `studio` or `both` in a shadowed unit. Until then the
 launcher warns and falls back to Jupyter rather than failing the unit. Studio is the exec'd
