@@ -273,7 +273,7 @@ esac
 #
 # An unset knob here is not "neutral" — Qwen3.8's chat template resolves
 # `reasoning_effort|default('xhigh')`, and xhigh is the HIGHEST of the three levels
-# ('xhigh' | 'medium' | 'low'; 'high' is accepted and aliased onto 'xhigh'). Nothing in this stack
+# ('xhigh' | 'medium' | 'low' — those THREE and nothing else; see the guard below). Nothing in this stack
 # was setting it and Open WebUI sends no chat_template_kwargs at all, so every real request ran at
 # maximum effort by omission. Only bench.py and ksweep.py escaped it, by pinning thinking off.
 #
@@ -302,6 +302,14 @@ esac
 # fires the server still starts — at the model's xhigh. VLLM_REASONING_EFFORT= (explicitly empty)
 # skips the flag entirely, for the same reason NCCL_PROTO= and VLLM_SPECULATIVE= do.
 #
+# `high` is NOT a level and must stay out of the case below, however natural it looks beside xhigh.
+# The template raises on anything outside xhigh|medium|low, and a bad value here fails in a way the
+# restart loop above does NOT catch: --default-chat-template-kwargs is not validated at startup, so
+# the server comes up clean and then EVERY chat request 400s with "Unexpected reasoning effort high.
+# Supported types are xhigh (default), medium, and low." Silent until someone tries to use it.
+# (Measured against the live server 2026-08-28; the earlier claim that high aliased onto xhigh was
+# wrong.) Same reason the case is the only gate: a client sending it per request gets the same 400.
+#
 # Do NOT "simplify" this to `vllm serve --help | grep`: this version's help is GROUPED and prints
 # only section names, so grepping it finds nothing and reads as proof the flag is absent. That trap
 # is already recorded in notes/kinoite-north-validation.md. `--help=all` is the working form, but
@@ -309,8 +317,8 @@ esac
 REASONING_EFFORT="${VLLM_REASONING_EFFORT-medium}"
 if [ -n "$REASONING_EFFORT" ]; then
     case "$REASONING_EFFORT" in
-        xhigh|high|medium|low) ;;
-        *) echo "[vllm-serve] VLLM_REASONING_EFFORT must be xhigh|high|medium|low (or empty to" \
+        xhigh|medium|low) ;;
+        *) echo "[vllm-serve] VLLM_REASONING_EFFORT must be xhigh|medium|low (or empty to" \
                 "leave the model's default), got '$REASONING_EFFORT'" >&2; exit 1 ;;
     esac
     # Glob, not `ls ... | head` — under this script's `set -o pipefail` a non-matching ls fails the
@@ -1284,6 +1292,35 @@ Changing `VLLM_MAX_BATCHED_TOKENS` changes `compile_ranges_endpoints`, so the fi
 it misses the compile cache — expect ~80 s of `init engine` instead of ~12 s, once. Changing
 `VLLM_GPU_UTIL` does not; it restarts in ~10 s.
 
+## KV cache grouping: the padding warning is normal, and this split is already optimal
+
+The startup log says:
+
+    WARNING kv_cache_utils.py:1174 Add 3 padding layers, may waste at most 6.25% KV cache memory
+
+Not an error, and not fixable here. vLLM slices layers into equal-size groups for KV management,
+and any bucket that does not divide evenly is padded with placeholder layers that still get
+allocated real memory. Group size is the SMALLEST bucket (upstream picks `min` over the buckets —
+the FIXME in kv_cache_utils.py acknowledges it is the wrong strategy for complex patterns).
+
+This box's buckets: 48 gated-delta-net (linear attention) + 17 full attention (16 from the model
++ the 1-layer MTP head, which merges into the full-attention bucket). min = 17, so 48 pads to 51:
+4 groups x 17 = 68 slots for 65 real layers, 3 padding. 3/48 = 6.25%, exactly the warning. Group
+size 17 is provably optimal under the only constraint that matters (never more groups than today):
+18 -> 7 wasted, 24 -> 7, 48 -> 31; zero waste would need a size dividing both 48 and 17, and
+gcd(48,17) = 1, i.e. 65 groups. Even a perfect patch is worth at most the 3 padding slots —
+~4% of the pool (~10K of the ~225K tokens at 0.80).
+
+THE TRAP is a multi-layer drafter, which forms a third bucket. A 5-layer DFlash2-style drafter
+against 48+16 gives buckets 48/16/5, min = 5, 48 -> 50 and 16 -> 20: 15 groups x 5 = 75 slots
+for 69 layers, 8% wasted before counting 15 per-request round-ups. An upstream patch that
+searches for the least-wasteful group size instead of `min` (their buckets -> size 8, 9 groups,
+72 slots) reportedly reclaimed ~21% of KV on that pairing (evaluated against this repo 2026-08-27;
+their pads sat in expensive full-attention slots, which is why it beats the naive 4.2% block-count
+estimate). None of it applies here: the 1-layer MTP head is what keeps this box in the good case —
+a drafter with 4 or 8 layers would waste nothing either. If you ever swap MTP for a multi-layer
+drafter, re-read that warning line before believing the pool numbers.
+
 ## Concurrency: the MTP drafter crashes if disable_padded_drafter_batch is on
 
 Symptom — several parallel requests all 500 at once, and the server exits (systemd restarts it):
@@ -1440,7 +1477,14 @@ both styles.
 
 The template's other kwarg is `reasoning_effort`, `'xhigh' | 'medium' | 'low'` — it resolves
 `reasoning_effort|default('xhigh')`, so leaving it unset selects the HIGHEST level, not a neutral
-one. (`'high'` is accepted and aliased onto `'xhigh'`.) Since 2026-08-25 the launcher pins it:
+one. Those three are the WHOLE set — `'high'` is not a level, and the template raises on it:
+
+    {"enable_thinking":true,"reasoning_effort":"high"}
+    -> 400 Unexpected reasoning effort high. Supported types are xhigh (default), medium, and low.
+
+Nothing validates the value at startup, so passing `high` here yields a server that comes up clean
+and then 400s every chat request; the launcher's case statement is the only thing that catches it.
+Since 2026-08-25 the launcher pins it:
 
     --default-chat-template-kwargs '{"reasoning_effort":"medium"}'
 
@@ -1463,7 +1507,7 @@ default, which is also why `bench.py` and `ksweep.py` still get thinking off:
 
 or move the server default in a shadowed unit (see "Switching models"):
 
-    Environment=VLLM_REASONING_EFFORT=xhigh     # xhigh|high|medium|low
+    Environment=VLLM_REASONING_EFFORT=xhigh     # xhigh|medium|low
     Environment=VLLM_REASONING_EFFORT=          # empty: don't pass the flag, model default (xhigh)
 
 The launcher GUARDS the flag rather than trusting it, because the unit is `Restart=always` and

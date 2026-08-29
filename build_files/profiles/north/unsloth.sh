@@ -40,22 +40,25 @@ mkdir -p /usr/share/kinoite/unsloth
 # (blocksize/warp decoupling, fused SIMT GEMM, the RDNA3/4 workgroup fix). Anything older is
 # unreliable at 4-bit decode on ROCm, so do not relax that floor.
 #
-# The `studio` extra is what makes `unsloth studio` runnable: it carries the server stack
-# (fastapi/uvicorn/typer/pydantic/pyjwt/cryptography). The Studio frontend itself is PREBUILT
-# and shipped as package data (`frontend/dist/**/*`), so nothing fetches Node at run time.
-#
-# TRITON IS NOT PINNED HERE, and that is a known soft spot. Unsloth's `amd` extra does not
-# pin it — only the `rocm*-torch*` extras do, and those pin a whole torch stack from
-# repo.radeon.com that would fight the gfx1201 wheels below. AMD's index has a `triton/`
-# directory, so the fallback if `import triton` fails on the box is to add an explicit
-# --index-url install of it here. Verify before assuming; see unsloth.md.
+# The `studio` extra carries Studio's server stack (fastapi/uvicorn/typer/pydantic/pyjwt/
+# cryptography), but that is NOT enough to run `unsloth studio`. The frontend is not shipped as
+# package data — `site-packages/studio/frontend/dist` does not exist, and upstream gitignores
+# it — and the CLI additionally gates on an installer-managed venv at
+# $UNSLOTH_STUDIO_HOME/unsloth_studio, built by studio/setup.sh. That script downloads a
+# bundled Node, builds the Vite frontend, builds llama.cpp, and installs its OWN torch from the
+# generic download.pytorch.org/whl/rocm7.2 index — which would fight the gfx1201 wheels this
+# whole recipe exists to get right. So it is deliberately not baked in, and the unit defaults to
+# UNSLOTH_UI=jupyter; `unsloth studio update` installs it by hand. See unsloth.md.
 cat > /usr/share/kinoite/unsloth/Containerfile << 'CONTAINERFILEEOF'
 # Built on the box by unsloth.container's ExecStartPre, not in CI. See unsloth.sh.
 FROM docker.io/library/python:3.12-slim
 
 # git: unsloth installs from a git ref below. ca-certificates: for both indexes.
+# libatomic1 + libgomp1: AMD's TheRock wheels link against both and python:3.12-slim carries
+# neither. Without them `import torch` dies in _dlopen and the launcher's gfx1201 filter takes
+# its "no device found" branch — which silently leaves training on the iGPU.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git ca-certificates \
+ && apt-get install -y --no-install-recommends git ca-certificates libatomic1 libgomp1 \
  && rm -rf /var/lib/apt/lists/*
 
 # gfx1201 (Radeon AI PRO R9700). This trio is the set AMD's playbook documents TOGETHER;
@@ -184,24 +187,52 @@ fi
 # 13305 and vLLM's 8000 are confined. Binding to the container's loopback instead would make
 # the published port unreachable.
 #
-# In `both` mode Studio is the exec'd process, so it owns the unit's lifetime: if Jupyter dies
-# the container stays up, and `systemctl --user restart unsloth` brings it back. Both servers
-# print their own credential on first start — read it out of the journal.
-case "${UNSLOTH_UI:-both}" in
+# Whichever server ends up in the foreground prints its own credential on first start — read it
+# out of the journal. In `both` Studio is the exec'd one, so it owns the unit's lifetime: if
+# Jupyter dies the container stays up and `systemctl --user restart unsloth` brings it back.
+#
+# STUDIO IS NOT RUNNABLE from the plain pip install this image performs — the CLI gates on an
+# installer-managed venv that only studio/setup.sh creates, and without it `unsloth studio`
+# exits 1 with "Unsloth Studio not set up. Run install.sh first." Being the exec'd process in
+# `both`, that took Jupyter down with it and crash-looped the unit until StartLimitBurst. So
+# check first and fall back: asking for a Studio you don't have costs a warning, not the
+# container. See the Containerfile note above for why setup.sh isn't baked in.
+studio_ready() { [ -x "${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}/unsloth_studio/bin/python" ]; }
+
+studio_missing_note() {
+    warn "Unsloth Studio is not installed (no venv under \$UNSLOTH_STUDIO_HOME)."
+    warn "Install it once — it lands on the persistent studio volume, so it survives restarts:"
+    warn "  podman exec -it unsloth unsloth studio update"
+    warn "falling back to Jupyter Lab on :8889"
+}
+
+exec_jupyter() {
+    exec jupyter lab --ip 0.0.0.0 --port 8889 --no-browser --allow-root \
+        --ServerApp.root_dir=/workspace
+}
+
+case "${UNSLOTH_UI:-jupyter}" in
     studio)
-        log "starting Unsloth Studio on :8888"
-        exec unsloth studio -H 0.0.0.0 -p 8888
+        if studio_ready; then
+            log "starting Unsloth Studio on :8888"
+            exec unsloth studio -H 0.0.0.0 -p 8888
+        fi
+        studio_missing_note
+        exec_jupyter
         ;;
     jupyter)
         log "starting Jupyter Lab on :8889"
-        exec jupyter lab --ip 0.0.0.0 --port 8889 --no-browser --allow-root \
-            --ServerApp.root_dir=/workspace
+        exec_jupyter
         ;;
     both)
-        log "starting Jupyter Lab on :8889 (background) and Unsloth Studio on :8888"
-        jupyter lab --ip 0.0.0.0 --port 8889 --no-browser --allow-root \
-            --ServerApp.root_dir=/workspace &
-        exec unsloth studio -H 0.0.0.0 -p 8888
+        if studio_ready; then
+            log "starting Jupyter Lab on :8889 (background) and Unsloth Studio on :8888"
+            jupyter lab --ip 0.0.0.0 --port 8889 --no-browser --allow-root \
+                --ServerApp.root_dir=/workspace &
+            exec unsloth studio -H 0.0.0.0 -p 8888
+        fi
+        studio_missing_note
+        exec_jupyter
         ;;
     *)
         warn "UNSLOTH_UI must be studio|jupyter|both, got '${UNSLOTH_UI:-}'"
@@ -308,8 +339,10 @@ Volume=%h/.local/share/unsloth/cache:/opt/unsloth-cache:z
 Environment=TRITON_CACHE_DIR=/opt/unsloth-cache/triton
 Environment=TORCHINDUCTOR_CACHE_DIR=/opt/unsloth-cache/inductor
 
-# studio | jupyter | both. See the launcher.
-Environment=UNSLOTH_UI=both
+# studio | jupyter | both. jupyter is the default because Studio needs a separate installer
+# pass that this image deliberately does not run; switch to `both` once you've done it. The
+# launcher falls back to Jupyter rather than failing if you ask for a Studio that isn't there.
+Environment=UNSLOTH_UI=jupyter
 
 Exec=/opt/kinoite/unsloth-start.sh
 
@@ -434,13 +467,28 @@ workaround, not baked because it has not been needed here.
 
 ## Which UI
 
-`Environment=UNSLOTH_UI=both` in the unit. Studio for driving training runs (model loading,
-hyperparameters, live monitoring, comparison); Jupyter for the code-first work Studio doesn't
-cover, above all inventing a labelling rubric and generating a bespoke dataset.
+`Environment=UNSLOTH_UI=jupyter` in the unit. Jupyter is the code-first half, and the only UI
+this image can serve out of the box: notebooks for the work Studio doesn't cover, above all
+inventing a labelling rubric and generating a bespoke dataset.
 
-Studio is the exec'd process, so it owns the unit's lifetime — if Jupyter dies the container
-stays up, and a restart brings it back. Set UNSLOTH_UI to `studio` or `jupyter` in a shadowed
-unit for just one:
+STUDIO NEEDS AN EXTRA INSTALL PASS, which is why it is not the default. `pip install
+unsloth[studio]` gets the server stack but not a runnable Studio: the frontend is not shipped
+as package data, and the CLI gates on an installer-managed venv under $UNSLOTH_STUDIO_HOME that
+only `studio/setup.sh` creates. Without it you get `Unsloth Studio not set up. Run install.sh
+first.` and exit 1. Install it once — it writes to the persistent studio volume, so it survives
+restarts:
+
+    podman exec -it unsloth unsloth studio update
+
+Know what that pulls in before you run it: a bundled Node, a Vite frontend build, a llama.cpp
+build, and its own torch from the generic download.pytorch.org/whl/rocm7.2 index — NOT the
+gfx1201 wheels the image is built on. It is sandboxed in its own venv, but treat a working
+Studio on this box as unproven; the Jupyter path is the supported one.
+
+Once installed, set UNSLOTH_UI to `studio` or `both` in a shadowed unit. Until then the
+launcher warns and falls back to Jupyter rather than failing the unit. Studio is the exec'd
+process in `both`, so it owns the unit's lifetime — if Jupyter dies the container stays up, and
+a restart brings it back.
 
     mkdir -p ~/.config/containers/systemd/users
     cp /etc/containers/systemd/users/unsloth.container ~/.config/containers/systemd/users/
@@ -460,12 +508,22 @@ The launcher sets HIP_VISIBLE_DEVICES to the gfx1201 cards only, derived at ever
 R9700s and the gfx1036 iGPU — and training on the iGPU is not slow, it is broken.
 
 Never bake an index: DRM numbering reshuffles across kernels and boots (observed twice), and
-only the PCI address is stable. Check what it picked:
+only the PCI address is stable. Check what it picked in the journal:
 
-    podman exec unsloth python -c "import torch; print(torch.cuda.device_count()); \
-      print([torch.cuda.get_device_properties(i).gcnArchName for i in range(torch.cuda.device_count())])"
+    journalctl --user -u unsloth | grep HIP_VISIBLE_DEVICES
 
-Expect 2 and two gfx1201 entries. A third entry, or a gfx1036, means the filter failed.
+Expect `HIP_VISIBLE_DEVICES=0,1 (gfx1201 only)` — two indices. The "no gfx1201 device found"
+warning instead means the filter failed, and torch will enumerate the iGPU too.
+
+DO NOT check this with a bare `podman exec ... torch.cuda.device_count()`. The launcher exports
+HIP_VISIBLE_DEVICES into its own process, which becomes the server; `podman exec` starts a
+fresh process that inherits only what the unit declares, so it always reports 3 devices
+including the gfx1036 and looks like a failure that isn't. Pass it explicitly to check from
+inside:
+
+    podman exec -e HIP_VISIBLE_DEVICES=0,1 unsloth python -c \
+      "import torch; print(torch.cuda.device_count()); \
+       print([torch.cuda.get_device_properties(i).gcnArchName for i in range(torch.cuda.device_count())])"
 
 HIP_VISIBLE_DEVICES specifically — NOT ROCR_VISIBLE_DEVICES or CUDA_VISIBLE_DEVICES, which
 conflict with HIP and hang distributed init (recorded in vllm.md). Preset it in a shadowed
@@ -495,18 +553,6 @@ this stack inherits the fix. If it looks like this is happening:
     sudo ausearch -m AVC -ts recent | grep hsa_device_t
 
 Full detail in lemonade.md.
-
-## If `import triton` fails
-
-Known soft spot. Unsloth's `amd` extra does not pin triton — only its `rocm*-torch*` extras
-do, and those pin a whole torch stack from repo.radeon.com that would fight the gfx1201
-wheels this image installs. So triton arrives (or doesn't) as a dependency of AMD's torch.
-
-    podman exec unsloth python -c "import triton; print(triton.__version__)"
-
-If that fails, AMD's index has a `triton/` directory — add an explicit
-`--index-url https://repo.amd.com/rocm/whl-multi-arch/` install of it to the Containerfile
-and rebuild. Report back into notes/kinoite-north-validation.md either way.
 
 ## Back into inference
 

@@ -539,6 +539,19 @@ Two traps that cost real time and will again:
   reaches vLLM as `{a:1}` and the unit dies with `status=2/INVALIDARGUMENT`. Single-quote the
   whole `KEY=VALUE`.
 
+Settled 2026-08-27:
+
+- **Evaluated a Discord claim that KV-cache regrouping freed ~21% on the same model — real
+  mechanism, does not apply to this box.** vLLM groups layers by KV spec with group size = the
+  smallest bucket (`kv_cache_utils.py`, upstream FIXME acknowledges it); that claim's setup is a
+  5-layer DFlash2 drafter forming a third bucket (48/16/5 -> min=5, 15 groups, 75 slots for 69
+  layers). Here the 1-layer MTP head merges into the full-attention bucket, so buckets are 48/17:
+  min=17, 4 groups, 68 slots for 65 layers, 3 padding — exactly the `Add 3 padding layers, may
+  waste at most 6.25%` warning in our startup log. 17 is provably optimal under the never-more-
+  groups constraint (gcd(48,17)=1; ceiling ~4% of the pool), so no patch and no image bump buys
+  anything on this config. Full write-up in `vllm.md`. Rule of thumb kept: swap to a multi-layer
+  drafter and re-read that warning line.
+
 - [ ] **Two gfx1201-patched vLLM images, unevaluated** (surveyed 2026-08-22, nothing run):
       [vllm-radiance](https://codeberg.org/StillDeadcode/vllm-radiance/) and `tcclaviger/vllm`.
       The `vllm.md` dead end *"upgrading the image"* does **not** cover them — that was a stock
