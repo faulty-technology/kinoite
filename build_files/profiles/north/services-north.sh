@@ -28,7 +28,7 @@ systemctl --global enable app-dev.lizardbyte.app.Sunshine.service
 systemctl enable lemonade-selinux.service
 
 ### Linger for rootless user services
-# All three LLM stacks (lemonade.container, vllm.container, unsloth.container) are rootless
+# All three LLM stacks (lemonade.container, vllm.container, llamafactory.container) are rootless
 # user units. Without linger, systemd tears the user manager down at logout and takes a running
 # server with it — including a server started over SSH, the moment that SSH session ends. That
 # is a genuine trap on a headless-ish box: the model unloads mid-request for no visible reason.
@@ -41,11 +41,11 @@ systemctl enable lemonade-selinux.service
 #
 # Deliberately does NOT auto-start anything: none of the three .container files has an
 # [Install] section, so a lingering user manager still starts no LLM at boot. This only keeps
-# a HAND-STARTED one alive past logout — which matters most for unsloth, whose whole point is
-# a run that outlives the SSH session that launched it.
+# a HAND-STARTED one alive past logout — which matters most for llamafactory, whose whole point
+# is a run that outlives the SSH session that launched it.
 #
-# Defined here rather than in lemonade.sh/vllm.sh/unsloth.sh because it serves all of them and
-# belongs to none. Enumerates users instead of hardcoding a name so it keeps working whatever
+# Defined here rather than in lemonade.sh/vllm.sh/llamafactory.sh because it serves all of them
+# and belongs to none. Enumerates users instead of hardcoding a name so it keeps working whatever
 # the account is called after a reinstall.
 install -D -m 0755 /dev/stdin /usr/libexec/kinoite-enable-linger << 'EOF'
 #!/bin/bash
@@ -98,8 +98,8 @@ systemctl enable kinoite-linger.service
 # with a model loaded does not fail gracefully — it hangs the machine hard enough to need the
 # power button, with an empty kernel log. Evidence in notes/kinoite-north-validation.md.
 #
-# A TRAINING run is the same hazard from the other direction: unsloth holds weights, gradients
-# and optimiser state, which is why unsloth.service joins the lists below.
+# A TRAINING run is the same hazard from the other direction: llamafactory holds weights,
+# gradients and optimiser state, which is why llamafactory.service joins the lists below.
 #
 # wol.sh rejects sleep hooks on principle where a declarative alternative exists. There isn't one
 # here: nothing in podman, systemd or amdgpu expresses "stop this rootless user unit before the
@@ -137,19 +137,20 @@ STATE_DIR=/run/kinoite-llm-sleep
 # so systemd sequences the teardown. A per-unit loop would also let a future Upholds= on the pod
 # restart a member mid-teardown.
 #
-# unsloth.service is here for the same reason the inference stacks are, not as an afterthought:
-# a training run holds VRAM on BOTH R9700s (optimiser state and activations, not just weights),
-# and that is exactly the condition that hangs this box on suspend. See unsloth.sh.
-STOP_UNITS=(north-llm-pod.service vllm.service open-webui.service lemonade.service unsloth.service)
+# llamafactory.service is here for the same reason the inference stacks are, not as an
+# afterthought: a training run holds VRAM on BOTH R9700s (optimiser state and activations, not
+# just weights), and that is exactly the condition that hangs this box on suspend.
+# See llamafactory.sh.
+STOP_UNITS=(north-llm-pod.service vllm.service open-webui.service lemonade.service llamafactory.service)
 
 # Restore goes through MEMBERS, never the pod: the pod's Wants= would start both members
 # unconditionally, losing the point of recording what was actually up.
 #
-# Restoring unsloth brings back the SERVER (Studio/Jupyter), not an in-flight training run —
-# that process was killed with the container and its unsaved progress is gone. For a long
+# Restoring llamafactory brings back the SERVER (LLaMA Board/Jupyter), not an in-flight training
+# run — that process was killed with the container and its unsaved progress is gone. For a long
 # fine-tune, hold the box awake instead: `systemd-inhibit --what=sleep --why='fine-tune' sleep inf`
-# (or just don't let it idle-suspend). Documented in /usr/share/kinoite/unsloth.md.
-RESTORE_UNITS=(vllm.service open-webui.service lemonade.service unsloth.service)
+# (or just don't let it idle-suspend). Documented in /usr/share/kinoite/llamafactory.md.
+RESTORE_UNITS=(vllm.service open-webui.service lemonade.service llamafactory.service)
 
 # Above any plausible desktop (idle is tens of MiB per card, more when a dGPU drives the display)
 # and far below the ~28 GiB/card a loaded model holds. Only ever logged, never enforced.
@@ -351,7 +352,7 @@ cat > /usr/lib/systemd/system/kinoite-llm-sleep.service << 'EOF'
 Description=Stop GPU-holding LLM stacks across suspend, restore them on resume
 Documentation=file:///usr/share/kinoite/vllm.md
 Documentation=file:///usr/share/kinoite/lemonade.md
-Documentation=file:///usr/share/kinoite/unsloth.md
+Documentation=file:///usr/share/kinoite/llamafactory.md
 
 # All four sleep services (suspend, hibernate, hybrid-sleep, suspend-then-hibernate) declare
 # Requires=sleep.target, so this one hook covers every flavour.

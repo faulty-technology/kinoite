@@ -15,7 +15,7 @@ dnf5 remove -y firefox firefox-langpacks
 # huggingface-cli and tiny-agents). It exists so pulling a base model is `hf download`
 # rather than a Python snippet inside whichever container happens to be running, and so
 # `hf auth login` can write one token that all three LLM stacks pick up — see the
-# HF_HOME profile.d snippet in unsloth.sh for how that reaches them.
+# HF_HOME profile.d snippet in llamafactory.sh for how that reaches them.
 install_pkgs \
     distrobox \
     lm_sensors \

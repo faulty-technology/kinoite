@@ -31,7 +31,7 @@ SHARED="$(cd "$PROFILE_DIR/../../scripts" && pwd)"
 "$PROFILE_DIR/sunshine.sh"
 "$PROFILE_DIR/lemonade.sh"
 "$PROFILE_DIR/vllm.sh"
-"$PROFILE_DIR/unsloth.sh"
+"$PROFILE_DIR/llamafactory.sh"
 
 # Shared runtime setup + finalization
 "$SHARED/nix.sh"

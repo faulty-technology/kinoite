@@ -319,52 +319,44 @@ security grounds (#1539) and the text-only proposal as `not_planned` (#5384).
 
 ## Open
 
-### Unsloth fine-tuning — `build_files/profiles/north/unsloth.sh`
+### LLaMA-Factory fine-tuning — `build_files/profiles/north/llamafactory.sh`
 
-**Nothing here has run on the box.** The whole stack is derived from documentation and from
-reading unsloth's `pyproject.toml`, not from a build. The Quadlet itself is the one part that
-*has* been checked: it round-trips through podman 5.8.4's Quadlet generator on the box and
-`systemd-analyze verify` reports no unknown keys, and the generated `podman run` carries the
-expected devices, five `:z` volumes, both loopback publishes and `--shm-size=16g`.
+Replaced `unsloth.sh` on 2026-08-29. Unsloth itself was **not** the problem — it built and ran on
+the box (image built, `gcnArchName` filter selected both R9700s, Jupyter served). What could not
+be made to work was Unsloth **Studio**, its no-code UI: pip cannot produce a runnable one, and the
+documented installer builds a second torch stack that trains on different wheels than the image
+pins. LLaMA Board is a plain Gradio app with no installer gate, so the GUI stops being a caveat.
 
-Design decisions worth not re-litigating blind: the image is built **on the box** because no
-Unsloth image exists for gfx1201 (`unsloth/unsloth` is CUDA-only; community ROCm rebuilds ship
-gfx942 and gfx1100 only). AMD's torch **must** be installed before `unsloth[amd,...]`, because
-that extra resolves to `unsloth[huggingfacenotorch]` + `bitsandbytes>=0.50.0` and deliberately
-keeps whatever torch it finds. `bitsandbytes>=0.50.0` is a correctness floor, not a preference —
-upstream's own comment calls it the first PyPI release with the full RDNA 4-bit path.
+**Verified on the box under the previous trainer, and carried over unchanged** — do not re-derive:
+AMD's `whl-multi-arch` gfx1201 recipe resolves and runs (`torch 2.12.0+rocm7.14.0`); **triton
+arrives as a dependency of that torch** (`3.7.1+git0263a6a6.rocm7.14.0`) and needs no separate
+install; `bitsandbytes` 0.50.2 installs clean; the `gcnArchName` filter correctly excludes the
+gfx1036 iGPU and yields `HIP_VISIBLE_DEVICES=0,1`. Ordering is still load-bearing: AMD's torch
+first, and never an extra that names `torch`, or a CUDA wheel wins the resolution and is kept.
 
-- [ ] **Does `unsloth[amd,studio]` resolve against AMD's gfx1201 wheels?** The two halves are
-      documented separately and have never been installed together here. This is the single
-      biggest unknown; everything else is downstream of it.
-- [ ] **Is `triton` present after the torch install?** Known soft spot. Unsloth's `amd` extra
-      does not pin triton — only its `rocm*-torch*` extras do, and those pin a whole
-      repo.radeon.com torch stack that would fight the gfx1201 wheels. So triton arrives only if
-      AMD's torch depends on it. `podman exec unsloth python -c "import triton"`. If it fails,
-      the AMD index has a `triton/` directory — add an explicit `--index-url` install to the
-      Containerfile.
-- [ ] **Does the `gcnArchName` filter actually exclude the gfx1036 iGPU?** The launcher keeps
-      only devices whose arch is `gfx1201`, splitting on `:` because the string reads like
-      `gfx1201:sramecc-:xnack-`. Expect `device_count()==2` and two gfx1201 entries. The filter
-      handles non-contiguous indices (verified against a stub emitting `0,2`), which matters
-      because the iGPU need not be last.
-- [ ] **How does Unsloth Studio surface its first-run password under systemd?** `_password_prompt.py`
-      plus `diceware` in the `studio` extra imply an interactive prompt, which a service cannot
-      answer. The assumption baked into the docs is that it prints to stdout and therefore the
-      journal. If it instead blocks on a TTY, the unit will hang at start and the fix is likely a
-      `-t`-style flag or a pre-seeded credential file.
-- [ ] **What does a 4B LoRA actually cost in VRAM, and is one card enough?** AMD's playbook says
-      24 GB minimum for Radeon on Linux; each R9700 has 32 GB. Untested. This governs whether the
-      "stop the other stacks first" rule can ever be relaxed.
+- [ ] **Does a LLaMA-Factory QLoRA run actually complete on gfx1201?** Nothing has been trained on
+      this box yet under either stack — the substrate is proven, the training path is not. This is
+      the single biggest unknown; everything below is downstream of it.
+- [ ] **What does a 4B QLoRA cost in VRAM, and is one card enough?** AMD's playbook says 24 GB
+      minimum for Radeon on Linux; each R9700 has 32 GB. This governs whether the "stop the other
+      stacks first" rule can ever be relaxed. Record peak VRAM and wall clock on the first run.
+- [ ] **Does full-precision LoRA hit the rocBLAS Tensile GEMM crash here?** A published R9700
+      write-up reports full-precision LoRA crashing on this arch while 4-bit is clean, which is why
+      the runbook says QLoRA. Confirm once, deliberately, and record it as settled either way — an
+      unverified warning in a runbook decays into folklore.
+- [ ] **Is `/workspace/data` seeding correct in practice?** The launcher copies the image's bundled
+      `data/` in only when `dataset_info.json` is absent, and LLaMA Board's default relative `data`
+      dir depends on the launcher's `cd /workspace`. Both are untested against the real GUI.
 - [ ] **Multi-GPU training is untested and currently unsupported by choice.** The container runs
       without `--ipc=host` and without `--group-add`, following lemonade's measured finding that
       both are unnecessary and that `--ipc=host` drops SELinux label separation. If a distributed
-      RCCL run is ever wanted, it needs host IPC in a shadowed unit — and that turns the
-      confinement off, so measure whether it is worth it.
+      run is ever wanted, it needs host IPC in a shadowed unit — and that turns the confinement
+      off, so measure whether it is worth it.
 - [ ] **`Restart=on-failure` vs the vLLM lesson.** vllm.container needs `Restart=always` because a
       dead engine exits *cleanly* and `on-failure` never fires. No equivalent silent-success exit
-      is known for Studio/Jupyter, so `on-failure` is the choice here — but it is an assumption,
-      not an observation. If the container is ever found dead with `Result=success`, this is why.
+      is known for LLaMA Board/Jupyter, so `on-failure` is the choice here — but it is an
+      assumption, not an observation. If the container is ever found dead with `Result=success`,
+      this is why.
 
 
 ### GPU — `build_files/profiles/north/amdgpu.sh`, `tuning.sh`
