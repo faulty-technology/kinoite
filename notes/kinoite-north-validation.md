@@ -871,8 +871,11 @@ Settled 2026-08-22, all detail and numbers in `vllm.md`:
   `logger.debug`.** `is_prefix_caching_supported` (`config/model.py`) returns False for any
   `attn_type == "hybrid"` model: *"Hybrid models do not support prefix caching since the feature
   is still experimental."* Qwen3.8-27B is `qwen3_5`, i.e. hybrid. `VLLM_LOGGING_LEVEL=DEBUG` shows
-  it. Forcing it works (7.4x TTFT on a shared prefix, correctness clean) and now ships as the
-  `VLLM_PREFIX_CACHING` knob, opt-in because it overrides an upstream experimental gate.
+  it. Forcing it works (7.4x TTFT on a shared prefix, correctness clean) and ships as the
+  `VLLM_PREFIX_CACHING` knob — **opt-in until 2026-08-31, ON by default since**, once the
+  multi-turn agentic arm measured 1.73x end-to-end with decode unaffected. It still overrides an
+  upstream experimental gate and no quality A/B has been run; `VLLM_PREFIX_CACHING=false` reverts.
+  Full write-up in `notes/lemonade-vs-vllm.md`.
 - ~~**`disable_padded_drafter_batch:true` is now the default**, +19% decode, coupled to
   `--no-async-scheduling` because that pairing is what was measured.~~ **REVERTED 2026-08-24 — it
   crashes EngineCore under concurrency** (n>=3 parallel prompts, `llm_base_proposer.py:1082`
@@ -1096,13 +1099,13 @@ Settled 2026-08-30:
       connection, and the pod topology; the sleep/wake hook already handles both, so that part is
       free.
 
-      **3. Prefix caching — vLLM has it and it is OFF, which inverts the usual assumption.**
-      `VLLM_PREFIX_CACHING` defaults false because upstream gates prefix caching for hybrid
-      models; forced on it measured 7.4x TTFT after the first request. llama.cpp reuses a
-      request's common-prefix KV automatically with no flag, and it showed up in this session's
-      deep-concurrency reps (cold rep 92.51 -> warm reps 161.03 decode-agg on tensor split). So on
-      SHIPPED defaults llama.cpp is the one that caches prefixes. Turning vLLM's on narrows that
-      specific advantage — which is an argument for testing it before consolidating, not after.
+      **3. Prefix caching — ANSWERED 2026-08-31, this item is closed.** It used to read "vLLM has
+      it and it is OFF, which inverts the usual assumption". `VLLM_PREFIX_CACHING` now **defaults
+      to true**, so both engines cache prefixes and the asymmetry is gone. Measured: end-to-end
+      agentic throughput 24.09 -> 41.63 tok/s, which closes llama.cpp's lead from 2.01x to 1.16x;
+      decode unaffected (ms/pass flat within ±0.6%). The advice to test before consolidating was
+      right — testing it moved the number that consolidation turns on. Detail in
+      `notes/lemonade-vs-vllm.md`.
 
       **4. Concurrency semantics — the sharpest real difference, and it is a planning constraint.**
       vLLM does continuous batching over a shared paged pool at `--max-num-seqs 4`; a 5th request

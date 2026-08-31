@@ -263,7 +263,7 @@ if [ -n "$SPEC" ]; then
     export VLLM_ENFORCE_STRICT_TOOL_CALLING="${VLLM_ENFORCE_STRICT_TOOL_CALLING:-0}"
 fi
 
-# Prefix caching: OPT-IN, default off. Set VLLM_PREFIX_CACHING=true to enable.
+# Prefix caching: ON by default since 2026-08-31. Set VLLM_PREFIX_CACHING=false to disable.
 #
 # Worth it for agentic coding, where every request repeats a big fixed prefix (system prompt,
 # open files). Measured 2026-08-22 with a ~6K-token shared prefix and six different questions:
@@ -272,16 +272,31 @@ fi
 # is the expected shape: this is a PREFILL optimisation and costs nothing at decode. Stacks
 # cleanly with the drafter flag above (64.11 tok/s AND 7.7x TTFT together).
 #
-# Off by default anyway, because upstream gates it: is_prefix_caching_supported (config/model.py)
-# returns False for any attn_type == "hybrid" model with "Hybrid models do not support prefix
-# caching since the feature is still experimental" — logged at DEBUG, which is why nothing ever
-# explained it. Qwen3.8-27B is qwen3_5, i.e. hybrid, so we are overriding an experimental gate.
-# Correctness spot-checks passed, but one afternoon is not enough to default it on.
+# WHY THE DEFAULT FLIPPED, 2026-08-31. It used to be opt-in on the grounds that 08-22 measured
+# TTFT only and one afternoon was not enough. The multi-turn agentic arm now measures the whole
+# request: warm-prefix TTFT 5.573 s -> 0.441 s (12.6x), wall per turn 10.329 s -> 5.805 s, and
+# end-to-end 24.09 -> 41.63 tok/s, a 1.73x on the workload this box actually serves. Without it
+# TTFT climbs monotonically with turn number (4.784 s -> 6.229 s over 8 turns) because every turn
+# re-prefills a growing conversation — a latency pathology no decode benchmark here would show.
+# Two weeks of journals agree: vLLM was re-prefilling 27.3 prompt tokens per generated token
+# against llama.cpp's 2.29. Decode is confirmed unaffected — ms/pass is flat within ±0.6% at every
+# depth, and the -2.6% in tok/s is mean-accepted-length drift (3.372 -> 3.292), not a cost.
+# Full write-up: notes/lemonade-vs-vllm.md.
+#
+# THE ORIGINAL CAVEAT STILL STANDS AND IS NOT ANSWERED BY ANY OF THAT. Upstream gates this:
+# is_prefix_caching_supported (config/model.py) returns False for any attn_type == "hybrid" model
+# with "Hybrid models do not support prefix caching since the feature is still experimental" —
+# logged at DEBUG, which is why nothing ever explained it. Qwen3.8-27B is qwen3_5, i.e. hybrid,
+# so this default overrides an experimental upstream gate. Correctness spot-checks passed on
+# 08-22 and nothing since has contradicted them, but no quality A/B has ever been run with the
+# flag on versus off. The flip was a deliberate call that the measured throughput is worth that
+# exposure; if output quality is ever suspect, VLLM_PREFIX_CACHING=false is the first thing to
+# try, and it is the ONLY change needed to get back to the old behaviour.
 #
 # --mamba-cache-mode align is REQUIRED alongside it for a hybrid model (in this build: "only
 # cache the mamba state of the last token of each scheduler step and when the token is at
 # position i * block_size"). Do not enable prefix caching without it.
-PREFIX_CACHING="${VLLM_PREFIX_CACHING:-false}"
+PREFIX_CACHING="${VLLM_PREFIX_CACHING:-true}"
 case "$PREFIX_CACHING" in
     true)  EXTRA_ARGS+=(--enable-prefix-caching --mamba-cache-mode align) ;;
     false) ;;
@@ -1236,18 +1251,25 @@ image build.
    requests queueing. There is room: the engine reports 426,942 KV tokens, 3.25x the 128K context.
 4. `VLLM_FUSE_NORM_QUANT=true` — re-test the fusion kyuz0 disabled for a gfx1201 crash on an older
    vLLM. Default stays `false`. If it starts and generates sane text, flip the default in vllm.sh.
-5. `VLLM_PREFIX_CACHING=true` — **opt-in, off by default.** For agentic coding, where every
-   request repeats a big fixed prefix. Measured 2026-08-22 (~6K-token shared prefix, six
-   questions): TTFT goes from a flat 3.33 s per request to 3.47 s once, then **0.47 s — 7.4x** on
-   every request after. Decode unchanged; stacks with the drafter flag. The launcher adds the
-   required `--mamba-cache-mode align` automatically.
+5. `VLLM_PREFIX_CACHING` — **ON by default since 2026-08-31** (was opt-in). Set it to `false` to
+   disable. For agentic coding, where every request repeats a big fixed prefix. Measured
+   2026-08-22 (~6K-token shared prefix, six questions): TTFT goes from a flat 3.33 s per request
+   to 3.47 s once, then **0.47 s — 7.4x** on every request after. Decode unchanged; stacks with
+   the drafter flag. The launcher adds the required `--mamba-cache-mode align` automatically.
 
-   Not the default because it overrides an upstream gate: `is_prefix_caching_supported`
-   (`config/model.py`) returns False for any `attn_type == "hybrid"` model — "Hybrid models do not
-   support prefix caching since the feature is still experimental" — and Qwen3.8-27B is `qwen3_5`,
-   i.e. hybrid. Correctness passed, but that is one afternoon; run it a while before flipping the
-   default. That same line, at `logger.debug`, is why the feature being off was never explained —
-   `VLLM_LOGGING_LEVEL=DEBUG` shows it.
+   The default flipped once the multi-turn agentic arm measured the whole request rather than
+   TTFT alone: warm-prefix TTFT **5.573 s -> 0.441 s**, wall per turn **10.329 s -> 5.805 s**,
+   end-to-end **24.09 -> 41.63 tok/s (1.73x)**. Without it TTFT climbs monotonically with turn
+   number as each turn re-prefills a growing conversation. Decode is unaffected: ms/pass flat
+   within ±0.6% at every depth. See `notes/lemonade-vs-vllm.md`.
+
+   It still overrides an upstream gate, and that is unchanged by the throughput result:
+   `is_prefix_caching_supported` (`config/model.py`) returns False for any `attn_type == "hybrid"`
+   model — "Hybrid models do not support prefix caching since the feature is still experimental" —
+   and Qwen3.8-27B is `qwen3_5`, i.e. hybrid. Correctness spot-checks passed on 08-22; no quality
+   A/B has ever been run. **If output quality is ever suspect, `VLLM_PREFIX_CACHING=false` is the
+   first thing to try.** That same gate line, at `logger.debug`, is why the feature being off was
+   never explained — `VLLM_LOGGING_LEVEL=DEBUG` shows it.
 
 Not worth chasing: QuickReduce (arch-gated, never RDNA4); PP=2 instead of TP=2 (batch-1 decode
 serialises both shards, ~21 tok/s, worse); TP=1 (29 GB of weights + KV will not fit 30.4 GB
@@ -1723,13 +1745,18 @@ THREE CAVEATS, none of which change the conclusion, all of which change how you 
     and `-sm tensor` still wins 1.22x-2.61x. What is still NOT measured is QUALITY — no A/B has
     been run between IQ4_XS, Q8_K_XL and FP8 on this box, and bits-per-weight is not an output
     quality metric. Judge that separately from throughput.
-  - **Prefix caching is asymmetric AT SHIPPED DEFAULTS.** llama.cpp reuses a request's common
-    prefix automatically; vLLM's `--enable-prefix-caching` is opt-in and OFF here because upstream
-    gates it for hybrid models. So vLLM re-prefilled all four streams every rep at depth while
-    llama.cpp's later reps did not. The closest like-for-like is the FIRST rep of each, both
-    paying full prefill: llama.cpp tensor 92.51 vs vLLM 60.42 decode-agg — llama.cpp still ahead
-    by ~53%. Turning `VLLM_PREFIX_CACHING=true` on would narrow the wall-clock gap, not the
-    decode gap.
+  - **Prefix caching WAS asymmetric; it no longer is, and the tables above predate the fix.**
+    These figures were taken when vLLM's `--enable-prefix-caching` was opt-in and OFF, so vLLM
+    re-prefilled all four streams every rep at depth while llama.cpp's later reps did not.
+    The closest like-for-like was the FIRST rep of each, both paying full prefill: llama.cpp
+    tensor 92.51 vs vLLM 60.42 decode-agg — llama.cpp still ahead by ~53%.
+
+    **`VLLM_PREFIX_CACHING` now defaults to true (2026-08-31), and the prediction held**: it
+    narrowed the wall-clock gap and left the decode gap alone. End-to-end agentic throughput went
+    24.09 -> 41.63 tok/s, closing llama.cpp's lead from 2.01x to **1.16x**; ms/pass was flat
+    within ±0.6% at every depth. So the decode tables above stand as measured, but any
+    WALL-CLOCK comparison drawn from them now overstates llama.cpp's advantage. The current
+    head-to-head lives in `notes/lemonade-vs-vllm.md`.
 
 WHAT THIS DOES NOT SAY. It does not say drop vLLM. Decode is one axis; tool-call parsing, the
 OpenAI surface the agents point at, prefix caching and concurrency semantics are others, and
