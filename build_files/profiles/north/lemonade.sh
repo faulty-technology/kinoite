@@ -285,8 +285,11 @@ EOF
 #
 #         per recipe   "user.Qwen3.8-27B": { "ctx_size": <hand>, "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1" }
 #         globally     config.json llamacpp.rocm_args  (note the LIVE box already carries
-#                      "--load-mode mmap" there from before that seed was dropped — seeds are
-#                      first-run only, so check what is actually in config.json before adding)
+#                      "--load-mode mmap" there from before that seed was dropped. config.json
+#                      is lemonade's own file — defaults.json only seeds it on the FIRST run and
+#                      the recipe seeder does not touch it — so check what is actually in
+#                      config.json before adding. Clear it with
+#                      `lemonade config set llamacpp.rocm_args=`)
 #
 #     ONE ADDITION to that list, 2026-08-30 — the list above is correct but not exhaustive.
 #     lemonade DOES have a device knob of its own: `llamacpp_device` / `--llamacpp-device`, in
@@ -505,10 +508,24 @@ mkdir -p /etc/containers/systemd/users
 # then on every image seed is blocked forever — silently, because the conditional is doing
 # exactly what it says. Observed on the box: one user-added model kept all five seeded recipes
 # out of the model list indefinitely. Merging per key keeps user entries untouched and still
-# delivers seeds the user has never seen. Never overwrites an existing key.
+# delivers seeds the user has never seen.
+#
+# THE IMAGE OWNS THE KEYS IT SHIPS. Every key present in the baked seed is reconciled on each
+# start, not merely added when absent. Add-only was the first cut and it failed the moment a
+# shipped recipe CHANGED rather than appeared: 2570e9b put `-sm tensor -fa on
+# --spec-draft-p-min 0.1` on all four Qwen3.8 recipes, and only the two brand-new keys got it —
+# `user.Qwen3.8-27B` and `-Fast` already existed, so they kept `{"ctx_size": 131072}` and the
+# measured 24%-and-tensor-split work simply never reached the box, silently. Nothing in the
+# journal said so, because the conditional was doing exactly what it said.
+#
+# What this costs: a hand edit to a SHIPPED recipe (through the Web UI or the file) is reverted
+# on the next start. To keep a tweak, fork it under a new name — a key the image does not ship
+# is never touched, which is what protects the user's own models. What it buys: recipe fixes
+# land on reboot, with no `rm` ritual, and re-seeding is idempotent (the diff is per key, so an
+# unchanged file is not rewritten at all).
 install -D -m 0755 /dev/stdin /usr/libexec/kinoite-lemonade-seed << 'SEEDEOF'
 #!/usr/bin/python3
-"""Merge baked lemonade recipe seeds into the user's config, per key."""
+"""Reconcile baked lemonade recipe seeds into the user's config, per key."""
 import json
 import os
 import sys
@@ -546,10 +563,11 @@ for src, name in PAIRS:
         print(f"kinoite-lemonade-seed: leaving {name} untouched", file=sys.stderr)
         continue
     added = [k for k in seeds if k not in cur]
-    if not added:
+    updated = [k for k in seeds if k in cur and cur[k] != seeds[k]]
+    if not added and not updated:
         continue
     merged = dict(cur)
-    for k in added:
+    for k in added + updated:
         merged[k] = seeds[k]
     try:
         fd, tmp = tempfile.mkstemp(dir=dest_dir, prefix=f".{name}.")
@@ -558,7 +576,9 @@ for src, name in PAIRS:
             fh.write("\n")
         os.replace(tmp, dest)      # atomic; lemonade reads this file on every start
         os.chmod(dest, 0o644)
-        print(f"kinoite-lemonade-seed: {name}: added {', '.join(added)}")
+        note = [f"added {', '.join(added)}"] if added else []
+        note += [f"updated {', '.join(updated)}"] if updated else []
+        print(f"kinoite-lemonade-seed: {name}: {'; '.join(note)}")
     except OSError as exc:
         print(f"kinoite-lemonade-seed: cannot write {name}: {exc}", file=sys.stderr)
 SEEDEOF
@@ -719,9 +739,10 @@ TimeoutStartSec=900
 ExecStartPre=/usr/bin/mkdir -p %h/.local/share/models/huggingface %h/.local/share/lemonade/llama %h/.local/share/lemonade/config
 ExecStartPre=/usr/bin/install -m 0644 /usr/share/kinoite/lemonade-defaults.json %h/.local/share/lemonade/config/defaults.json
 
-# Recipe seeds, merged PER KEY (unlike defaults.json above, which is ours to overwrite):
-# lemonade reads user_models.json every start and its Web UI writes the same file when a
-# user adds a custom model, so the seeder adds only keys that are absent. See the helper.
+# Recipe seeds, reconciled PER KEY: lemonade reads user_models.json every start and its Web UI
+# writes the same file when a user adds a custom model, so the seeder rewrites only the keys
+# the image ships and leaves every other key alone. Runs on every start, not just the first —
+# that is how a CHANGED recipe reaches the box. See the helper.
 ExecStartPre=/usr/libexec/kinoite-lemonade-seed
 
 # Excludes the iGPU by VISIBILITY before the container exists. Fails open — see the helper.
@@ -747,17 +768,42 @@ have no [Install] to act on. That's the guardrail, not a bug.
 
 ## Recipes (baked custom models)
 
-Curated Unsloth Qwen GGUFs, seeded into config/user_models.json on the FIRST start.
+Curated Unsloth Qwen GGUFs, reconciled into config/user_models.json on every start.
 List and run (via the Web UI, or the CLI inside the container):
 
     podman exec lemonade lemonade list
     podman exec lemonade lemonade run user.Qwen3.8-27B     # downloads on first run
 
-    user.Qwen3.8-27B       newest dense, vision+thinking, Developer Role  MTP  UD-Q6_K   23.4 GB   ctx 128K
-    user.Qwen3.8-27B-Fast  same model, 4-bit — the speed pick             MTP  UD-IQ4_XS 15.6 GB   ctx 128K
-    user.Qwen3.6-27B       dense, vision+thinking                         MTP  Q6_K      22.9 GB   ctx 128K
-    user.Qwen3.6-35B-A3B   fast MoE (~3B active), vision+thinking         MTP  UD-Q6_K   30.0 GB   ctx 128K
-    user.Qwen3-Coder-30B   agentic coding MoE, 256K native, text-only     --   Q6_K      25.1 GB   ctx 256K
+    user.Qwen3.8-27B       newest dense, vision+thinking, Developer Role  MTP  UD-Q6_K    23.4 GB   ctx 128K
+    user.Qwen3.8-27B-Fast  same model, 4-bit — the speed pick             MTP  UD-IQ4_XS  15.6 GB   ctx 128K
+    user.Qwen3.8-27B-Q6XL  same model, heavy quant — the quality pick     MTP  UD-Q6_K_XL 25.3 GB   ctx 128K
+    user.Qwen3.8-27B-Q8XL  same model, heaviest that still fits the pair  MTP  UD-Q8_K_XL 31.5 GB   ctx 128K
+    user.Qwen3.6-27B       dense, vision+thinking                         MTP  Q6_K       22.9 GB   ctx 128K
+    user.Qwen3.6-35B-A3B   fast MoE (~3B active), vision+thinking         MTP  UD-Q6_K    30.0 GB   ctx 128K
+    user.Qwen3-Coder-30B   agentic coding MoE, 256K native, text-only     --   Q6_K       25.1 GB   ctx 256K
+
+### A seeded recipe you cannot see in the Web UI
+
+The model list in the Web UI — and `GET /api/v1/models`, the only model endpoint it calls —
+shows DOWNLOADED models only. A recipe that seeded correctly is registered and loadable but
+absent from that list until its files are in the cache, which reads exactly like the seeding
+having failed. It has not. Check the registry directly instead:
+
+    podman exec lemonade lemonade list                       # everything, with a Downloaded column
+    curl -s http://127.0.0.1:13305/api/v1/models/user.Qwen3.8-27B-Q6XL   # 200 = registered
+
+    journalctl --user -u lemonade -b | grep kinoite-lemonade-seed        # what the seeder did
+
+Warm one and it appears:
+
+    podman exec lemonade lemonade pull user.Qwen3.8-27B-Q6XL
+
+"Downloaded" means EVERY component of the recipe, not just the big one: `main`, `draft` and
+`mmproj` each have to be in the cache. A 25 GB main GGUF sitting on disk next to a missing
+928 MB `mmproj-F16.gguf` still counts as not downloaded, and the model stays out of the list.
+Seen on the box 2026-08-31: `-Q6XL` and `-Q8XL` had their main and MTP draft files from the
+2026-08-30 benchmarking run but no mmproj, so all seven recipes read `downloaded: false`
+against `Cache built: 129 total, 3 downloaded`.
 
 Every recipe with an MTP head available uses it; lemonade turns speculation on by itself
 and you do not pass any flags — verified `--spec-type draft-mtp --spec-draft-n-max 3` on
@@ -787,11 +833,14 @@ worth up to ~2x on the dense-attention Coder seed, but only ~7.5% measured on a 
 "Context size & caching". More quality: move a model to Q8_0 in user_models.json. Backend falls back with
 `lemonade config set llamacpp.backend=vulkan`.
 
-Seeds are first-run only (like defaults.json below). To pull updated recipes after an
-image update, delete and restart:
+Recipe seeds are reconciled on EVERY start, so an image update delivers changed recipes on
+the next `systemctl --user restart lemonade` — nothing to delete. The image owns the keys it
+ships: editing one of the seeded recipes by hand is reverted on the next start, so keep a
+tweak by copying it to a new name instead. Keys the image does not ship (anything you added
+through the Web UI) are never touched.
 
-    rm ~/.local/share/lemonade/config/user_models.json      # and/or recipe_options.json
-    systemctl --user restart lemonade
+config.json is the exception — it is lemonade's own file, seeded from defaults.json on the
+FIRST run only, and nothing reconciles it afterwards. Change it with `lemonade config set`.
 
 ## Storage
 
