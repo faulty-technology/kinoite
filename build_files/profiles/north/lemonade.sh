@@ -439,16 +439,60 @@ EOF
 #
 #     HIP_VISIBLE_DEVICES=0,1 llama-server -m <gguf> -ngl 99 -c 32768 -sm tensor -fa on \
 #         --spec-type draft-mtp -md <mtp.gguf> -ngld 99 --spec-draft-n-max 4
+
+# REASONING EFFORT: baked to MEDIUM on the four Qwen3.8-27B recipes, 2026-08-31 — the llama.cpp
+# half of vllm.sh's VLLM_REASONING_EFFORT block, which was still running at maximum until now.
+#
+# An unset knob is not neutral: Qwen3.8's template resolves `reasoning_effort|default('xhigh')`,
+# the highest of the three levels, so every request through lemonade took the top one by omission.
+# MEASURED on the live box 2026-08-31 against the running Qwen3.8-27B-Q8XL — user "hi",
+# max_tokens 1, reading usage.prompt_tokens back through lemonade's proxy on :13305:
+#
+#     nothing set (what shipped before this)   53      reasoning_effort = low      41
+#     reasoning_effort = xhigh                 53      reasoning_effort = medium   11
+#
+# 11 is the bare prompt. The template injects a SENTENCE OF INSTRUCTION per level ("Reasoning
+# effort is set to xhigh. Please think carefully through the task, validate key assumptions, ...")
+# and medium is the one level with no elif branch, so it renders empty. Baking medium adds no
+# budget and no cap; it stops prepending the think-harder paragraph. Cheap to try, cheap to undo.
+# Worth doing for the reason vllm.sh gives: reasoning tokens stay in the context and are re-read
+# on every later forward pass, so thinking is paid for again by every turn after it.
+#
+# preserve_thinking IS IN THE SAME OBJECT ON PURPOSE. lemonade merges the arg layers PER FLAG, not
+# per string (`merge_args_maps` in the lemond binary; the live cmdline comes out key-sorted, one
+# value per flag), and the `qwen35` architecture default already sets `--chat-template-kwargs
+# '{"preserve_thinking":true}'`. A recipe setting that flag REPLACES that object. Both keys go in
+# one JSON object or preserve_thinking is silently lost.
+#
+# NOT EXTENDED TO THE OTHER THREE — settled, not untested. Templates fetched and grepped
+# 2026-08-31: Qwen3.6-27B and Qwen3.6-35B-A3B have enable_thinking/preserve_thinking and NO
+# reasoning_effort; Qwen3-Coder-30B has none of the three. Setting it there is inert, not harmful.
+#
+# PER-REQUEST OVERRIDE (the route for a client or dev harness), measured end to end through :13305
+# with the same token counts: `"chat_template_kwargs": {"reasoning_effort": "xhigh"}` in the body
+# is forwarded by lemonade and merged PER KEY over this server default, so a request setting only
+# reasoning_effort keeps preserve_thinking from the flag. Two traps, both measured:
+#   - The OpenAI-style TOP-LEVEL `"reasoning_effort"` field is IGNORED by this llama-server build.
+#     It parses, it 200s, it changes nothing (53 tokens either way). Only the nested form works.
+#   - `high` is not a fourth level: the GGUF's baked template aliases it onto xhigh, so it silently
+#     means MAXIMUM here. That DIVERGES from the vLLM side, where the template copy has no alias
+#     and the same value 400s. Anything outside xhigh|medium|low raises a Jinja exception and 500s
+#     that one request; the server survives.
+#
+# TO REVERT to the model's own maximum: drop the key below (absence = xhigh), or override without
+# a rebuild in the live recipe_options.json. UNMEASURED, deliberately — no quality A/B has been run
+# here, and none of the throughput tables above move: they were all taken with thinking off.
+
 cat > /usr/share/kinoite/lemonade-recipes/recipe_options.json << 'EOF'
 {
   "user.Qwen3.8-27B":      { "ctx_size": 131072,
-                             "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1" },
+                             "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1 --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'" },
   "user.Qwen3.8-27B-Fast": { "ctx_size": 131072,
-                             "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1" },
+                             "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1 --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'" },
   "user.Qwen3.8-27B-Q6XL": { "ctx_size": 131072,
-                             "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1" },
+                             "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1 --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'" },
   "user.Qwen3.8-27B-Q8XL": { "ctx_size": 131072,
-                             "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1" },
+                             "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1 --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'" },
   "user.Qwen3.6-27B":     { "ctx_size": 131072 },
   "user.Qwen3.6-35B-A3B": { "ctx_size": 131072 },
   "user.Qwen3-Coder-30B": { "ctx_size": 262144 }
