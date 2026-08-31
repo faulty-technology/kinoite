@@ -209,10 +209,29 @@ if [ -n "$SPEC" ]; then
     # is well past the fix (first release after it was 0.25.0 on 07-11). But 0.27.1 is the image
     # already measured ~15% SLOWER at MTP decode — 34.66 vs 40.75 on an identical prompt, see the
     # "Decode performance" note — so upgrading trades 15% of throughput to regain a tool-calling
-    # guarantee we barely use. This knob is the cheaper side of that trade. Revisit when a build
-    # lands that is both post-07-04 AND not a decode regression. (Tags checked 2026-08-23; the
-    # date-stamped tags stop at 20260613-143121, the newer builds are only under dev/version tags,
-    # so `skopeo inspect` the tag rather than trusting the tag list to be chronological.)
+    # guarantee we barely use. This knob is the cheaper side of that trade.
+    #
+    # THE IMAGE-BUMP RULE IS NOW THREE CONDITIONS, not two: post-07-04 fix, AND not a decode
+    # regression, AND does not reintroduce the TP=2 hang. The third one is new as of 2026-08-30
+    # and it exists because RCCL is the thing that moves under an image bump. Upstream has two
+    # OPEN reports of a hard TP=2 deadlock on exactly this hardware — vllm-project/vllm#40980
+    # (assigned, "In Progress") and ROCm/rocm-systems#5480 (still "status: triage"), both filed
+    # by kyuz0 on 2026-04-27, both saying RCCL 2.27.3 works and 2.27.7 hangs. Neither is fixed.
+    # Measured in the images 2026-08-30:
+    #     :latest (what we run, 2026-06-13, vLLM 0.22.1rc1.dev499)   RCCL 2.29.7   no fix
+    #     :dev == :rocm7.14.0-torch2.11.0-vllm0.27.1 (2026-08-12)    RCCL 2.30.4   HAS the fix
+    # So we serve TP=2 all day on 2.29.7, which is already past the version those issues call
+    # broken — that makes this box a counter-example neither issue has, and it is the only
+    # evidence we have that the hang is version- or config-specific rather than universal.
+    # A bump moves us to 2.30.4, which NOBODY has data on: not us, not the issues. Treat that as
+    # an unquantified hang risk stacked on top of the already-measured 15% decode regression, and
+    # test TP=2 startup explicitly before adopting rather than assuming a newer RCCL is safer.
+    #
+    # (Tags re-checked 2026-08-30. The date-stamped tags still stop at 20260613-143121, and the
+    # only thing newer than :latest is ONE image, not two: `dev`, `rocm7.14.0-torch2.11.0-vllm0.27.1`
+    # and `sha-c5dd87e` are all digest sha256:f36940bd…, created 2026-08-12T18:56:46Z. Every other
+    # sha-* tag predates :latest. So `skopeo inspect` the tag rather than trusting the tag list to
+    # be chronological, and compare DIGESTS before believing two tags are two builds.)
     #
     # THE FAILURE, end to end. Open WebUI defaults to NATIVE function calling, so an ordinary
     # chat carries `tools` (its builtin web_search among them). VLLM_ENFORCE_STRICT_TOOL_CALLING
@@ -1040,6 +1059,40 @@ iGPU holds a constant 828 MiB of desktop and never moves); CPU saturation (~5 of
 both GPUs report 100% busy throughout, so the CPU is not the gate); bumping to a newer STOCK
 vLLM (0.27.1 tested — kyuz0's own `dev` tag: baseline unchanged at 24.34, MTP WORSE 34.66 vs 40.75).
 
+THE UPSTREAM TP=2 HANG, and why this box is a counter-example rather than a victim (2026-08-30).
+Two OPEN upstream reports describe a hard TP=2 deadlock on exactly this hardware — both R9700s
+pinned at 100% with no requests in flight, inference never returning, TP=1 fine:
+
+    vllm-project/vllm#40980     kyuz0, 2026-04-27   open, labels bug/rocm, assigned to an AMD
+                                engineer, project status "In Progress"
+    ROCm/rocm-systems#5480      kyuz0, 2026-04-27   open, "status: triage", assigned tcgu-amd,
+                                no AMD reply on the thread
+
+Both say the same thing about the cause: RCCL **2.27.3 works, 2.27.7 hangs**, i.e. a regression
+between two RCCL builds, not a vLLM bug. `NCCL_P2P_DISABLE=1` and `--enforce-eager` are recorded
+in the report as NOT helping.
+
+WE DO NOT HAVE THIS BUG, and the reason is worth writing down because it is the only real datum
+anyone has on the other side. RCCL versions read straight out of the images:
+
+    :latest (2026-06-13, vLLM 0.22.1rc1.dev499)                RCCL 2.29.7   <- what we serve on
+    :dev == :rocm7.14.0-torch2.11.0-vllm0.27.1 (2026-08-12)     RCCL 2.30.4
+
+    podman run --rm --entrypoint "" <image> bash -c \
+      'strings $(find / -name librccl.so.1 | head -1) | grep -m1 "RCCL version"'
+
+So this box has served TP=2 continuously since 2026-08-16 on RCCL **2.29.7** — two minor versions
+past the one those issues call broken. That is a counter-example neither issue has, and it means
+the hang is version- or config-specific rather than a property of gfx1201 TP=2. It does NOT mean
+2.27.7 was misdiagnosed; we never ran 2.27.7.
+
+WHAT IT COSTS US: an image bump moves RCCL as a side effect, and nobody — not us, not either
+issue — has data on 2.30.4. Hence the third condition on the image-bump rule (see "Tool calling"
+below): post-07-04 fix, AND not a decode regression, AND does not reintroduce the TP=2 hang.
+Verify the third by starting the candidate at TP=2 and watching for the deadlock signature (both
+cards at 100%, no tokens) BEFORE benchmarking anything, because a deadlocked engine looks like a
+slow one until you check `rocm-smi`.
+
 GPU CLOCKS AND THERMALS, re-opened and re-closed 2026-08-25. The old evidence for this dead end
 (mclk top DPM, mem 58C, junction 72C, no throttling) WENT STALE when the 235 W power cap landed in
 tuning.sh, and the box now looks alarming under load: both cards pinned at exactly 234/235 W,
@@ -1203,9 +1256,20 @@ Higher ceiling but invasive: this image already patches `_ON_MI3XX` in rocm.py t
 so patching `use_custom_allreduce()` the same way may light up the one-shot custom all-reduce —
 generic HIP, but needs correctness checking (garbage output / hangs), and pairs with `iommu=pt`
 (`rpm-ostree kargs --append=iommu=pt`, reboot; no IOMMU kargs are set today). NOTE: someone
-already did this — stilldeadcode/vllm-radiance ships it as RADIANCE_FAST_REDUCE, so the cheap
-way to evaluate the idea is to run that image rather than to patch this one. See the
-gfx1201-patched-images note under DEAD ENDS above; the 11% ceiling still applies either way.
+already did this — stilldeadcode/vllm-radiance ships it as `RADIANCE_USE_R4D_AR` (the
+`ar_oneshot_2rank_exact` kernel from libr4d; the name `RADIANCE_FAST_REDUCE` recorded here earlier
+is stale), so the cheap way to evaluate the idea is to run that image rather than to patch this
+one. See the radiance note in notes/kinoite-north-validation.md; the 11% ceiling still applies
+either way.
+
+P2P IS AVAILABLE AND IT IS ONLY PCIe. Measured 2026-08-30 from radiance's startup
+`rocm-bandwidth-test` sweep, run by hand and killed before the model loaded: Inter-Device Access
+is 1 for every pair and radiance's banner reports `P2P access : ENABLED 0<->1`. But a peer copy
+between the two R9700s peaks at **28.16 GB/s unidirectional / 55.64 GB/s bidirectional** — the
+same as a copy to host memory (28.77 / 50.73). There is no fast direct link; P2P here just removes
+a host bounce. So a working one-shot all-reduce is not vacuous, and it is also not a step change:
+the 11% comm share measured above is the ceiling on all of it. Full matrices, including NUMA
+distances and the much slower iGPU (17.8 GB/s), are in the validation notes.
 
 Qwen3.8-27B is vision-capable; the launcher serves it text-only (--language-model-only) to save
 VRAM. To enable vision, drop that flag in the launcher copy (costs VRAM).
@@ -1423,18 +1487,32 @@ WHEN TO UNDO THIS. An image with the fix already exists — kyuz0's `dev` and
 the 2026-07-04 fix (the first release after it was 0.25.0 on 07-11). We are NOT on it on purpose:
 0.27.1 is the build already measured ~15% slower at MTP decode (34.66 vs 40.75, see "Decode
 performance"), so taking it trades throughput for a tool-calling guarantee this box barely uses.
-Revisit when a build is both post-07-04 and not a decode regression.
 
-Don't judge that from the tag name — the date-stamped tags stop at 20260613-143121 while the newer
-builds hide under `dev`/version tags, so the tag list is not chronological:
+**THE IMAGE-BUMP RULE IS THREE CONDITIONS, not two.** A candidate must be (1) post-07-04, so it
+carries the fix, (2) not a decode regression, and (3) must not reintroduce the TP=2 hang. The
+third one was added 2026-08-30; see "The upstream TP=2 hang" under DEAD ENDS for why, and for
+the RCCL versions each image ships.
 
-    skopeo inspect docker://docker.io/kyuz0/vllm-therock-gfx1201:<tag> | grep -i created
+Don't judge any of that from the tag name. The date-stamped tags stop at 20260613-143121 while
+the newer build hides under `dev`/version tags, so the tag list is not chronological — and two
+tag names are not two builds. Re-checked 2026-08-30: `dev`, `rocm7.14.0-torch2.11.0-vllm0.27.1`
+and `sha-c5dd87e` are ONE image, digest `sha256:f36940bd…`, created 2026-08-12T18:56:46Z. Every
+other `sha-*` tag predates `:latest` (`sha256:55fa7796…`, 2026-06-13T14:54:38Z). Compare digests:
+
+    skopeo inspect docker://docker.io/kyuz0/vllm-therock-gfx1201:<tag> | grep -iE 'created|Digest'
 
 And confirm the fix is actually in a candidate image rather than inferring from a version string —
 #44297 added a `trim_reasoning_for_advance` helper, so it is present iff this prints something:
 
     podman run --rm --entrypoint "" docker.io/kyuz0/vllm-therock-gfx1201:<tag> \
         grep -rl trim_reasoning_for_advance /opt/venv/lib64/python3.12/site-packages/vllm
+
+Verified 2026-08-30: absent in `:latest`, present in the 0.27.1 image (`v1/core/sched/scheduler.py`
+and `v1/structured_output/__init__.py`). Check the RCCL version in the same pass — it is the
+thing condition (3) is about:
+
+    podman run --rm --entrypoint "" docker.io/kyuz0/vllm-therock-gfx1201:<tag> \
+        bash -c 'strings $(find / -name librccl.so.1 2>/dev/null | head -1) | grep -m1 "RCCL version"'
 
 To undo: delete the `export VLLM_ENFORCE_STRICT_TOOL_CALLING` block from the launcher in
 build_files/profiles/north/vllm.sh, rebuild, and remove any shadowed vllm.container that carries
@@ -1538,14 +1616,134 @@ The default has tool-calling (--enable-auto-tool-choice, qwen3_coder parser) ena
 Separate stack, separate ports (lemonade is :13305). They only share the model store above.
 Run whichever you want; running both at once contends for VRAM, so stop one first.
 
-Neither is "the fast one". Head to head on this pair, same day, batch 1:
+**llama.cpp IS THE DECODE PATH ON THIS BOX.** That replaces the old "neither is the fast one,
+pick on features" line, which was measured at a SHORT PROMPT and was wrong about everything past
+one. Re-measured end to end 2026-08-30, both stacks on the same pair the same evening, run
+sequentially so neither was competing for VRAM.
 
-    vLLM FP8       27.8 GB weights, MTP k=3   54.22 tok/s
-    llama.cpp      14.0 GB IQ4_XS,   MTP      56.86 tok/s
+Method, so this is re-runnable: one log-summarisation probe grown to four MEASURED token depths
+(each server's own `/tokenize`), decode timed first-content-token to last, 512 tokens, median of
+3 reps after a discarded warm-up, thinking off. `~/bench/depth.py` + `depth.sh`. vLLM ran at its
+shipped defaults (TP=2, `--max-num-seqs 4`, MTP k=4, `--max-model-len 131072`); llama.cpp ran
+Qwen3.8-27B with its MTP head (Q4_0, the only one unsloth ships), f16 KV, both R9700s visible
+via `HIP_VISIBLE_DEVICES`. TWO llama.cpp quants were run, because "is this just the quant?" is
+the first thing anyone asks and it deserved a measurement rather than a caveat.
 
-llama.cpp reads half the bytes per token and wins by only ~5% — its quantisation advantage is
-almost entirely cancelled out by vLLM being the more efficient engine. Pick on features (batching,
-tool-calling, OpenAI API) rather than on speed.
+QUANT A — IQ4_XS, 14.0 GB. Lemonade's `-Fast` seed; HALF the bytes vLLM reads per token.
+
+    prompt depth    vLLM FP8      -sm layer         -sm tensor
+       189 tok       63.33      69.66  1.10x      92.41  1.46x
+     9,479 tok       49.81      61.52  1.24x      80.21  1.61x
+    37,763 tok       31.56      48.05  1.52x      71.75  2.27x
+    69,751 tok       21.31      43.54  2.04x      67.83  3.18x
+
+QUANT B — UD-Q8_K_XL, 31.5 GB. HEAVIER than vLLM's FP8 (27.8 GB), so llama.cpp is now reading
+MORE bytes per token, not fewer. This is the arm that answers the quantisation question.
+
+    prompt depth    vLLM FP8      -sm layer         -sm tensor
+       189 tok       63.33      51.96  0.82x      77.39  1.22x
+     9,479 tok       49.81      47.96  0.96x      78.58  1.58x
+    37,763 tok       31.56      42.63  1.35x      62.14  1.97x
+    69,751 tok       21.31      34.05  1.60x      55.67  2.61x
+
+THE ENGINE ADVANTAGE IS REAL AND IT IS NOT THE QUANTISATION. Give llama.cpp a heavier checkpoint
+than vLLM's and `-sm tensor` still wins at every depth, 1.22x to 2.61x. That is the headline.
+
+BUT READ THE `-sm layer` COLUMN BEFORE QUOTING IT, BECAUSE IT IS QUANT-DEPENDENT and layer split
+is what lemonade actually ships. On IQ4_XS it beats vLLM everywhere. On Q8_K_XL it LOSES below
+about 11K — 0.82x at a short prompt, 0.96x at 9.5K — and only pulls ahead past the crossover the
+fits put at **~11.1K context**. So "lemonade is faster" is true today only because the fast seed
+is a 4-bit quant. At a heavy quant it is true only at agentic depth, and only `-sm tensor` makes
+it true everywhere. That is the strongest argument yet for baking tensor split
+(notes/kinoite-north-validation.md, "Bake `-sm tensor`").
+
+Acceptance length was 2.8-4.0 on EVERY arm including vLLM's, so none of this is a speculation
+artifact, and the Q4_0 draft head does NOT degrade against Q8 weights. Fitted per-forward-pass
+cost (`ms = slope*ctxK + intercept`), which is what makes the shape legible:
+
+    vLLM FP8 (shipped)              1.5010*ctxK + 60.98    R2 0.9999
+    llama.cpp IQ4_XS  -sm layer     0.4149*ctxK + 56.56    R2 0.9996
+    llama.cpp IQ4_XS  -sm tensor    0.2045*ctxK + 41.04    R2 0.9886
+    llama.cpp Q8_K_XL -sm layer     0.3972*ctxK + 73.21    R2 0.9981
+    llama.cpp Q8_K_XL -sm tensor    0.1971*ctxK + 49.48    R2 0.9995
+
+vLLM's CONTEXT TERM is 3.6x llama.cpp layer's and 7.3x tensor's. The intercepts are within 50%
+of each other; the slopes are not close. That is the finding.
+
+AND THE TWO-QUANT RUN VALIDATES THE MODEL RATHER THAN JUST ADDING ROWS. Slope should be the
+context/KV term and intercept the weight term. KV is f16 in BOTH quants, so changing the quant
+should move the intercept and leave the slope alone — and that is exactly what happens:
+
+    IQ4_XS -> Q8_K_XL   -sm tensor    slope 0.2045 -> 0.1971 (0.96x)   intercept 41.04 -> 49.48 (1.21x)
+    IQ4_XS -> Q8_K_XL   -sm layer     slope 0.4149 -> 0.3972 (0.96x)   intercept 56.56 -> 73.21 (1.29x)
+
+The slope moves 4% (noise) while the weight bytes go up **2.21x**. Two things follow. The linear
+decomposition is physically real, not curve-fitting. And the intercept rising only 1.21-1.29x for
+2.21x the bytes means the per-pass cost is NOT dominated by weight bandwidth — there is a large
+fixed term (butterfly reduction, CPU draft sampler under tensor split, launch overhead), which is
+why a heavy quant costs far less here than the byte ratio predicts. Q8_K_XL is a much cheaper
+upgrade on this box than it looks on paper.
+
+One artifact to expect when re-running: Q8_K_XL `-sm tensor` reads FASTER at 9.5K (78.58) than at
+189 tokens (77.39). That is acceptance rising (3.84 -> 4.02), not the model speeding up with
+context — ms/pass rises correctly, 49.66 -> 51.16. It is the reason both are reported.
+
+CONCURRENCY DOES NOT RESCUE IT, THOUGH IT LOOKS LIKE IT MIGHT AT FIRST. Four requests released
+from a barrier, `ignore_eos` so every stream is the same length, median of 3 — the method the
+k=3 table above used:
+
+    4 concurrent, SHORT prompts        aggregate     <- vLLM wins here, and only here
+      vLLM FP8 (shipped)               189.93 tok/s
+      llama.cpp IQ4_XS  -sm tensor     178.27
+      llama.cpp Q8_K_XL -sm tensor     170.18
+      llama.cpp IQ4_XS  -sm layer      134.47
+      llama.cpp Q8_K_XL -sm layer      126.71
+
+    4 concurrent, 38K EACH             decode-agg    wall-agg
+      llama.cpp IQ4_XS  -sm tensor     161.03        101.57
+      llama.cpp Q8_K_XL -sm tensor     148.38         99.63
+      llama.cpp IQ4_XS  -sm layer      101.96         77.02
+      llama.cpp Q8_K_XL -sm layer       93.03         72.84
+      vLLM FP8 (shipped)                60.42         16.67
+
+vLLM's continuous batching genuinely wins the short-prompt batch — by 6.5% over IQ4_XS tensor
+split and 12% over Q8_K_XL's — and that is the one result in this file that favours it. Add context and it inverts hard. Two
+numbers are reported at depth because they measure different things: `decode-agg` sums per-stream
+decode rates (prefill excluded, comparable to the depth table); `wall-agg` is total tokens over
+wall clock and at 4x38K is mostly PREFILL, so it is what a user waits for but not a decode number.
+
+THREE CAVEATS, none of which change the conclusion, all of which change how you quote it:
+
+  - **The llama.cpp figures are a FLOOR.** This build has no RCCL, so every `-sm tensor` run fell
+    back to ggml's butterfly reduction, and tensor split additionally forces the MTP draft sampler
+    onto the CPU for every slot. Both costs are already inside the numbers above.
+  - **Quantisation is CONTROLLED FOR, and it was not the explanation.** This used to be the
+    open caveat ("run the Q6_K seed, that number does not exist yet"). It exists now: the
+    Q8_K_XL arm is 31.5 GB against vLLM's 27.8 GB FP8, so llama.cpp reads MORE bytes per token
+    and `-sm tensor` still wins 1.22x-2.61x. What is still NOT measured is QUALITY — no A/B has
+    been run between IQ4_XS, Q8_K_XL and FP8 on this box, and bits-per-weight is not an output
+    quality metric. Judge that separately from throughput.
+  - **Prefix caching is asymmetric AT SHIPPED DEFAULTS.** llama.cpp reuses a request's common
+    prefix automatically; vLLM's `--enable-prefix-caching` is opt-in and OFF here because upstream
+    gates it for hybrid models. So vLLM re-prefilled all four streams every rep at depth while
+    llama.cpp's later reps did not. The closest like-for-like is the FIRST rep of each, both
+    paying full prefill: llama.cpp tensor 92.51 vs vLLM 60.42 decode-agg — llama.cpp still ahead
+    by ~53%. Turning `VLLM_PREFIX_CACHING=true` on would narrow the wall-clock gap, not the
+    decode gap.
+
+WHAT THIS DOES NOT SAY. It does not say drop vLLM. Decode is one axis; tool-call parsing, the
+OpenAI surface the agents point at, prefix caching and concurrency semantics are others, and
+`notes/kinoite-north-validation.md` has the scoped comparison under "STACK CONSOLIDATION". It
+does say that "pick on features, they are the same speed" is no longer true, and that anything
+choosing vLLM for THROUGHPUT at agentic context depth is choosing wrong.
+
+A FOOTNOTE THAT VALIDATES THE OLD MODEL RATHER THAN RETIRING IT. The context model in "Decode
+performance" (`1.186*ctxK + 47.2`) was fitted at k=3; the box now ships k=4, and the new fit above
+is steeper (1.501) with a higher intercept (60.98). Those are not in conflict. At 70K the old
+model predicts 130.2 ms/pass which, at the acceptance IT assumed (2.8), is 21.5 tok/s — and the
+measured throughput at 70K is **21.31 tok/s**. Acceptance rose (2.8 -> 3.52, +26%) and per-pass
+cost rose with it (+27%), and they cancel. The old model still predicts THROUGHPUT correctly;
+just do not mix its ms/pass with this table's.
 
 ## Surviving logout
 
