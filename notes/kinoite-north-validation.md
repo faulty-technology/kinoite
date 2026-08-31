@@ -265,6 +265,40 @@ tests fail for an unrelated reason. Don't re-chase: `ctx_size` capping, `-mg 0 -
 `--load-mode mmap` alone, `ROCR_VISIBLE_DEVICES`. This is **not** the iGPU warmup segfault
 (lemonade#1921 / llamacpp-rocm#96) and the iGPU is not implicated.
 
+**P2P between the two R9700s is ENABLED, and it is PCIe-speed, not a fast link.** Measured
+2026-08-30 by running `stilldeadcode/vllm-radiance:0.9.3` by hand purely for its startup
+`RADIANCE_RUN_BWTEST` sweep (`rocm-bandwidth-test` 2.6.0) and killing it before the model loaded.
+Radiance's own banner reports `P2P access : ENABLED   0<->1`, and the raw matrices agree —
+Inter-Device Access is 1 for every pair, iGPU included:
+
+    Device: 0  AMD Ryzen 9 9900X          Device: 1  R9700  03:0.0
+    Device: 3  AMD Radeon Graphics 10:0.0 Device: 2  R9700  06:0.0
+
+    NUMA distance      CPU<->GPU 20      GPU<->GPU 40      (single NUMA node)
+
+    Unidirectional peak GB/s        Bidirectional peak GB/s
+       1 <-> 2   28.158 / 28.156       1 <-> 2   55.642
+       0 <-> 1   28.772 / 28.157       0 <-> 1   50.729
+       1 -> 1   483.284 (on-card)      3 <-> 1/2 35.560 / 35.296
+       2 -> 2   531.850 (on-card)
+
+**The number that matters is 28.2 GB/s: a peer copy between the two R9700s is exactly as fast as
+a copy to host memory.** There is no direct link — P2P here means "the driver will let you DMA
+card to card over PCIe", not "there is a faster path". So P2P being available does not change the
+arithmetic that already said comm is ~11% of the token budget; it removes a host bounce, nothing
+more. Two consequences:
+
+- **For llama.cpp:** `GGML_CUDA_P2P=1` is safe to try (access is genuinely enabled, and no IOMMU
+  kargs are set on this box) but should not be expected to transform `-sm tensor`. It changed
+  nothing observable in the runs above.
+- **For radiance:** its TP=2 one-shot all-reduce (`RADIANCE_USE_R4D_AR`, `ar_oneshot_2rank_exact`)
+  *does* have working P2P to stand on, so the claim is not vacuous. It is still bounded by our own
+  measurement of the comm share.
+
+Note the on-card copy figures (483 / 532 GB/s) are copy bandwidth (read+write), not the ~588 GB/s
+synthetic large-read figure recorded under vLLM — do not compare them directly. The iGPU is
+markedly slower to both dGPUs (17.8 GB/s), one more reason to keep it out of any split.
+
 **ROCm never lands on the host, and doesn't have to.** lemonade's `llamacpp-rocm` builds
 bundle their own ROCm 7 runtime, so `amdgpu.sh` installs firmware and monitoring only. The
 `nightly` channel is the only one shipping per-arch `gfx120X` builds — `stable` and `preview`
@@ -272,9 +306,184 @@ have no gfx1201 HIP support and *silently* run on CPU at ~1/7th speed
 (lemonade-sdk/lemonade#1787). A correctness trap, not a tuning knob, hence the seeded
 `rocm_channel`.
 
-**`-sm row` is unavailable for this build** — `device ROCm0 does not support split buffers`.
-Split buffers need peer-copy compiled in, so layer split is the ceiling: decode streams from
-one card at a time and the second GPU adds capacity, not bandwidth. Recheck on bumps.
+**`-sm row` is still unavailable, and that no longer matters — `-sm tensor` works.** Upstream
+deprecated `row` (it split only dense weights) and replaced it with `tensor`, which splits weights
+*and* KV. Measured 2026-08-30 on the shipped `llamacpp-rocm` **b1305** (llama.cpp `c745be2`,
+2026-08-02), using `unsloth/Qwen3.5-4B-MTP-GGUF` — GGUF `general.architecture = qwen35`, the same
+GDN-hybrid arch as Qwen3.8-27B (verified by reading both GGUF headers), so the arch result carries
+even though the throughput numbers do not:
+
+- `-sm row` -> `llama_model_load: error loading model: device ROCm0 does not support split
+  buffers`, exits. Unchanged from the original finding. Stop citing it as the ceiling.
+- `-sm tensor -fa on -ctk f16 -ctv f16` -> **loads, serves, generates text byte-identical to
+  `-sm layer` at temperature 0.** The documented architecture gate never fired: the string
+  *"LLAMA_SPLIT_MODE_TENSOR not implemented for architecture '...'"* did not appear, and `qwen35`
+  is not on upstream's exclusion list (which does name Jamba, Falcon-H1, Kimi-Linear, Nemotron-H,
+  Mamba). **llama.cpp TP is a live option here, not a dead end.**
+
+Four conditions, each measured:
+
+1. `-fa on` is mandatory — `-fa off` gives `llama_init_from_model: SPLIT_MODE_TENSOR requires
+   flash_attn to be enabled`. Incidentally the first hard evidence that **flash attention works on
+   gfx1201** in this build.
+2. **The iGPU must be excluded.** With all three ROCm devices visible, `-sm tensor` loads and then
+   aborts on the first decode with `ggml/src/ggml-cuda/ggml-cuda.cu:106: ROCm error / ROCm error:
+   invalid kernel file` — the gfx120X-only build has no kernels for gfx1036, and tensor split uses
+   every visible device. `-dev ROCm0,ROCm1` (or `ROCR_VISIBLE_DEVICES=0,1`) fixes it. Layer split
+   never hit this because it simply put no layers there, so this is a NEW reason to pin devices.
+3. `--fit` is unsupported: `common_fit_params: ... llama_params_fit is not implemented for
+   SPLIT_MODE_TENSOR, abort` (a warning; the load continues). Size `-c` by hand.
+4. **No RCCL, confirmed at the binary.** Every run logs `internal AllReduce init failed
+   (n_devices != 2?); falling back to meta-backend butterfly` *even with exactly two devices*,
+   because RCCL is a build-time opt-in (`-DGGML_HIP_RCCL=ON`) that upstream leaves off and this
+   build does not set. Verified three ways in the shipped bundle: no `librccl*` file, no RCCL in
+   `ldd libggml-hip.so`, no RCCL symbols in `nm -D`. There is a runtime selector,
+   `GGML_CUDA_ALLREDUCE`, and `internal`/`nccl` are genuinely accepted values (a bogus one logs
+   `unknown GGML_CUDA_ALLREDUCE value: bogus`) — but both were tried under `-sm tensor` and both
+   still logged the butterfly fallback. So **this is a ceiling, not a setting**: lifting it means
+   building llamacpp-rocm ourselves and leaving lemonade's prebuilt binaries. `GGML_CUDA_P2P=1` changed nothing
+   observable. Every tensor-split number below is therefore a FLOOR.
+
+**q8_0 KV-quant and tensor split are NOT mutually exclusive here**, contradicting upstream's doc
+("Support for quantized KV cache is not implemented and trying to use it will result in an
+error"). On b1305, `-sm tensor -fa on -ctk q8_0 -ctv q8_0` loads, serves, gives identical output,
+and at ctx 65536 saves **477 MiB** across the pair (6352 -> 5875 MiB). The saving is small for
+*this* model because a GDN hybrid keeps only 16-of-64 full-attention layers; the rest is
+constant-size SSM state KV-quant does not touch.
+
+**What it is worth, measured on the 27B the same day: +44%, and it does not cost MTP anything.**
+The 4B was the wrong model to ask (tensor 106.69 vs layer 105.59 — noise, on a model small enough
+that layer split costs nothing). Qwen3.8-27B-UD-IQ4_XS, `-ngl 99 -c 32768`,
+`HIP_VISIBLE_DEVICES=0,1`, fresh load per arm, thinking off, decode timed first-content-token to
+last (`~/bench/tp.sh`, same harness as the MTP table):
+
+| arm | rust | python | prose | MEAN | vs layer | card A | card B | pair |
+|---|---|---|---|---|---|---|---|---|
+| layer + MTP | 53.78 | 64.99 | 51.06 | 56.61 | — | 9099 M | 11739 M | 20838 M |
+| **tensor + MTP** | 82.76 | 92.32 | 70.16 | **81.75** | **+44.4%** | 10353 M | 10353 M | 20706 M |
+| layer no MTP | 30.43 | 30.41 | 30.42 | 30.42 | — | 7820 M | 8955 M | 16775 M |
+| tensor no MTP | 42.20 | 42.11 | 42.11 | 42.14 | +38.5% | 8296 M | 8296 M | 16592 M |
+
+Both layer arms reproduce the recorded baselines (56.86 and 30.40) to within 0.5%, and the MTP arm
+reproduces them with the same acceptance figures, so the tensor arms are measured against a live
+baseline. Four readings:
+
+- **`-sm tensor` and `--spec-type draft-mtp` coexist — there is no conflict to work around.**
+  Acceptance under tensor split is 0.464 / mean accepted length 2.85, indistinguishable from
+  layer split's 0.448–0.476 / 2.79–2.90. The levers compose: MTP is 1.86x on layer and 1.94x on
+  tensor, so tensor + MTP is **2.69x** the unspeculated layer baseline.
+- Tensor split balances the pair exactly (10353/10353, 8296/8296) where layer split leaves a
+  2.6 GB imbalance, and uses slightly less total VRAM. That balance IS the mechanism: layer split
+  pipelines, so at batch 1 one card computes while the other waits.
+- The no-MTP arms are dead flat across all three workloads (30.43/30.41/30.42, 42.20/42.11/42.11)
+  — bandwidth-bound signature intact. Tensor split moves that ceiling 30.4 -> 42.1, realising
+  ~1.39x of a theoretical 2x; the rest is the reduction.
+- **Floor, not verdict.** The butterfly-fallback warning still fires at 27B — twice per MTP run,
+  once for the main model and once for the draft — so every tensor arm ran the slow generic
+  reduction (see condition 4). RCCL would presumably raise it; by how much is unknown.
+
+One cost that is specific to this combination: `-sm tensor` disables backend sampling
+(`set_sampler: backend sampling not supported with SPLIT_MODE_TENSOR; using CPU`, then `spec
+common_specu: backend offload failed for seq_id=N; using CPU sampler` per slot), so the MTP draft
+sampler runs on the CPU under tensor split. That is already inside the +44.4%.
+
+**THREE QUANTS NOW, AND THE WEIGHT-SIZE AXIS IS FLAT ABOVE ~25 GB.** Q6_K_XL was measured
+2026-08-30 (`~/bench/q6-suite.sh`, `q6-results.txt`) on the identical harness, identical MTP
+draft head and identical depths as the IQ4_XS and Q8_K_XL runs, so all three are one-variable
+comparisons. Single stream, `-c 98304`, `-np 1`, decode timed first-content-token to last:
+
+| depth | IQ4_XS 14.0 GB | **Q6_K_XL 25.3 GB** | Q8_K_XL 31.5 GB | vLLM FP8 27.8 GB |
+|---|---|---|---|---|
+| control mean, tensor | 82.80 | **65.53** | 65.91 | 55.63 |
+| control mean, layer | 55.96 | **45.22** | 42.21 | 55.63 |
+| short (189), tensor | 92.41 | **80.19** | 77.39 | 63.33 |
+| short (189), layer | 69.66 | **54.16** | 51.96 | 63.33 |
+| 9K, tensor | 80.21 | **72.58** | 78.58 | 49.81 |
+| 9K, layer | 61.52 | **52.57** | 47.96 | 49.81 |
+| 38K, tensor | 71.75 | **60.67** | 62.14 | 31.56 |
+| 38K, layer | 48.05 | **40.89** | 42.63 | 31.56 |
+| 70K, tensor | 67.83 | **54.31** | 55.67 | 34.05 (layer) / 21.31 vLLM |
+| 70K, layer | 43.54 | **34.20** | 34.05 | 21.31 |
+
+**Q6 lands on Q8, not between Q8 and IQ4.** 25.3 GB and 31.5 GB of weights decode at the same
+rate to within noise (tensor control mean 65.53 vs 65.91; 70K 54.31 vs 55.67), while 14.0 GB is
+26% faster. Do not model this box's decode as proportional to weight bytes — read the ms/pass
+decomposition instead, which Q6 validates for the third time:
+
+| arm | slope (ms per 1K ctx) | intercept (ms) | weights |
+|---|---|---|---|
+| IQ4_XS tensor | 0.2045 | 41.04 | 14.0 GB |
+| **Q6_K_XL tensor** | **0.2057** | **49.72** | 25.3 GB |
+| Q8_K_XL tensor | 0.1971 | 49.48 | 31.5 GB |
+| IQ4_XS layer | 0.4149 | 56.56 | 14.0 GB |
+| **Q6_K_XL layer** | **0.4068** | **71.92** | 25.3 GB |
+| Q8_K_XL layer | 0.3972 | 73.21 | 31.5 GB |
+
+Slope is the context/KV term and is constant across all three quants (KV is f16 regardless), as
+already recorded. What Q6 adds is that the INTERCEPT — the weight term — is *also* flat between
+Q6 and Q8 and only drops at IQ4. A 2.21x change in weight bytes (IQ4 -> Q8) moves the intercept
+21%, and the 1.24x from Q6 -> Q8 moves it 0%. The large fixed per-pass cost (butterfly reduction,
+CPU draft sampler, launch overhead) dominates, so **quantising down from Q8 buys nothing until
+you go well below Q6.** The practical reading: if Q6 is chosen for quality, Q8 is nearly free;
+if speed is the goal, only a jump to ~IQ4 pays.
+
+**Where Q6 sits against vLLM, which is the number that matters for the seeds.** The seeded
+recipes are Q6_K, and this is the first direct measurement of that quant rather than an
+extrapolation from the Q8 re-run:
+
+- **tensor split wins at every depth**: 1.27x short, 1.46x at 9K, 1.92x at 38K, 2.55x at 70K.
+- **layer split LOSES below roughly 6-7K context** (0.86x at a 189-token prompt, 1.06x at 9.5K)
+  and only pulls ahead deeper: 1.30x at 38K, 1.60x at 70K.
+
+So the Q8 finding holds at Q6 with the crossover moved down from ~11.1K to ~6-7K. It is still a
+real loss zone, and short prompts are exactly what an agentic loop's first turns look like.
+**For the Q6_K seeds, `-sm tensor` remains the difference between beating vLLM everywhere and
+losing to it on short prompts.**
+
+Concurrency, same suite (4 slots; short = `-c 32768`, deep = 4 x 38K at `-c 196608`):
+
+| arm | 4x short, aggregate | 4 x 38K, decode-agg |
+|---|---|---|
+| IQ4_XS tensor | 178.27 | 161.03 |
+| **Q6_K_XL tensor** | **162.99** | **144.77** |
+| Q8_K_XL tensor | 170.18 | 148.38 |
+| IQ4_XS layer | 134.47 | 101.96 |
+| **Q6_K_XL layer** | **118.70** | **90.15** |
+| Q8_K_XL layer | 126.71 | 93.03 |
+| vLLM FP8 | **189.93** | 60.42 |
+
+Unchanged shape from the other two quants, and worth restating because it is the one place vLLM
+still wins: **vLLM leads on 4-way SHORT concurrency and loses catastrophically on 4-way DEEP**
+(60.42 vs 144.77, 2.4x). Q6 again sits with Q8 rather than between the two.
+
+**VRAM, and the ctx arithmetic that was blocking the bake.** Measured pair figures for Q6_K_XL
+with the MTP head:
+
+| config | tensor | layer |
+|---|---|---|
+| `-c 98304 -np 1` | 16535 / 16536 MiB | 15113 / 18751 MiB |
+| `-c 196608 -np 4` | 20896 / 20896 MiB | 19158 / 22828 MiB |
+
+Two points scale to a per-token cost of **0.0444 MiB/token/card** under tensor split, and a
+fixed (weights + non-KV) term of **12174 MiB/card**. That gives the seeded sizes directly:
+
+- `ctx_size 131072` -> ~**17.9 GB/card**, 14 GB of headroom on a 32 GB card.
+- `ctx_size 262144` -> ~**23.8 GB/card**, still comfortable.
+
+Both fit, so **`--fit` being unavailable under SPLIT_MODE_TENSOR is no longer a blocker for the
+Q6 seeds** — the hand-computed numbers exist now and both have wide margins. Note the estimate
+is deliberately conservative: the `-c 196608` point had 4 slots against the `-c 98304` point's
+1, so slot-count overhead is folded into the slope rather than being netted out.
+
+**`-dev` is NOT sufficient once a draft model is in play, and this is the second consumer of the
+iGPU-exclusion rule.** `-sm tensor -fa on -dev ROCm0,ROCm1` with `--spec-type draft-mtp` still
+aborts with `invalid kernel file`: `-dev` restricts the MAIN model only, and the draft model has
+its own device list (`-devd` / `--spec-draft-device`) that defaults to every device. Either add
+`-devd ROCm0,ROCm1` or — better — exclude at visibility, which covers every model the process
+loads. Both variables were verified that day, each on its own with no `-dev` and no `-devd`:
+`HIP_VISIBLE_DEVICES=0,1` and `ROCR_VISIBLE_DEVICES=0,1` each ran `-sm tensor` +
+`--spec-type draft-mtp` clean, same 10252 MiB per card, same acceptance.
+
 Layer split needs no device pinning — a loaded 27B put 14186 MiB on 06:00.0, 13680 MiB on
 03:00.0 and 20 MiB (framebuffer only) on the iGPU.
 
@@ -441,15 +650,197 @@ little margin. Every case exceeds ONE card, so all of them ride on the automatic
 no pinning is baked. **vLLM independently demonstrates the envelope**: 28.1 GiB/card, ~56 GB
 across the pair, iGPU untouched at ~320 MiB.
 
-Residual risk, not worth an open item: llama.cpp's iGPU exclusion is *emergent* (no pinning),
-verified at ctx 32768 and again at 131072, whereas vLLM's is enforced via
-`HIP_VISIBLE_DEVICES`. If a near-full load ever spills onto the iGPU, the fix is one line —
-`llamacpp.rocm_args="-ts 1,1,0"` or `ROCR_VISIBLE_DEVICES=0,1`.
+Residual risk, CLOSED 2026-08-30. It used to read: llama.cpp's iGPU exclusion is *emergent*
+(no pinning) where vLLM's is enforced via `HIP_VISIBLE_DEVICES`, so a near-full load could in
+principle spill. It is no longer emergent — `kinoite-lemonade-gpus` derives
+`ROCR_VISIBLE_DEVICES` and `lemonade.container` reads it, so both stacks now enforce the
+exclusion rather than one relying on the allocator's good behaviour. See the Device selection
+item below.
 
-- [ ] Flash-attention on gfx1201: does `-fa -ctk q8_0 -ctv q8_0` load and roughly halve KV? If
-      so it ~doubles every seed and is worth baking into `recipe_options.json`.
-- [ ] Q6 tok/s vs the measured Q5_K_M ~31–35 — bigger weights and far bigger KV will be
-      slower; confirm it is still usable for agentic loops, from a fresh load at a fixed prompt.
+- [x] **Flash-attention on gfx1201 WORKS, and `-ctk q8_0 -ctv q8_0` loads** (measured 2026-08-30,
+      llamacpp-rocm b1305, Qwen3.5-4B `qwen35`) — under `-sm layer` and `-sm tensor` alike, with
+      correct output. **But it does not "roughly halve KV" on these models and must not be baked
+      on that assumption**: at ctx 65536 it saved 477 MiB across the pair, ~7.5% of the 6352 MiB
+      footprint, because a GDN hybrid has only 16-of-64 growing-KV layers. The halving rule is a
+      dense-attention rule. Remember `-fa on` is now mandatory for a second reason too
+      (`-sm tensor`).
+
+      **The dense case was set up and then deliberately dropped, 2026-08-30 — not pending.**
+      `user.Qwen3-Coder-30B` (qwen3_moe, dense attention, ~0.098 GB/1K, seeded at 256K) is the
+      ONLY seed where the halving rule can apply, so it was the one arm worth measuring. The
+      bench harness exists (`~/bench/coder.sh`, f16 vs q8_0 at `-c 262144`, reporting pair VRAM,
+      decode delta and prompt-eval delta) but the 25.1 GB Q6_K GGUF was never in the cache and
+      the pull was abandoned at ~74% after measuring the link at a sustained **1.75-2.2 MB/s**,
+      authenticated or not — being logged in to HF changed nothing, so the constraint is not
+      account-level. Dropped on the grounds that nothing on this box runs that model: the only
+      hand-added entry in the live `user_models.json` is a `qwen3_5` HYBRID
+      (`DavidAU/Qwen3.6-27B-Fable-Fusion-...-MTP-GGUF:Q5_K_M`), for which the answer is already
+      the 7.5% above. Re-open only if a dense seed actually gets used; the harness is ready and
+      only needs `CODER_GGUF` pointed at the file.
+- [x] **`-sm tensor` on the 27B with its MTP head: DONE 2026-08-30, +44.4%, table in Settled.**
+      Both questions this item raised are answered: the `--spec-type draft-mtp` wiring survives
+      tensor split intact (same acceptance, and the two levers compose to 2.69x), and the no-RCCL
+      butterfly fallback still fires at 27B — so +44.4% is a floor. What it turned into is a
+      DEVICE-SELECTION item, not a performance one; see the next box.
+- [x] **Device selection: DONE 2026-08-30.** `kinoite-lemonade-gpus` (an ExecStartPre installed
+      by `lemonade.sh`) derives `ROCR_VISIBLE_DEVICES` from KFD topology into an `EnvironmentFile`
+      that `lemonade.container` reads, so the iGPU is excluded before llama-server starts. The
+      rule is index-free: keep every GPU agent whose `gfx_target_version` matches the agent with
+      the most SIMDs. Fails OPEN — the file is truncated first, so any failure leaves it EMPTY and
+      lemonade starts unconstrained on layer split. That ordering is load-bearing: podman treats a
+      MISSING `--env-file` as fatal, so "absent" would have been fail-closed. Reasoning in
+      `lemonade.sh` under "Device visibility"; runbook in `lemonade.md` under the same name.
+      This turns the old "if a load spills onto the iGPU, exclude it" advisory into a default.
+- [ ] **Bake `-sm tensor` — BOTH old blockers are now gone; what is left is the decision.**
+      Device selection was solved 2026-08-30 (previous box). Ctx sizing was solved the same
+      evening by the Q6_K_XL suite: the two measured VRAM points give 0.0444 MiB/token/card plus
+      a 12174 MiB/card fixed term under tensor split, so `ctx_size 131072` lands at ~17.9 GB/card
+      and `262144` at ~23.8 GB/card, both with wide margin on 32 GB (arithmetic and the measured
+      table are in "Containerized ROCm + lemonade" above). `--fit` still does not run under
+      SPLIT_MODE_TENSOR, so those numbers stay hand-maintained and must be re-checked on a model
+      bump — that is a maintenance cost, not a blocker.
+
+      **AND THE RECIPE HALF IS NOW MEASURED END TO END, NOT INFERRED.** See the `llamacpp_args`
+      box below: a per-recipe `llamacpp_args` reaches the launched `llama-server`, merges with
+      rather than replaces the architecture and global layers, and lands last. Tested on the 27B
+      Q6_K_XL itself. So the one-line recipe change in (a) of `lemonade.sh` is confirmed to work.
+
+      **THE HEAVY-QUANT ARGUMENT, now measured at Q6 rather than extrapolated from Q8.** At
+      IQ4_XS layer split beats vLLM at every depth, so tensor split is pure upside and easy to
+      defer. At Q8_K_XL layer split loses to vLLM below ~11.1K context. **At Q6_K_XL — which is
+      what the seeds actually are — layer split loses to vLLM below roughly 6-7K** (0.86x at a
+      189-token prompt, 1.06x at 9.5K) and only `-sm tensor` leads everywhere (1.27x -> 2.55x).
+      The crossover moved down from Q8 but did not disappear, and short prompts are what an
+      agentic loop's opening turns look like. The seeded Q6_K recipes are therefore the ones that
+      most need the flag, not the IQ4_XS `-Fast` entry that would show it off best.
+
+      What is genuinely left is a judgement call, not a measurement: `-sm tensor` costs the
+      backend sampler (CPU draft sampling), makes ctx a hand-maintained constant, and couples
+      every recipe to container-level device pinning because `llamacpp_args` is per-recipe while
+      visibility is per-container. All three are already characterised; none is unknown.
+- [x] **Q6 tok/s: DONE 2026-08-30, and it is comfortably usable.** The old worry here — that Q6's
+      bigger weights and far bigger KV would drag it toward the Q5_K_M ~31-35 tok/s figure — was
+      wrong in the direction that matters. Qwen3.8-27B-UD-Q6_K_XL with its MTP head measures a
+      **65.53 tok/s** control mean under tensor split and **45.22** under layer split, and still
+      holds **54.31 / 34.20** at 70K context. Even the layer-split number beats the Q5_K_M
+      baseline, because those old figures predate the MTP wiring. Full three-quant table above.
+- [x] **`llamacpp_args` PASSTHROUGH: MEASURED END TO END 2026-08-30. It works, it merges, and
+      it lands last.** This closes `lemonade.sh` (a)'s *"Ordering looks safe but is NOT yet
+      measured"*. Method was the one that file asks for: set the key, load the model, read the
+      launched process's command line (`/proc/<pid>/cmdline` inside the container).
+
+      With `"user.<name>": {"ctx_size": 98304, "llamacpp_args": "-sm tensor -fa on"}`, the
+      launched `llama-server` argv ends `... --no-mmap --chat-template-kwargs
+      {"preserve_thinking":true} --load-mode mmap --min-p 0.00 --repeat-penalty 1.0 --temp 1.0
+      --top-k 20 --top-p 0.95 -fa on -sm tensor`. Three layers are present at once and lemonade
+      names the behaviour itself in its log: **`merge_args=true`**.
+
+      | layer | source | survives? |
+      |---|---|---|
+      | architecture defaults | `resources/architecture_defaults.json`, key `qwen35` | yes |
+      | global backend args | `config.json` `llamacpp.rocm_args` (`--load-mode mmap`) | yes |
+      | per-recipe | `recipe_options.json` `llamacpp_args` | yes, **appended last** |
+
+      Two consequences worth having in writing. **`llamacpp_args` is a real recipe-option key,
+      not a guess** — `architecture_defaults.json` documents itself as *"recipe option key-value
+      pairs that override global config defaults but are overridden by model-level
+      recipe_options"*, and its values are `llamacpp_args` strings. And **merging is per-flag,
+      not whole-string**: our `-sm tensor` did NOT wipe the `qwen35` sampler block, so a recipe
+      that adds one flag keeps `--chat-template-kwargs '{"preserve_thinking":true}'` and the
+      rest. Because passthrough lands last it can also OVERRIDE anything lemonade generates,
+      which is what the next box depends on.
+
+      **One addition to `lemonade.sh` (a)'s flag survey — that list is correct but not
+      exhaustive.** Re-verified against the binary 2026-08-30: `--split-mode`, `-sm`, `-devd`,
+      `--spec-draft-device`, `--device-draft`, `-ngld` and `--gpu-layers-draft` are all genuinely
+      zero hits, as it says. What it omits is that lemonade has a device knob of its own —
+      `llamacpp_device` / `--llamacpp-device`, in its "Llama.cpp Backend Options" group next to
+      `llamacpp_backend` and `llamacpp_args` — which sets **`LLAMA_ARG_DEVICE`**, llama.cpp's env
+      form of `--device`. That does not weaken the visibility-exclusion argument; it strengthens
+      it, because `--device` restricts the MAIN model only, so even lemonade's own knob cannot
+      cover the draft head. Worth recording so nobody reaches for `--llamacpp-device` expecting
+      it to solve the iGPU problem.
+- [x] **A tensor-split recipe without the device work is a HARD LOAD FAILURE, not a slow path.
+      Measured 2026-08-30.** On the box's *deployed* quadlet — which predates
+      `kinoite-lemonade-gpus` — the recipe above fails the load outright:
+
+          E ROCm error: invalid kernel file
+          E   current device: 2, in function ggml_cuda_kernel_launch
+          llama-server process has terminated with exit code: 134
+
+      `current device: 2` is the gfx1036 iGPU. Adding `ROCR_VISIBLE_DEVICES=0,1` to the
+      container — same image, same mounts, same recipe — loads clean. So the recipe half and the
+      device half cannot ship independently, and the failure mode if they do is a 500 from
+      `/api/v1/load`, not degraded throughput. (Verified with a hand-run container on its own
+      name and port; `/etc` and the real `lemonade.service` were not touched.)
+- [x] **LEMONADE'S OWN `--spec-draft-p-min 0.75` COSTS 24%, AND IT IS THE ONLY THING BETWEEN A
+      RECIPE AND THE RAW-CLI NUMBER. Measured 2026-08-30 on Qwen3.8-27B-UD-Q6_K_XL.** A recipe
+      carrying just `-sm tensor -fa on` measured **49.13** tok/s against the raw CLI's **65.53**
+      on the same model, model file and prompts. The gap is not the proxy and not the harness:
+      re-running the raw `llama-server` under the SAME measurement script gave 65.03 with the
+      CLI flags and **49.72 with lemonade's flags**, reproducing the shortfall outside lemonade
+      entirely. Bisected one flag at a time from the CLI baseline:
+
+      | arm | control mean | vs baseline |
+      |---|---|---|
+      | CLI baseline (`-ngl 99 -np 1 -sm tensor -fa on` + MTP, `--spec-draft-n-max 4`) | 65.03 | — |
+      | + `--load-mode mmap` | 64.81 | none |
+      | + `--min-p/--repeat-penalty/--temp/--top-k/--top-p` (the `qwen35` block) | 64.43 | none |
+      | + `--jinja --metrics --reasoning-format auto --chat-template-kwargs` | 64.56 | none |
+      | + `--no-mmap` | 64.65 | none |
+      | drop `-ngl 99 -ngld 99` | 64.85 | none |
+      | `--spec-draft-n-max 3` alone | **66.99** | slightly FASTER |
+      | **`--spec-draft-p-min 0.75`** | **49.76** | **-24%** |
+      | `--spec-draft-p-min 0.1` | 64.65 | none |
+
+      **The trap here is that acceptance goes UP while throughput goes DOWN.** Under p-min 0.75
+      mean accepted length is 3.01 against the baseline's 2.90. The gate makes the draft head
+      bail out early, so each pass drafts fewer tokens even though a higher fraction of them are
+      accepted. Anyone tuning speculation on this box by watching `mean len` alone will tune it
+      backwards — quote tok/s, and treat acceptance as diagnostic only. This is the same
+      discipline the MTP table above already applies for a different reason.
+
+      **The fix is one flag, and it restores everything.** Through a lemonade recipe:
+
+          "user.<name>": { "ctx_size": <hand>, "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1" }
+
+      measures **66.97** tok/s, i.e. at or slightly above the raw CLI's 65.03-65.53, on 16381
+      MiB per card. Adding `--spec-draft-n-max 3` as well changes nothing (66.77). So the answer
+      to *"can lemonade reach llama.cpp's numbers through a recipe, or must it be run from the
+      CLI like vLLM?"* is: **a recipe reaches them, with two flags, and no CLI launcher is
+      needed.** `--spec-draft-n-max` is NOT one of the two — lemonade's 3 is fine, and the notes
+      elsewhere that pair `-sm tensor` with `--spec-draft-n-max 4` should not be read as
+      requiring the 4.
+
+      **THE TWO HEAVY-QUANT SEEDS ARE NOW BAKED AND VERIFIED VERBATIM, 2026-08-30.**
+      `Qwen3.8-27B-Q6XL` and `Qwen3.8-27B-Q8XL` were added to `lemonade.sh`, each with
+      `{"ctx_size": 131072, "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1"}`, and
+      then re-measured with those exact lines rather than with the hand-tuned variant that
+      produced the 66.97 figure (which used `-c 98304` and `-np 1`):
+
+      | seed | control mean | VRAM/card | slots |
+      |---|---|---|---|
+      | `user.Qwen3.8-27B-Q6XL` | **67.30** tok/s | 18446 MiB | 4 @ 131072 |
+      | `user.Qwen3.8-27B-Q8XL` | **60.69** tok/s | 21368 MiB | 4 @ 131072 |
+
+      Both land within ~600 MiB of the VRAM predicted by the arithmetic above (17.9 and 20.4
+      GB/card), which is the first independent check on that extrapolation, and both leave ~11
+      GB of headroom on a 32 GB card at four full-context slots. Dropping `-np 1` cost nothing.
+
+      **One caveat that qualifies the "Q6 lands on Q8" finding.** That result was measured at
+      `-c 98304`, one slot, p-min at llama.cpp's default (65.53 vs 65.91 — indistinguishable).
+      At the SHIPPED settings — ctx 131072, four slots, p-min 0.1 — Q8 reads about 10% below Q6
+      (60.69 vs 67.30), and the Q8 run is also more spread across workloads (55.96-68.94 against
+      Q6's 61.22-73.20). Not enough to overturn the ms/pass decomposition, which was fitted over
+      four depths per quant, but it does mean **"Q8 is nearly free" holds for the single-stream
+      depth series and NOT for the shipped multi-slot configuration.** Untangling it would mean
+      re-running the depth series at 131072/4 slots; nobody has.
+
+      Not yet measured, and worth doing before this is baked: whether p-min 0.75 is equally
+      expensive under `-sm layer` (the layer arm through lemonade read 39.88 against a CLI 45.22,
+      a 12% gap rather than 24%, which hints it is cheaper there but was not bisected), and
+      whether 0.1 versus llama.cpp's own default costs anything in output quality. Both arms
+      produced correct-looking output at temperature 0; neither was A/B'd for quality.
 - [ ] Narrow `container_use_devices` to a CIL module granting only `container_domain
       hsa_device_t:chr_file map`. The boolean grants `map` on every device node to every
       container — fine for a single-user box, worth tightening if that stops being true.
@@ -544,35 +935,208 @@ Settled 2026-08-27:
   anything on this config. Full write-up in `vllm.md`. Rule of thumb kept: swap to a multi-layer
   drafter and re-read that warning line.
 
-- [ ] **Two gfx1201-patched vLLM images, unevaluated** (surveyed 2026-08-22, nothing run):
-      [vllm-radiance](https://codeberg.org/StillDeadcode/vllm-radiance/) and `tcclaviger/vllm`.
-      The `vllm.md` dead end *"upgrading the image"* does **not** cover them — that was a stock
-      version bump on the same generic RDNA4 paths; these ship hand-written gfx1201 kernels.
+Settled 2026-08-30:
 
-      Only one reason left to try radiance: `RADIANCE_GDN_WMMA` is the best candidate yet for the
-      **~15 ms unexplained**, because the 48 GDN layers hold constant-size state and so contribute
-      nothing to the GEMV term — exactly where a slow generic kernel hides without showing up in
-      the bandwidth accounting. Its other selling points (prefix caching, the drafter flag) turned
-      out to be flags our image already had, now adopted.
+- **The upstream gfx1201 TP=2 deadlock does not affect us, and we are the counter-example.** Two
+  OPEN reports describe a hard TP=2 hang on this exact hardware — both cards at 100% with nothing
+  in flight, TP=1 fine: [vllm-project/vllm#40980](https://github.com/vllm-project/vllm/issues/40980)
+  (kyuz0, 2026-04-27; labels `bug`/`rocm`, assigned to an AMD engineer, project status **In
+  Progress**) and [ROCm/rocm-systems#5480](https://github.com/ROCm/rocm-systems/issues/5480)
+  (same author, same day; **still `status: triage`**, assigned `tcgu-amd`, no AMD reply on the
+  thread). Both attribute it to RCCL: **2.27.3 works, 2.27.7 hangs**. `NCCL_P2P_DISABLE=1` and
+  `--enforce-eager` are recorded as not helping.
 
-      **RE-WEIGHTED 2026-08-25, and it is worth less than it looks for agentic work.** The context
-      model measured that day (`ms/pass = 1.186*ctxK + 47.2`, see `vllm.md`) says the whole fixed
-      term is 47.2 ms, so at the 70K context this box actually runs at, the ~15 ms is ~11.5% of a
-      130 ms forward pass — and the context term is 64% of it. Radiance is a fix for the ctx->0
-      intercept, which is the regime we are *least* in. Chase it for short-prompt work; for the
-      agentic loop, capping working context is worth ~1.8x and costs a launcher rewrite of zero.
+  Read out of the images 2026-08-30 (`strings librccl.so.1 | grep 'RCCL version'`):
 
-      Swapping is a **launcher rewrite**, not a one-line `Image=` change — radiance needs
-      `ROCM_AITER_UNIFIED_ATTN` where `vllm-serve.sh` hard-codes `TRITON_ATTN` for RDNA4 numerics.
-      Test by hand with `podman run` against the shared model cache and `bench.py` before touching
-      the quadlet. tcclaviger ships **no public source**, so adopting it would pin an unauditable
-      binary into `vllm.container`; that is the objection, not competence.
+  | image | built | vLLM | RCCL | `trim_reasoning_for_advance` |
+  |---|---|---|---|---|
+  | `:latest` (what we run) | 2026-06-13 | 0.22.1rc1.dev499 | **2.29.7** | absent |
+  | `:dev` = `:rocm7.14.0-torch2.11.0-vllm0.27.1` | 2026-08-12 | 0.27.1 | **2.30.4** | present |
+
+  So this box has served TP=2 since 2026-08-16 on RCCL 2.29.7, two minor versions past the one
+  those issues call broken. That is a datum neither issue has. It does **not** vindicate 2.27.7 —
+  we never ran it — it says the hang is version- or config-specific rather than inherent to
+  gfx1201 TP=2.
+
+- **The image-bump rule is now THREE conditions**, because RCCL moves as a side effect of a bump:
+  post-2026-07-04 (carries #44297), **and** not a decode regression, **and** does not reintroduce
+  the TP=2 hang. Nobody has data on 2.30.4 — not us, not either issue — so a bump carries an
+  unquantified hang risk on top of the already-measured ~15% MTP decode regression. Verify the
+  third condition by starting the candidate at TP=2 and watching for the deadlock signature
+  before benchmarking; a deadlocked engine reads as a slow one until you check `rocm-smi`.
+
+- **Two tag names are not two builds.** Re-surveyed the whole kyuz0 tag list: the date-stamped
+  tags still stop at `20260613-143121`, and everything newer than `:latest` is ONE image —
+  `dev`, `rocm7.14.0-torch2.11.0-vllm0.27.1` and `sha-c5dd87e` all resolve to
+  `sha256:f36940bd…` (2026-08-12T18:56:46Z). Every other `sha-*` tag predates `:latest`
+  (`sha256:55fa7796…`, 2026-06-13T14:54:38Z). Compare digests, not names.
+
+- [ ] **vllm-radiance, still unevaluated for throughput** (surveyed 2026-08-22; re-surveyed
+      2026-08-30, nothing benchmarked yet): [vllm-radiance](https://codeberg.org/StillDeadcode/vllm-radiance/).
+      The `vllm.md` dead end *"upgrading the image"* does **not** cover it — that was a stock
+      version bump on the same generic RDNA4 paths; radiance ships hand-written gfx1201 kernels.
+
+      `RADIANCE_GDN_WMMA` is still the best candidate for the **~15 ms unexplained**, because the
+      48 GDN layers hold constant-size state and so contribute nothing to the GEMV term — exactly
+      where a slow generic kernel hides without showing up in the bandwidth accounting. Its other
+      selling points from the first survey (prefix caching, the drafter flag) turned out to be
+      flags our image already had, now adopted.
+
+      **THE 2026-08-25 RE-WEIGHTING WAS RIGHT ABOUT GDN-WMMA AND WRONG AS A VERDICT ON RADIANCE.**
+      That entry discounted the whole image on the ctx->0 intercept: the context model
+      (`ms/pass = 1.186*ctxK + 47.2`, see `vllm.md`) makes the ~15 ms only ~11.5% of a 130 ms
+      forward pass at 70K, while the context term is 64% of it. That reasoning still holds *for
+      GDN-WMMA*, which is a fix to the fixed term. It does NOT transfer to the rest of the image,
+      and applying it there was the error — corrected 2026-08-30:
+
+        - The **R4D attention backend** (`--attention-backend R4D`) claims **+14.6% prefill at 64K**
+          and +4.1% at 16K, decode unchanged. That is a *context-scaling* claim, not an intercept
+          one: it gets better as context grows, and 40-70K is precisely the band this box runs an
+          agentic loop in. It is the one radiance feature aimed at the regime we are actually in.
+          Shape constraints are strict (head_dim 256, paged block 16, 6 q-heads per kv-head, causal,
+          bf16 query, bf16 or fp8_e4m3 KV) and it refuses at startup with a reason if unmet — so
+          "does it even engage on Qwen3.8-27B-FP8" is a five-minute check, not a project.
+        - The **TP=2 one-shot all-reduce** (`RADIANCE_USE_R4D_AR=1`, `ar_oneshot_2rank_exact` from
+          libr4d) claims a 42% cut in per-step all-reduce, with a Walsh-Hadamard-quantised variant
+          (`RADIANCE_USE_R4D_AR_QUANT=1`) claiming +7.2% prefill at 16K / +3.5% at 32K. Our own
+          measurement caps this: comm is ~11% of the token budget here (4.5 of 41 ms), so 42% of
+          it is ~4-5% at best, and the quantised variant is explicitly NOT bit-identical to RCCL.
+          Worth having, not worth chasing on its own.
+
+      Note this is no longer the same software that was surveyed. Radiance is at **0.9.3**
+      (2026-08-25), not 0.7.4: `0.7.4` is 2026-08-23, and DFlash2 support plus the libr4d kernel
+      switch both landed between them. Read the version off Docker Hub before quoting a feature.
+
+      **The tcclaviger objection is resolved, and `tcclaviger/vllm` is off the list.** The old
+      objection was that it shipped no public source, so adopting it meant pinning an unauditable
+      binary. That is moot: tcclaviger now contributes to radiance in the open — PR #20
+      ("Nrank ar wired in for TP4 and 8 setups") was merged by StillDeadcode on 2026-08-26 — and
+      radiance itself is a set of readable patch scripts (`patch_r4d.py`, `radiance_allreduce.py`,
+      `patch_gdn_wmma.py`, `patch_dflash2.py`, …) applied over upstream vLLM in its Dockerfile.
+      So the auditable path and the hand-written kernels are now the same project; evaluate
+      radiance and stop tracking tcclaviger separately.
+
+      **THE BIGGEST CAVEAT, and it is new: radiance 0.9.3 is built on vLLM 0.27.1.** Read straight
+      off its startup banner 2026-08-30 (`radiance 0.9.3 / vllm 0.27.1 / torch 2.11.0+rocm7.14 /
+      triton 3.6.0 / aiter 0.1.17 / rocm 7.14.0`). 0.27.1 is the exact version this box already
+      measured at **~15% slower MTP decode** (34.66 vs 40.75, see `vllm.md`). So radiance does not
+      start from our current throughput — it starts ~15% below it, and every hand-written kernel
+      has to buy that back before it wins anything. Any A/B has to be radiance-vs-`:latest`
+      end to end, never "radiance's claimed +X% on top of what we have now".
+
+      Two smaller things worth knowing before an evaluation:
+        - Its baked-in list includes an **"MTP drafter unpad fix (enables
+          `disable_padded_drafter_batch` single-stream path)"**. That is the flag we removed on
+          2026-08-24 because it crashed EngineCore at concurrency >= 3. Radiance's fix is described
+          as the *single-stream* path, so it is NOT evidence the concurrency crash is fixed — check
+          n=4 parallel prompts explicitly before believing the +19.1% is available again.
+        - `RADIANCE_USE_R4D_AR` is described in its own banner as **byte-identical to RCCL**, while
+          `RADIANCE_USE_R4D_AR_QUANT` (rotated 6-bit, ON by default in the image) is explicitly
+          **not**. If numerics ever look off, that is the first toggle to turn off.
+
+      Swapping is still a **launcher rewrite**, not a one-line `Image=` change — radiance wants
+      `ROCM_AITER_UNIFIED_ATTN` (or `R4D`) where `vllm-serve.sh` hard-codes `TRITON_ATTN` for RDNA4
+      numerics, and its own recipe sets ten `VLLM_ROCM_USE_AITER_*` toggles. Test by hand with
+      `podman run` against the shared model cache and `bench.py` before touching the quadlet.
+      The image is small (4.0 GB compressed vs kyuz0's 32 GB) and is already pulled on the box as
+      `docker.io/stilldeadcode/vllm-radiance:0.9.3`, so the pull is no longer part of the cost.
+      Its documented run recipe needs `--shm-size 4g --cap-add SYS_PTRACE`; do NOT copy its
+      `--group-add render/video` — those groups do not exist in the container and rootless podman
+      fails with `Unable to find group render`. `/dev/kfd` is 0666 here anyway.
+
+- [ ] **DFlash2 drafter vs KV-cache group padding — a live coupling, not a rule of thumb.**
+      The 2026-08-27 entry above closed the KV-regrouping question with "swap to a multi-layer
+      drafter and re-read that warning line". That was a hypothetical when it was written. It is
+      not any more: radiance shipped DFlash2 drafter support on 2026-08-25 (`patch_dflash2.py`,
+      `--speculative-config '{"method":"dflash",...}'`), so the multi-layer drafter is now a thing
+      this box could actually be running, and the two decisions are coupled.
+
+      The arithmetic, restated as a live constraint: our buckets today are 48 GDN + 17 full-attn
+      (16 model + the 1-layer MTP head, which merges into the full-attention bucket), min=17,
+      4 groups, 68 slots for 65 layers — 3 padding, the 6.25% in the startup warning, and provably
+      optimal (gcd(48,17)=1). A DFlash2 drafter forms a THIRD bucket and collapses the group size
+      to its own layer count. At 5 layers that is 48/16/5 -> min=5, 15 groups, 75 slots for 69
+      layers, ~8% wasted before per-request round-ups — which is where the ~21% reclaim figure in
+      the Discord claim came from. So adopting DFlash2 does not just trade acceptance for draft
+      cost; it also silently changes how much of the KV pool is real.
+
+      What to do rather than assume: if a DFlash2 arm is ever benchmarked, record `Add N padding
+      layers` and the reported KV-cache token count from the SAME startup, alongside tok/s. A
+      drafter whose layer count divides evenly into 48 and 16 (4 or 8) costs nothing here; 5 or 7
+      is where the pool shrinks. That is a selection criterion for `num_speculative_tokens`' sibling
+      knob, not a footnote.
 
 - [ ] Cheap side-lead on the ~15 ms: [ROCm#6347](https://github.com/ROCm/ROCm/issues/6347) reports
       gfx1201 decode locking to ~33 **or** ~26 tok/s at process spawn, randomly, unrecoverable
       without restart. Evidence here is against it — twelve service starts never exceeded 24.3,
       which is one band, not two. Rule it out properly: spawn 5-6 times, record the
       non-speculative baseline each time.
+
+- [ ] **STACK CONSOLIDATION ONTO llama.cpp — scoped 2026-08-30, NOT STARTED.** The decode case is
+      made (see the head-to-head in `vllm.md`), so what is left is everything that is not decode.
+      Written down so the next session decides rather than re-derives. Order matters: step 1 can
+      kill the whole idea in ten minutes.
+
+      **1. Tool calling through lemonade — THE GATE. Test this first, believe nothing until you
+      have.** vLLM ships `--enable-auto-tool-choice --tool-call-parser qwen3_coder`, but the bar
+      is LOWER than that reads: the launcher forces `VLLM_ENFORCE_STRICT_TOOL_CALLING=0` because
+      strict mode 500s with MTP on, so what actually runs today is unconstrained
+      `extract_tool_calls`, not grammar-guaranteed syntax. llama.cpp is well placed to match it —
+      `--jinja` is DEFAULT-ENABLED on the shipped b1305 build, with `--reasoning-format` for
+      `reasoning_content` and GBNF `--grammar` available if constrained output is ever wanted.
+      What is UNVERIFIED is the proxy in front of it: whether lemonade's `/api/v1` passes `tools`
+      through to llama-server and returns the parsed `tool_calls` shape. Nothing here has ever
+      sent a tool-calling request through lemonade. If it does not work, stop — nothing below
+      matters.
+
+      **2. The OpenAI surface, which is not a one-line move.** vLLM is `:8000/v1`, model id
+      `Qwen/Qwen3.8-27B-FP8`, and it is a POD member — Open WebUI (`:3000`) reaches it pod-locally
+      and `BindsTo=north-llm-pod.service`. lemonade is `:13305/api/v1`, model ids `user.<name>`,
+      and a STANDALONE container. So consolidation changes every agent config, Open WebUI's
+      connection, and the pod topology; the sleep/wake hook already handles both, so that part is
+      free.
+
+      **3. Prefix caching — vLLM has it and it is OFF, which inverts the usual assumption.**
+      `VLLM_PREFIX_CACHING` defaults false because upstream gates prefix caching for hybrid
+      models; forced on it measured 7.4x TTFT after the first request. llama.cpp reuses a
+      request's common-prefix KV automatically with no flag, and it showed up in this session's
+      deep-concurrency reps (cold rep 92.51 -> warm reps 161.03 decode-agg on tensor split). So on
+      SHIPPED defaults llama.cpp is the one that caches prefixes. Turning vLLM's on narrows that
+      specific advantage — which is an argument for testing it before consolidating, not after.
+
+      **4. Concurrency semantics — the sharpest real difference, and it is a planning constraint.**
+      vLLM does continuous batching over a shared paged pool at `--max-num-seqs 4`; a 5th request
+      queues and is scheduled as slots free. llama.cpp uses `-np N` FIXED slots and DIVIDES `-c`
+      across them — measured this session, `-c 196608 -np 4` gives `n_ctx_slot = 49152`. So on
+      llama.cpp max context per stream is `c/np`: raising concurrency lowers per-stream context
+      unless total `-c` rises, and VRAM rises with it. vLLM has no such coupling. Any consolidation
+      has to pick a (concurrency, per-stream context) point up front instead of leaving it dynamic.
+
+      **5. Quantisation is a quality change nobody has measured.** vLLM runs FP8 (27.8 GB);
+      lemonade's fast seed is IQ4_XS (14.0 GB). No quality A/B has ever been run on this box. The
+      Q6_K seed exists precisely to keep a higher floor available — decide this deliberately.
+
+      **What `-DGGML_HIP_RCCL=ON` would cost, in image terms.** Today the image ships NO ROCm and
+      NO llama.cpp: lemonade downloads a 2.3 GB prebuilt `rocm-nightly` bundle at runtime into
+      `~/.local/share`, and the `nightly` pin is what makes gfx1201 work at all (lemonade#1787).
+      Building it ourselves means leaving that, two shapes, both real work:
+
+        (a) Ship our own bundle in the image: +2.3 GB for the bundle plus ~0.4 GB for RCCL
+            (`librccl.so.1` measured at 350-407 MB inside the vLLM image — it carries per-arch
+            kernels). Call it +2.7 GB on an image carrying none of this today, AND we take over
+            tracking llama.cpp releases, losing lemonade's auto-update.
+        (b) Build in CI, publish the bundle as a release artifact, point lemonade at it. No image
+            growth, but new infrastructure, a version pin to maintain, and it is UNVERIFIED
+            whether lemonade can be told to use a custom binary path at all.
+
+      Either way the build side needs a HIP/ROCm SDK container for gfx1201 plus RCCL headers —
+      build-time cost, not image content.
+
+      **AND THE PAYOFF IS UNQUANTIFIED, so do not lead with this.** Every tensor-split number on
+      this box ran on ggml's butterfly fallback. The ceiling can be BOUNDED but not predicted: the
+      no-MTP arms realise 1.39x of a theoretical 2x (30.42 -> 42.14), so a perfect reduction would
+      be ~60 tok/s there, i.e. up to ~1.4x more. Nobody has measured how much of that gap RCCL
+      actually closes. Find a cheaper way to measure the gap before spending an image on it.
 
 ### Wake-on-WLAN — `build_files/profiles/north/wol.sh`
 
