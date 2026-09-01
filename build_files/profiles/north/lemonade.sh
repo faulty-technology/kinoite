@@ -125,9 +125,9 @@ cat > /usr/share/kinoite/lemonade-recipes/user_models.json << 'EOF'
       "draft": "unsloth/Qwen3.8-27B-GGUF:MTP/mtp-Qwen3.8-27B-Q4_0.gguf",
       "mmproj": "unsloth/Qwen3.8-27B-GGUF:mmproj-F16.gguf"
     },
-    "recipe": "llamacpp-user",
+    "recipe": "llamacpp",
     "size": 23.4,
-    "labels": ["vision", "reasoning", "coding", "mtp"]
+    "labels": ["custom", "vision", "reasoning", "coding", "mtp"]
   },
   "Qwen3.8-27B-Fast": {
     "source": "huggingface",
@@ -136,9 +136,9 @@ cat > /usr/share/kinoite/lemonade-recipes/user_models.json << 'EOF'
       "draft": "unsloth/Qwen3.8-27B-GGUF:MTP/mtp-Qwen3.8-27B-Q4_0.gguf",
       "mmproj": "unsloth/Qwen3.8-27B-GGUF:mmproj-F16.gguf"
     },
-    "recipe": "llamacpp-user",
+    "recipe": "llamacpp",
     "size": 15.6,
-    "labels": ["vision", "reasoning", "coding", "mtp", "fast"]
+    "labels": ["custom", "vision", "reasoning", "coding", "mtp", "fast"]
   },
   "Qwen3.8-27B-Q6XL": {
     "source": "huggingface",
@@ -147,9 +147,9 @@ cat > /usr/share/kinoite/lemonade-recipes/user_models.json << 'EOF'
       "draft": "unsloth/Qwen3.8-27B-GGUF:MTP/mtp-Qwen3.8-27B-Q4_0.gguf",
       "mmproj": "unsloth/Qwen3.8-27B-GGUF:mmproj-F16.gguf"
     },
-    "recipe": "llamacpp-user",
+    "recipe": "llamacpp",
     "size": 25.3,
-    "labels": ["vision", "reasoning", "coding", "mtp"]
+    "labels": ["custom", "vision", "reasoning", "coding", "mtp"]
   },
   "Qwen3.8-27B-Q8XL": {
     "source": "huggingface",
@@ -158,32 +158,32 @@ cat > /usr/share/kinoite/lemonade-recipes/user_models.json << 'EOF'
       "draft": "unsloth/Qwen3.8-27B-GGUF:MTP/mtp-Qwen3.8-27B-Q4_0.gguf",
       "mmproj": "unsloth/Qwen3.8-27B-GGUF:mmproj-F16.gguf"
     },
-    "recipe": "llamacpp-user",
+    "recipe": "llamacpp",
     "size": 31.5,
-    "labels": ["vision", "reasoning", "coding", "mtp"]
+    "labels": ["custom", "vision", "reasoning", "coding", "mtp"]
   },
   "Qwen3.6-27B": {
     "source": "huggingface",
     "checkpoint": "unsloth/Qwen3.6-27B-MTP-GGUF:Qwen3.6-27B-Q6_K.gguf",
     "mmproj": "mmproj-F16.gguf",
-    "recipe": "llamacpp-user",
+    "recipe": "llamacpp",
     "size": 22.9,
-    "labels": ["vision", "reasoning", "mtp"]
+    "labels": ["custom", "vision", "reasoning", "mtp"]
   },
   "Qwen3.6-35B-A3B": {
     "source": "huggingface",
     "checkpoint": "unsloth/Qwen3.6-35B-A3B-MTP-GGUF:Qwen3.6-35B-A3B-UD-Q6_K.gguf",
     "mmproj": "mmproj-F16.gguf",
-    "recipe": "llamacpp-user",
+    "recipe": "llamacpp",
     "size": 30.0,
-    "labels": ["vision", "reasoning", "mtp"]
+    "labels": ["custom", "vision", "reasoning", "mtp"]
   },
   "Qwen3-Coder-30B": {
     "source": "huggingface",
     "checkpoint": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Qwen3-Coder-30B-A3B-Instruct-Q6_K.gguf",
-    "recipe": "llamacpp-user",
+    "recipe": "llamacpp",
     "size": 25.1,
-    "labels": ["coding"]
+    "labels": ["custom", "coding"]
   }
 }
 EOF
