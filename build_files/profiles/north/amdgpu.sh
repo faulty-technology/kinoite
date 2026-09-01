@@ -10,9 +10,9 @@ set -ouex pipefail
 # This script only ensures the amdgpu firmware is present and that the compute
 # device nodes are reachable by an unprivileged, containerized ROCm runtime.
 #
-# TODO(hardware): confirm Fedora 44's kernel + linux-firmware + mesa are new
-# enough to drive the R9700 (RDNA4/gfx1201) and enumerate both GPUs. Fallback:
-# newer-kernel COPR or a linux-firmware override. See notes/kinoite-north-validation.md.
+# Fedora 44's kernel + linux-firmware + mesa drive the R9700 (RDNA4/gfx1201) and enumerate
+# both cards at gfx_target_version 120001. If a future base regresses that, the fallback is a
+# newer-kernel COPR or a linux-firmware override. See docs/reference/gpu-topology.md.
 
 ### GPU firmware (amdgpu microcode; subpackage of linux-firmware) + monitoring
 # VAAPI/Vulkan drivers are not listed here — the shared codecs.sh swaps in the

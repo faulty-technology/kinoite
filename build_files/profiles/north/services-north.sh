@@ -96,7 +96,7 @@ systemctl enable kinoite-linger.service
 # running on resume. Load-bearing, not a power tweak: amdgpu evicts VRAM into system RAM to
 # suspend, a loaded vLLM holds ~28 GiB on each R9700, and this box has 64 GB of RAM. Suspending
 # with a model loaded does not fail gracefully — it hangs the machine hard enough to need the
-# power button, with an empty kernel log. Evidence in notes/kinoite-north-validation.md.
+# power button, with an empty kernel log. See docs/explanation/suspend-and-wake.md.
 #
 # A TRAINING run is the same hazard from the other direction: llamafactory holds weights,
 # gradients and optimiser state, which is why llamafactory.service joins the lists below.

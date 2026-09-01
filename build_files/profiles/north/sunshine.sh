@@ -8,7 +8,7 @@ set -ouex pipefail
 # The virtual display replaces a dummy plug for *streaming*, not for booting: Sunshine
 # probes for an encoder at process launch and dies with `[kwingrab] no wl_output found`
 # if KWin has zero outputs. Prep commands run at stream start, far too late to help. So
-# a plug (or a forced connector) is still required — see notes/kinoite-north-validation.md.
+# a plug (or a forced connector) is still required — see docs/explanation/sunshine-capture.md.
 #
 # COPR: pvermeer/sunshine — targets Fedora Atomic, carries the spec fixes
 # LizardByte's own (unmaintained) `stable` COPR lacks. `sunshine-beta` is weekly.

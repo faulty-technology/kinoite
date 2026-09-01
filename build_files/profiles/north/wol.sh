@@ -49,7 +49,8 @@ EOF
 # — the radio listens for the armed trigger from its low-power state by design —
 # so disabling it burns idle watts on a 24/7 box without making the wake likelier.
 #
-# TODO(hardware): unverified on the real box. Two things can still swallow the wake
-# with the trigger correctly armed: the PCIe function may not be marked as a wakeup
-# source (rtw89 may not implement cfg80211's `set_wakeup`), and s2idle vs S3 changes
-# what does the resuming. See notes/kinoite-north-validation.md.
+# Verified end to end: the PCIe function reads `power/wakeup = enabled`, so rtw89 does
+# implement cfg80211's `set_wakeup` and NO udev rule is needed. Not routable — the sender
+# must be on the same L2 segment, so this never works over Tailscale. And it recovers a
+# SUSPENDED box, not a hung one, which is why the LLM sleep hook refuses the suspend rather
+# than entering a state nothing can wake. See docs/explanation/suspend-and-wake.md.

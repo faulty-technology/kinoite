@@ -2,6 +2,8 @@
 FROM scratch AS ctx
 COPY build_files /
 COPY cosign.pub /
+# On-box runbooks, installed to /usr/share/kinoite by the profile scripts.
+COPY docs /docs
 
 # Base Image — same Fedora Kinoite (KDE) base as the laptop image
 FROM quay.io/fedora/fedora-kinoite:44

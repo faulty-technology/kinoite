@@ -17,7 +17,7 @@ set -ouex pipefail
 #
 # TODO(hardware): the NCT6701D is new — fan/voltage read fine, but several temp
 # channels read 0C or are missing until asus-ec-sensors gains an entry for this
-# board. Recheck on newer kernels. See notes/kinoite-north-validation.md.
+# board. Recheck on newer kernels. See docs/reference/sensors.md.
 mkdir -p /usr/lib/bootc/kargs.d
 cat > /usr/lib/bootc/kargs.d/20-sensors.toml << 'EOF'
 kargs = ["acpi_enforce_resources=lax"]
@@ -40,7 +40,7 @@ EOF
 #    the 5s autosuspend timer forever, so neither R9700 could EVER runtime-suspend.
 #    Result: both cards sat awake at ~1950 RPM (30% of 6500) permanently. This cost
 #    a long investigation that misdiagnosed it as an amdgpu firmware fan floor —
-#    see notes/kinoite-north-validation.md, the SOLVED entry.
+#    see docs/explanation/gpu-power-and-fans.md.
 #
 # Anything that continuously polls GPU hwmon has this effect. Weigh idle noise
 # against monitoring before enabling such a daemon here. `lactd` has the same

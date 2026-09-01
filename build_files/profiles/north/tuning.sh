@@ -14,48 +14,26 @@ vm.max_map_count=2147483642
 EOF
 
 ### 2. amdgpu powerplay controls (baked kernel arg)
-# Unlocks OverDrive so clock and voltage offsets are adjustable (e.g. via LACT
-# below). Still required on RDNA4 — this is not a legacy Vega/Navi1 thing. Power
-# caps (`power1_cap`) work without it; the offsets don't.
+# Unlocks OverDrive so clock and voltage offsets are adjustable. Still required on RDNA4 — this
+# is not a legacy Vega/Navi1 thing. Power caps (`power1_cap`) work without it; the offsets don't.
 #
-# 0xfff7ffff, not the 0xffffffff every guide repeats: the driver default is
-# 0xfff7bfff and OverDrive is PP_OVERDRIVE_MASK (0x4000), so this is exactly
-# "default + OverDrive". 0xffffffff would additionally set PP_GFX_DCS_MASK
-# (0x80000), which the driver deliberately leaves off, plus every reserved bit.
-# Re-derive from amd_shared.h if a kernel bump changes the default.
+# 0xfff7ffff, not the 0xffffffff every guide repeats: the driver default is 0xfff7bfff and
+# OverDrive is PP_OVERDRIVE_MASK (0x4000), so this is exactly "default + OverDrive". 0xffffffff
+# would additionally set PP_GFX_DCS_MASK (0x80000), which the driver deliberately leaves off,
+# plus every reserved bit. Re-derive from amd_shared.h if a kernel bump changes the default.
 #
-# THIS FILE ALONE IS NOT ENOUGH, and the way it fails is silent. kargs.d is a
-# *bootc* mechanism: only `bootc install`/`switch`/`upgrade` read it, and
-# `rpm-ostree rebase`/`upgrade` ignores the directory entirely. That is not the
-# whole story here, though — this box updates with `bootc upgrade` (its timer
-# enabled since 2026-03-04, `rpm-ostreed-automatic.timer` masked) and all three
-# entries were added 2026-08-08 through 2026-08-23, months later, yet they still
-# did not all apply. The mechanism is unexplained: verify against /proc/cmdline
-# rather than trusting the directory.
+# THIS FILE ALONE IS NOT ENOUGH, AND THE WAY IT FAILS IS SILENT. Entries here have been observed
+# not reaching /proc/cmdline at all, by a mechanism nobody has explained — see
+# docs/explanation/gpu-power-and-fans.md. With OverDrive locked there is no `pp_od_clk_voltage`
+# and no `gpu_od/`, so LACT's voltage offset cannot apply and it says so only at ERROR, once per
+# card, while carrying on. ALWAYS VERIFY AGAINST /proc/cmdline rather than trusting this
+# directory.
 #
-# Measured on the box 2026-08-23: all three kargs.d entries present in /usr,
-# only `split_lock_detect=off` on /proc/cmdline. Re-measured 2026-08-24:
-# `acpi_enforce_resources=lax` still absent from the booted *and* staged
-# deployments, so it is not waiting on a reboot. With OverDrive locked there is
-# no `pp_od_clk_voltage` and no `gpu_od/` at all, so LACT's voltage offset
-# cannot apply — it logs "custom clock settings are present but will be ignored"
-# at ERROR, once per card, and carries on. The undervolt had never once run.
-#
-# RESOLVED on this box as of 2026-08-25: the `rpm-ostree kargs` fix below has been
-# applied, `amdgpu.ppfeaturemask=0xfff7ffff` is on /proc/cmdline, and
-# `gpu_od/fan_ctrl/fan_curve` now exists on both cards (reading `0C 0%` x5, i.e.
-# present and unset). So the two OD-gated knobs in section 4 are live rather than
-# silently discarded, and a fan curve written there demonstrably applies — verified
-# by writing one and watching hotspot fall 18C. The paragraph above is kept because
-# it describes the DEFAULT state of a freshly-installed box, which is still locked:
-# treat it as the thing to check first, not as a description of this machine.
-#
-# Fix, once per machine — this writes the karg into the ostree deployment, where
-# it persists across updates whichever tool drives them:
+# Fix, once per machine — writes the karg into the ostree deployment, where it persists across
+# updates whichever tool drives them:
 #     rpm-ostree kargs --append=amdgpu.ppfeaturemask=0xfff7ffff && systemctl reboot
-# kinoite-gpu-tune.service (section 3) asserts this at boot so it cannot go
-# quiet again. Keep the file below regardless: it is still what makes a fresh
-# `bootc install` come up correct.
+# kinoite-gpu-tune.service (section 3) asserts this at boot so it cannot go quiet again. Keep the
+# file below regardless: it is what makes a fresh `bootc install` come up correct.
 mkdir -p /usr/lib/bootc/kargs.d
 cat > /usr/lib/bootc/kargs.d/10-amdgpu.toml << 'EOF'
 kargs = ["amdgpu.ppfeaturemask=0xfff7ffff"]
@@ -72,7 +50,7 @@ install_pkgs lact
 # Deliberately NOT enabled. LACT is kept as the interactive GUI for tuning
 # experiments; section 4 owns what actually gets applied at boot.
 #
-# Two measured reasons, both 2026-08-23, both in notes/:
+# Two measured reasons, both in docs/runs/2026-08-23-tuning-durability.md:
 #   - LACT reverts the power cap when it stops. `systemctl stop lactd` puts
 #     `power1_cap` straight back to 300 W. A setting LACT owns only holds for as
 #     long as LACT is resident, which makes it the wrong place for a boot-time
@@ -94,7 +72,7 @@ systemctl disable lactd.service 2>/dev/null || true
 # Everything here is a plain sysfs write. LACT is not in the path, and neither is
 # amd-smi: `amd-smi set` has no voltage-offset argument at all, its `--fan` needs
 # the `pwm1_enable` this card lacks, and `amd-smi metric` *dumps core* on gfx1201
-# because it cannot parse `OD_SCLK_OFFSET`. See notes/ for the assertion.
+# because it cannot parse `OD_SCLK_OFFSET`. See docs/reference/gpu-sysfs.md.
 #
 # DURABILITY IS NOT UNIFORM, and this is the whole reason the script looks the way
 # it does. Measured by hand with lactd stopped:
@@ -105,17 +83,11 @@ systemctl disable lactd.service 2>/dev/null || true
 # shipped unset, with the knobs present and documented, because maintaining them
 # would mean re-applying every time a card wakes for a workload.
 #
-# WHAT THE FAN CURVE IS ACTUALLY FOR, measured under vLLM load 2026-08-25. It is a
-# thermal and efficiency knob and NOT a performance one. Under a sustained 27B decode
-# the stock firmware curve is far too quiet — it settles at 88-93C hotspot with the
-# fans at 33-39% PWM — and at that temperature the cards leak enough extra current to
-# sit pinned against the 235 W cap below, which clamps sclk to ~2360 MHz against a
-# ~3360 MHz ceiling. Writing `FAN_CURVE="45:40 55:55 65:70 75:85 85:100"` at an
-# unchanged cap moved all of it:
-#     hotspot 88-93C -> 70-78C | power 234/235W -> 184-203W | sclk ~2360 -> ~3370MHz
-# ...and changed vLLM throughput by -0.1%, i.e. not at all, because batch-1 decode is
-# memory-bandwidth bound and mclk never left top DPM either way. See the "GPU clocks
-# and thermals" dead end in vllm.md for the A/B.
+# THE FAN CURVE IS A THERMAL AND EFFICIENCY KNOB, NOT A PERFORMANCE ONE. Under sustained 27B
+# decode the stock firmware curve is far too quiet, and at 88-93C the cards leak enough extra
+# current to pin themselves against the cap below, which clamps sclk. Cooling them releases all
+# of that — and changes throughput by -0.1%, because batch-1 decode is memory-bandwidth bound
+# and mclk never leaves top DPM either way. A/B: docs/runs/2026-08-25-vllm-context-and-clocks.md.
 #
 # So: worth applying for ~18C and ~90 W across the pair, and worth knowing that a
 # THROTTLED flag here costs nothing in tok/s. That curve is deliberately aggressive
