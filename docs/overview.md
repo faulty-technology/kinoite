@@ -57,14 +57,19 @@ table does not survive an idle cycle. `lactd` ships disabled.
       bounded below by the 30% firmware floor, so it can only shape ramp-up on an
       already-awake card. Worth a curve only if the cards sit awake and audible
       under sustained load.
-- [ ] Reconcile or clear `/etc/lact/config.yaml` — it still carries
-      `power_cap: 210` and `voltage_offset: -70` from earlier hand-tuning. Inert
-      unless `lactd` is started, at which point the two sources fight.
-- [ ] **Several NCT6701D temp channels read 0 C or are missing** until
-      `asus-ec-sensors` gains an entry for this board. Fan and voltage read fine.
-      Recheck on newer kernels.
-- [ ] `acpi_enforce_resources=lax` never landed as a karg and `nct6775` works
-      anyway. Candidate for removal from `motherboard.sh`, unverified.
+- [x] **Removed `/etc/lact/config.yaml`.** Carried stale `power_cap: 210`
+      and `voltage_offset: -70` from earlier hand-tuning. `lactd` is disabled,
+      so it was inert, but it was a latent conflict.
+- [x] **Three PCH temp channels read 0°C.** PCH_CHIP_CPU_MAX_TEMP, PCH_CHIP_TEMP
+      and PCH_CPU_TEMP — the nct6799 driver recognizes the NCT6701D but doesn't
+      populate those three. Driver quirk, not a sensor-gap; no asus-ec-sensors
+      entry needed (nct6799 handles the Super I/O directly). Documented in
+      [reference/sensors.md] along with the other harmless quirks (AUXTIN3 at
+      -61°C, AUXTIN4 ALARM).
+- [x] `acpi_enforce_resources=lax` never landed and nct6799 works anyway.
+      Removed from `motherboard.sh` — the karg and `modules-load.d` force-load
+      were dead weight. Rechecked on Fedora 44 kernel: full sensors output with
+      neither aid. If a future kernel regresses, both can return.
 
 ### lemonade — `lemonade.sh`
 
@@ -143,18 +148,18 @@ carried over unchanged — do not re-derive.
       published R9700 report says yes; untested here, hence the QLoRA default.
 - [ ] **Is `/workspace/data` seeding correct in practice?**
 - [ ] **Multi-GPU training is untested and unsupported by choice.**
-- [ ] **`Restart=on-failure` vs the vLLM lesson.** vllm.container needs
-      `Restart=always`; whether the trainer wants the same is unchecked.
+- [x] **`Restart=on-failure` vs the vLLM lesson.** Settled: `on-failure` is
+      correct here. Unlike vLLM (whose engine death exits cleanly and needs
+      `always` to recover), a training crash has no silent-success failure mode
+      and should not resurrect itself in a loop while you read the traceback.
 - [ ] First project idea: bash command risk scoring.
 
 ### Gaming
 
-- [ ] **3DMark stalls once the benchmark starts, cause unknown.** The startup
-      hang is solved — disable hardware monitoring in its settings, SystemInfo is
-      genuinely Wine-incompatible. It runs on Bazzite on this same hardware, so
-      this is a gap between images, not a Proton limitation. Leading suspect is
-      Proton version, and Proton-GE is now baked, so retest before investigating
-      anything else. 32-bit Vulkan is fine and Vulkan picks an R9700, not the
+- [x] **3DMark stalls once the benchmark starts, cause unknown.** Resolved —
+      Proton-GE baked into the image was the fix. Hardware monitoring must still
+      be disabled in 3DMark's settings (SystemInfo is Wine-incompatible regardless
+      of Proton version). 32-bit Vulkan is fine and Vulkan picks an R9700, not the
       iGPU.
 
 ### Sunshine
@@ -164,5 +169,7 @@ carried over unchanged — do not re-derive.
 
 ### Unverified
 
-- [ ] Fedora may already ship `/dev/kfd` world-accessible the way it does the DRM
-      render nodes, which would make the udev rule in `amdgpu.sh` redundant.
+- [x] Fedora ships `/dev/kfd` world-accessible (`SUBSYSTEM=="kfd", GROUP="render",
+      MODE="0666"` in systemd-udev's `50-udev-default.rules`). The custom udev
+      rule is already removed from `amdgpu.sh` — it was a net loss, tightening
+      the base 0666 then handing access back only to the seated user.
