@@ -164,13 +164,15 @@ esac
 # docs/decisions/2026-08-24-drop-padded-drafter-batch.md. The 08-22 throughput table alone is not
 # grounds to restore it — every arm in it was single-stream.
 #
-# --no-async-scheduling is still applied whenever speculation is on. That is conservative, not
-# measured: it was required by the flag above and costs 3.2% on its own. See the decision record.
+# --no-async-scheduling was required by disable_padded_drafter_batch and stayed after that flag
+# was removed, on the assumption it cost 3.2% independently. Measured 2026-09-03 at k=4: costs
+# nothing (the 08-22 figure was the drafter-batch flag, not async scheduling). Removed.
+# docs/runs/2026-09-03-async-scheduling.md.
 EXTRA_ARGS=()
 SPEC_DEFAULT='{"method":"mtp","num_speculative_tokens":4}'
 SPEC="${VLLM_SPECULATIVE-$SPEC_DEFAULT}"
 if [ -n "$SPEC" ]; then
-    EXTRA_ARGS+=(--speculative-config "$SPEC" --no-async-scheduling)
+    EXTRA_ARGS+=(--speculative-config "$SPEC")
 
     # Strict tool calling OFF whenever speculation is on — they are broken together in this
     # image, and it is the speculation we want to keep. The alternative (bump to an image with

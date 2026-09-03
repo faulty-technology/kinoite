@@ -72,6 +72,10 @@ kernels. Neither has been run on this box. Radiance's prefix-caching and
 drafter-batch flags turned out to be flags this image already had, and both were
 adopted.
 
+See also: [vllm-kv-cache-padding.md](vllm-kv-cache-padding.md) — why the
+startup padding warning is already optimal, and the DFlash2 trap that couples
+drafter layer count to usable KV-pool size.
+
 Profiling note: the torch profiler records **zero** GPU kernel events in this
 image — kineto's ROCm activity backend produces nothing, with or without
 cudagraphs — and `rocprofv3` only flushes at process exit while vLLM will not

@@ -185,9 +185,9 @@ image build.
    dies with `status=2/INVALIDARGUMENT`. The launcher echoes the value at startup as
    `[vllm-serve]` — check `journalctl --user -u vllm` if an override seems to be ignored.
 
-   `--no-async-scheduling` is added whenever speculation is on; that pairing is what was measured.
-   Do not decouple without re-measuring (the scheduling flag alone costs 3.2%, and the drafter
-   flag alone was never tested).
+   `--no-async-scheduling` was removed 2026-09-03: it was only required for the
+   now-dropped `disable_padded_drafter_batch`, and measured at k=4 it costs nothing
+   ([runs/2026-09-03-async-scheduling](../runs/2026-09-03-async-scheduling.md)).
 
    `num_speculative_tokens` is NOT capped by `mtp_num_hidden_layers` — that is the draft head's
    depth, not the speculation width. Greedy output will not be byte-identical to non-speculative;

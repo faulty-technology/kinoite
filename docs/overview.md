@@ -86,27 +86,18 @@ table does not survive an idle cycle. `lactd` ships disabled.
       `--shm-size 4g --cap-add SYS_PTRACE`; do NOT copy its
       `--group-add render/video` — those groups do not exist in the container and
       rootless podman fails with `Unable to find group render`.
-- [ ] **DFlash2 drafter vs KV-cache group padding — a live coupling.** Today's
-      buckets are 48 GDN + 17 full-attn (16 model + the 1-layer MTP head), min=17,
-      4 groups, 68 slots for 65 layers: 3 padding, the 6.25% in the startup
-      warning, and provably optimal since gcd(48,17)=1. A DFlash2 drafter forms a
-      THIRD bucket and collapses the group size to its own layer count — at 5
-      layers that is min=5, 15 groups, 75 slots for 69 layers, ~8% wasted. So
-      adopting it does not just trade acceptance for draft cost; it silently
-      changes how much of the KV pool is real. If a DFlash2 arm is ever
-      benchmarked, record `Add N padding layers` and the reported KV-cache token
-      count from the SAME startup alongside tok/s. A drafter whose layer count
-      divides evenly into 48 and 16 (4 or 8) costs nothing; 5 or 7 shrinks the
-      pool.
-- [ ] Cheap side-lead on the ~15 ms:
-      [ROCm#6347](https://github.com/ROCm/ROCm/issues/6347) reports gfx1201
-      decode locking to ~33 **or** ~26 tok/s at process spawn, randomly,
-      unrecoverable without restart. Evidence here is against it — twelve service
-      starts never exceeded 24.3, one band not two. Rule it out properly: spawn
-      5–6 times, recording the non-speculative baseline each time.
-- [ ] ~3% may be sitting in `--no-async-scheduling`, still applied whenever
-      speculation is on although the flag that required it is gone. See
-      `docs/decisions/2026-08-24-drop-padded-drafter-batch.md`.
+- [ ] **DFlash2 drafter vs KV-cache group padding — documented, not yet
+      triggered.** The current MTP head is already optimal; the trap only fires
+      if a multi-layer drafter is swapped in. See
+      [explanation/vllm-kv-cache-padding.md].
+- [x] Cheap side-lead on the ~15 ms:
+      [ROCm#6347](https://github.com/ROCm/ROCm/issues/6347). Ruled out — six
+      fresh spawns all clustered at 24.50–24.53 tok/s, one band.
+      [runs/2026-09-03-rocmsidelead.md].
+- [x] ~3% may be sitting in `--no-async-scheduling`. Measured — costs nothing
+      at k=4 (the 08-22 figure was the drafter-batch flag, not async scheduling).
+      Flag removed from the launcher for cleanliness.
+      [runs/2026-09-03-async-scheduling.md].
 
 ### Stack consolidation onto llama.cpp — scoped, not started
 
