@@ -20,17 +20,7 @@ set -ouex pipefail
 install_pkgs amd-gpu-firmware amdsmi
 
 ### Compute device access for containerized ROCm
-# Deliberately NO udev rule. systemd-udev's own 50-udev-default.rules already ships
-#     SUBSYSTEM=="kfd", GROUP="render", MODE="0666"
-# so /dev/kfd is world-accessible out of the box, exactly like the DRM render nodes.
-#
-# This image used to ship 70-kfd.rules with MODE="0660" + TAG+="uaccess", and that was a
-# net LOSS: it TIGHTENED the base 0666, then handed the access back only to the
-# active-seat user (via the uaccess ACL) or to members of `render`. The practical cost
-# was that a headless SSH session, having no seat, needed `usermod -aG render` for
-# something that was never restricted in the first place. Dropping the rule restores 0666
-# and removes that fallback. Before re-adding any rule here, check what the base already
-# gives you: `stat -c '%a %G' /dev/kfd` and `grep -r kfd /usr/lib/udev/rules.d/`.
-#
-# (For the record the uaccess tag did work — getfacl on a seated login showed the user
-# ACL land on /dev/kfd. It is simply redundant at mode 0666.)
+# Fedora ships /dev/kfd world-accessible (MODE="0666" in 50-udev-default.rules).
+# This image used to ship 70-kfd.rules with MODE="0660" + TAG+="uaccess" — a net
+# loss: it tightened the base 0666 and handed access back only to the seated user.
+# Full story: docs/runs/2026-09-05-build-comment-consolidation.md#prior-udev-rule-removed

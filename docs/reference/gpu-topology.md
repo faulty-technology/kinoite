@@ -11,11 +11,7 @@ WiFi Neo. Single NUMA node.
 | 06:00.0 | R9700 (Navi 48) | 120001 | 1 |
 | 10:00.0 | iGPU (Granite Ridge) | 100306 | 2 |
 
-**Never bake a card number, renderD node or device index.** DRM numbering
-reshuffles across kernels and boots; only the PCI address is stable. Observed
-twice with different numbering.
-
-Re-derive:
+DRM numbering is unstable across boots; identify devices by PCI address:
 
     ls -l /dev/dri/by-path/
     lspci -nn
@@ -43,12 +39,12 @@ Two independent consumers of this rule:
   (`-devd` / `--spec-draft-device`) defaulting to every device, so `-dev` alone
   is **not** sufficient.
 
-Exclude at visibility rather than per-model — `HIP_VISIBLE_DEVICES=0,1` or
-`ROCR_VISIBLE_DEVICES=0,1`, each verified on its own. That covers every model
-the process loads.
+Exclusion at visibility (`HIP_VISIBLE_DEVICES=0,1` or
+`ROCR_VISIBLE_DEVICES=0,1`) covers every model the process loads.
 
-Layer split needs no device pinning: a loaded 27B put 14186 MiB on 06:00.0,
-13680 MiB on 03:00.0, and 20 MiB (framebuffer only) on the iGPU.
+Layer split needs no device pinning: under default -sm layer a loaded 27B put
+14.2 and 13.7 GiB on the two R9700s and 20 MiB (framebuffer only) on the iGPU.
+([runs/2026-08-30-engine-decode-depth](../runs/2026-08-30-engine-decode-depth.md))
 
 ## Firmware baseline
 

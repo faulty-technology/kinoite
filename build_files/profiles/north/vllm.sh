@@ -54,39 +54,16 @@ set -euo pipefail
 # further down. Set NCCL_PROTO= (explicitly empty) to unset it and let RCCL's tuner choose.
 NCCL_PROTO_WANT="${NCCL_PROTO-Simple}"
 
-# kyuz0's ROCm/vLLM env. On this image (verified on box 2026-08-19) the SECOND path exists and is
-# sourced — it is NOT a no-op, contrary to an earlier note. It exports 7 vars:
-#   TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1  FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE
-#   VLLM_TARGET_DEVICE=rocm  VLLM_USE_TRITON_AWQ=1  VLLM_DISABLE_COMPILE_CACHE=1
-#   NCCL_PROTO=Simple  PYTHONNOUSERSITE=1
-# The last two are the ones we deliberately override below/after. Re-check after an image bump:
-#   podman run --rm docker.io/kyuz0/vllm-therock-gfx1201:latest \
-#       sh -c 'cat /etc/profile.d/01-rocm-envs.sh'
+# kyuz0's ROCm/vLLM env. The /etc/profile.d/ path is the one that ships — it is NOT a no-op,
+# contrary to an earlier note. See docs/runs/2026-09-05-build-comment-consolidation.md#nccl_protosimple-measured-faster.
 for f in /opt/scripts/01-rocm-envs.sh /etc/profile.d/01-rocm-envs.sh; do
     # shellcheck disable=SC1090
     [ -f "$f" ] && source "$f"
 done
 
-# NCCL_PROTO: kept at the image's Simple, but now as an overridable knob rather than an
-# unconditional export (the old form could not be overridden at all).
-#
-# On gfx1201 every fast all-reduce backend is arch-gated to CDNA in this vLLM build
-# (rocm.py use_custom_allreduce() and quick_all_reduce.py supported_archs are both
-# ["gfx94","gfx95"]), so TP falls through to PYNCCL — confirmed in the startup log:
-#   Using ['PYNCCL'] all-reduce backends ... out of potential backends:
-#   ['NCCL_SYMM_MEM','QUICK_REDUCE','FLASHINFER','CUSTOM','SYMM_MEM','PYNCCL']
-# That makes PYNCCL's protocol load-bearing. Theory said Simple was wrong here (it disables the
-# LL/LL128 low-latency protocols, and TP decode at batch 1 does 2 all-reduces per layer x 64
-# layers = 128 per token of only hidden_size x 2B = 10 KiB each). MEASUREMENT SAID OTHERWISE —
-# a 2-rank RCCL all-reduce benchmark on this box, 2026-08-19:
-#     10 KiB   Simple 27.6 us/op   auto 35.0 us/op    -> Simple wins
-#     40 KiB   Simple 26.9         auto 32.7
-#      1 MiB   Simple 82.2         auto 82.3          -> equal once bandwidth-bound
-# So Simple is ~7 us/op faster at the size that matters, ~1 ms/token over 128 all-reduces.
-# Do not "fix" this back to unset without re-measuring. The same benchmark also sized comm at
-# only ~4.5 ms of the ~41 ms token budget, i.e. ~11% — collectives are NOT the bottleneck.
-# To let RCCL's tuner choose instead, set NCCL_PROTO to the empty string in the shadowed
-# .container (see the note on [Container] Environment= below).
+# NCCL_PROTO: pinned to Simple. Measured faster than auto at decode-sized
+# all-reduces. Full benchmark table and the ~11% comm-budget context:
+# docs/runs/2026-09-05-build-comment-consolidation.md#nccl_protosimple-measured-faster
 if [ -n "$NCCL_PROTO_WANT" ]; then
     export NCCL_PROTO="$NCCL_PROTO_WANT"
 else
@@ -139,75 +116,35 @@ esac
 # throughput for parallel agent tool calls at ~no single-stream cost; at 1 the log shows real
 # requests queueing. VLLM_MAX_SEQS=1 restores kyuz0's single-stream benchmarking behaviour.
 #
-# MTP speculative decoding, ON at k=4 — the single biggest win on this box. k saturates in tokens
-# per pass after 4, so past it you buy draft compute and no tokens; the k=4 gain over k=3 is
-# single-stream and code-shaped, and at concurrency >=2 the two are within noise. This box is
-# single-user, hence k=4. VLLM_SPECULATIVE= (explicitly empty) turns speculation off.
-# Sweeps: docs/runs/2026-08-22-vllm-speculation-sweep.md.
-#
-# TWO TRAPS, both already paid for once:
-#   - k is NOT capped by the checkpoint's mtp_num_hidden_layers. That field is the draft head's
-#     DEPTH; vLLM runs the one module autoregressively k times. Misreading it as a cap pinned k=1
-#     and cost ~42% of achievable throughput. The real constraint (vllm/config/speculative.py:
-#     765-780) is only a divisibility rule when k > n_predict, and n_predict=1 divides cleanly.
-#   - Do NOT gate correctness on byte-identical greedy output. Batch shape alone flips tokens with
-#     no speculation involved (FP8 near-ties; argmax follows reduction order), so the
-#     non-speculative baseline is not shape-stable either and the test cannot pass. Spot-check
-#     semantics instead.
-#
-# Costs ~1 extra layer of VRAM. Do not chase a newer image for it — see
-# docs/explanation/vllm-decode-budget.md under "Dead ends".
-#
-# DO NOT ADD disable_padded_drafter_batch. It is +19.1% single-stream and it CRASHES THE ENGINE
-# at n>=3 concurrent requests, which is under the --max-num-seqs 4 this same file sets. Keeping
-# it would mean capping concurrency at 2, and that trade was made and rejected:
-# docs/decisions/2026-08-24-drop-padded-drafter-batch.md. The 08-22 throughput table alone is not
-# grounds to restore it — every arm in it was single-stream.
-#
-# --no-async-scheduling was required by disable_padded_drafter_batch and stayed after that flag
-# was removed, on the assumption it cost 3.2% independently. Measured 2026-09-03 at k=4: costs
-# nothing (the 08-22 figure was the drafter-batch flag, not async scheduling). Removed.
-# docs/runs/2026-09-03-async-scheduling.md.
+# MTP speculative decoding, ON at k=4. k saturates in tokens-per-pass after 4. k is NOT capped
+# by mtp_num_hidden_layers (that's depth, not width). disable_padded_drafter_batch is removed
+# (+19.1% single-stream but crashes at n>=3 concurrent). --no-async-scheduling removed
+# (measured 2026-09-03 at k=4: costs nothing). Full details:
+# docs/runs/2026-09-05-build-comment-consolidation.md#vllmsh
 EXTRA_ARGS=()
 SPEC_DEFAULT='{"method":"mtp","num_speculative_tokens":4}'
 SPEC="${VLLM_SPECULATIVE-$SPEC_DEFAULT}"
 if [ -n "$SPEC" ]; then
     EXTRA_ARGS+=(--speculative-config "$SPEC")
 
-    # Strict tool calling OFF whenever speculation is on — they are broken together in this
-    # image, and it is the speculation we want to keep. The alternative (bump to an image with
-    # upstream's 2026-07-04 fix) costs ~15% of MTP decode, and was rejected:
-    # docs/decisions/2026-08-23-strict-tool-calling-off.md. Delete this whole block once the
-    # image carries a build newer than 2026-07-04 that is not a decode regression AND does not
-    # reintroduce the TP=2 hang — that is a THREE-condition rule, see the decision record.
+    # Strict tool calling OFF whenever speculation is on — broken together in this image
+    # (vllm-project/vllm#44006, fixed upstream 2026-07-04; this 2026-06-13 build is before it).
+    # Costs ~15% of MTP decode to bump to a fixed image. Full rationale:
+    # docs/runs/2026-09-05-build-comment-consolidation.md#strict-tool-calling-off-while-mtp-is-on
     #
-    # WHAT THE KNOB ACTUALLY DOES, because the name suggests a policy and it is a workaround:
-    # setting it to 0 makes get_structural_tag return None, so no xgrammar structural tag is
-    # attached and the FSM boundary that MTP breaks is never reached. Tool calls fall back to the
-    # qwen3_coder parser's extract_tool_calls. We lose grammar-guaranteed syntax, not the feature.
-    # Only the `tools` path was ever affected — response_format/json_schema measured clean.
-    #
-    # Coupled to speculation on purpose. Set VLLM_SPECULATIVE= to turn MTP off and strict tool
-    # calling comes back by itself, because without spec decode the deferral is correct. An
-    # explicit VLLM_ENFORCE_STRICT_TOOL_CALLING in the environment still wins over both.
+    # With MTP off (VLLM_SPECULATIVE=), strict mode restores itself. An explicit
+    # VLLM_ENFORCE_STRICT_TOOL_CALLING in the environment still wins over both.
     export VLLM_ENFORCE_STRICT_TOOL_CALLING="${VLLM_ENFORCE_STRICT_TOOL_CALLING:-0}"
 fi
 
-# Prefix caching: ON by default since 2026-08-31. Set VLLM_PREFIX_CACHING=false to disable.
-# Worth 1.73x end-to-end on the agentic workload this box serves, and it costs nothing at decode.
-# docs/decisions/2026-08-31-vllm-prefix-caching-on.md.
+# Prefix caching: ON by default since 2026-08-31. Worth 1.73× end-to-end agentic.
+# Overrides an upstream experimental gate for hybrid models (is_prefix_caching_supported
+# returns False for attn_type=="hybrid"; Qwen3.8-27B is qwen3_5, i.e. hybrid).
+# No quality A/B on vs off. Decision, rationale, and correctness notes:
+# docs/runs/2026-09-05-build-comment-consolidation.md#prefix-caching-forced-on-for-hybrid-model
 #
-# THE CAVEAT THIS DOES NOT ANSWER, and the reason the flag exists at all: upstream GATES prefix
-# caching for hybrid models. is_prefix_caching_supported (config/model.py) returns False for any
-# attn_type == "hybrid" with "Hybrid models do not support prefix caching since the feature is
-# still experimental" — logged at DEBUG, which is why nothing ever explained it. Qwen3.8-27B is
-# qwen3_5, i.e. hybrid, so this default OVERRIDES an experimental upstream gate. No quality A/B
-# has been run with it on versus off. If output quality is ever suspect,
-# VLLM_PREFIX_CACHING=false is the first thing to try and the only change needed.
-#
-# --mamba-cache-mode align is REQUIRED alongside it for a hybrid model (in this build: "only
-# cache the mamba state of the last token of each scheduler step and when the token is at
-# position i * block_size"). Do not enable prefix caching without it.
+# --mamba-cache-mode align is REQUIRED alongside it for a hybrid model.
+# Do not enable prefix caching without it.
 PREFIX_CACHING="${VLLM_PREFIX_CACHING:-true}"
 case "$PREFIX_CACHING" in
     true)  EXTRA_ARGS+=(--enable-prefix-caching --mamba-cache-mode align) ;;
@@ -215,44 +152,16 @@ case "$PREFIX_CACHING" in
     *) echo "[vllm-serve] VLLM_PREFIX_CACHING must be true|false, got '$PREFIX_CACHING'" >&2; exit 1 ;;
 esac
 
-# Reasoning effort: baked to MEDIUM, down from the model's own default.
+# Reasoning effort: baked to MEDIUM, down from the model's own default (xhigh).
+# Unset = highest effort, not neutral. Thinking tokens cost on every subsequent
+# forward pass; at agentic context depth (~70K) context is 64% of the forward pass.
+# medium is the conservative middle, not a benchmarked optimum; no quality A/B run.
+# The flag is guarded: a bad value yields a restart loop (vLLM exits 2/INVALIDARGUMENT
+# on unrecognised args; this unit is Restart=always). Full rationale:
+# docs/runs/2026-09-05-build-comment-consolidation.md#reasoning-effort-pinned-to-medium
 #
-# An unset knob here is not "neutral" — Qwen3.8's chat template resolves
-# `reasoning_effort|default('xhigh')`, the HIGHEST of the three levels ('xhigh' | 'medium' |
-# 'low' — those THREE and nothing else; see the guard below). Nothing in this stack was setting
-# it and Open WebUI sends no chat_template_kwargs, so every real request ran at maximum effort by
-# omission. Only bench.py and ksweep.py escaped it, by pinning thinking off.
-#
-# It is a throughput knob, not a taste one: reasoning tokens land in the context and are re-read
-# on EVERY subsequent forward pass, and at the ~70K an agentic loop runs at, context is 64% of
-# the forward pass. Thinking is paid for again by every turn after it.
-# docs/runs/2026-08-25-vllm-context-and-clocks.md.
-#
-# UNMEASURED, deliberately: medium is the conservative middle, not a benchmarked optimum, and no
-# quality A/B has been run. The decode tables are untouched by it — all measured with
-# `enable_thinking: false`. Put it back with Environment=VLLM_REASONING_EFFORT=xhigh in a shadowed
-# unit, or let the client ask per request: request-level chat_template_kwargs OVERRIDE the server
-# default, which is also why the two harnesses' thinking-off pins still hold.
-#
-# THE FLAG IS GUARDED, because getting it wrong is a restart LOOP rather than an error anyone
-# notices: this unit is Restart=always and vLLM exits 2/INVALIDARGUMENT on an unrecognised
-# argument. Upstream also shipped a window where the flag PARSED but was silently ignored
-# ("[Frontend][Bugfix] respect server-level default chat template kwargs", merged 2026-01-05),
-# which this 2026-06-13 build is past, so it should both parse AND apply. If the guard fires the
-# server still starts, at the model's xhigh. VLLM_REASONING_EFFORT= (explicitly empty) skips the
-# flag entirely, for the same reason NCCL_PROTO= and VLLM_SPECULATIVE= do.
-#
-# `high` is NOT a level and must stay out of the case below, however natural it looks beside
-# xhigh. A bad value here fails in a way the restart loop does NOT catch:
-# --default-chat-template-kwargs is not validated at startup, so the server comes up clean and
-# then EVERY chat request 400s with "Unexpected reasoning effort high. Supported types are xhigh
-# (default), medium, and low." Silent until someone tries to use it. Note this DIVERGES from the
-# lemonade side, where the GGUF's own template copy aliases high onto xhigh instead of raising.
-#
-# Do NOT "simplify" the check to `vllm serve --help | grep`: this version's help is GROUPED and
-# prints only section names, so grepping it finds nothing and reads as proof the flag is absent.
-# `--help=all` is the working form, but it costs a full vLLM import on every start, which the
-# source grep does not.
+# `high` is NOT a level and must stay out of the case below. The template raises
+# on it, and the flag is not validated at startup — every request 400s silently.
 REASONING_EFFORT="${VLLM_REASONING_EFFORT-medium}"
 if [ -n "$REASONING_EFFORT" ]; then
     case "$REASONING_EFFORT" in
@@ -278,41 +187,21 @@ if [ -n "$REASONING_EFFORT" ]; then
     fi
 fi
 
-# --gpu-memory-utilization default is 0.80, DOWN from 0.95 on 2026-08-24.
-#
-# 0.95 is a "fill the card" instruction: vLLM claims that fraction and hands every leftover byte to
-# the KV cache, so the KV cache expands until it has eaten the headroom a large prefill needs. At
-# 0.95 it had reached 344,064 tokens — 2.63x the 128K max context — while sitting 8% used. That is
-# what left 0 bytes for the 538 MiB buffer in the OOM below. Lowering it is the only knob that
-# reserves headroom the KV cache cannot reclaim (see max-num-batched-tokens: lowering THAT just
-# moves memory into KV).
-#
-# Measured on-box 2026-08-24 at 0.80: KV 7.87 GiB = 225,652 tokens, still 1.72x a full 128K
-# request; idle VRAM 30.09 -> 24.41 GiB/card, freeing ~7.4 GiB/card (~14.9 GB across the pair)
-# for a second smaller model alongside this one. KV bytes/token measured at 36.6 KiB/token/card,
-# so pick a value with:  KV_GiB ~= 31.86*util - 18.26
-#
-# HARD FLOOR ~0.72. The KV cache must hold at least max_model_len (131,072) tokens or vLLM refuses
-# to start; 0.70 lands at ~115,900 and will not boot. 0.80 keeps a real band above that rather
-# than sitting on the limit. Costs nothing measurable — concurrency is bounded by --max-num-seqs 4
-# long before 225K KV tokens are in play.
+# --gpu-memory-utilization default is 0.80, down from 0.95 on 2026-08-24 after a VRAM OOM.
+# At 0.95 the KV cache grew to 344,064 tokens (2.63× context) and left no headroom for
+# prefill buffers. 0.80 gives KV 7.87 GiB = 225,652 tokens (1.72× context) with ~7.4 GiB
+# per card free. KV at 36.6 KiB/token/card; sizing: KV_GiB ~= 31.86*util - 18.26.
+# Hard floor ~0.72: below it KV < max_model_len and vLLM refuses to start.
+# Full ledger: docs/runs/2026-09-05-build-comment-consolidation.md#gpu-memory-utilization-lowered-to-080
 
-# --max-num-batched-tokens default is 8192, DOWN from 16384 after a VRAM OOM.
+# --max-num-batched-tokens default is 8192, down from 16384 after a VRAM OOM.
+# At 16384 a ~16K prompt was scheduled as a single unchunked step whose bf16 GEMM output
+# alone was 538 MiB against ~1.3 GiB headroom (~4.1 GiB non-torch overhead per rank).
+# 8192 makes >8K prompts chunk. Costs one extra TTFT chunk on long prompts, nothing at decode.
+# Full ledger: docs/runs/2026-09-05-build-comment-consolidation.md#max-num-batched-tokens-lowered-to-8192-after-vram-oom
 #
-# It is a CAP ON ONE PREFILL STEP, not a throughput knob. At 16384 a ~16K prompt was scheduled as
-# a single unchunked step whose bf16 GEMM output alone was 538 MiB, against ~1.3 GiB of headroom
-# on a card already holding weights + KV + graphs + ~4.1 GiB of non-torch overhead. 8192 halves
-# the largest possible step and makes a >8K prompt actually chunk. Costs one extra chunk of TTFT
-# on long prompts, nothing at decode. Ledger and the after-figures:
-# docs/runs/2026-08-24-vllm-prefill-oom.md.
-#
-# NOTE the 64 GB pool does not help. TP=2 shards weights/KV/activations per card, it does not
-# pool them, and the non-torch overhead is DUPLICATED per rank. The binding constraint is always
-# one card's 31.86 GiB.
-#
-# Lowering this does not buy much guaranteed headroom by itself — vLLM profiles at
-# max_num_batched_tokens and hands what is left to the KV cache, so it mostly moves memory into
-# KV. For a real margin use VLLM_GPU_UTIL; both need [Container] Environment= in a shadowed unit.
+# TP=2 shards per card — the 64 GB total does not pool. The binding constraint is always
+# one card's 31.86 GiB. Lowering this moves memory into KV; use VLLM_GPU_UTIL for real margin.
 
 # ${EXTRA_ARGS[@]+...} guard: expanding an empty array is an unbound-variable error under `set -u`
 # on bash < 4.4, and this runs in whatever bash the upstream image ships.
@@ -717,11 +606,8 @@ Environment=VLLM_MODEL=Qwen/Qwen3.8-27B-FP8
 Exec=/opt/kinoite/vllm-serve.sh
 
 [Service]
-# Restart=ALWAYS, not on-failure. Load-bearing distinction, learned from the 2026-08-24 OOM: when
-# a worker dies, EngineCore raises EngineDeadError and the API server shuts itself down CLEANLY —
-# container exit 0, systemd records Result=success. on-failure sees a successful exit and does
-# nothing, so the box sat with vLLM dead and Open WebUI happily serving 500s against it. Only
-# `always` recovers. RestartSec gives podman time to tear the old container down first.
+# Restart=always, not on-failure. vLLM exits cleanly (0) on EngineDeadError, so
+# on-failure sees success and does nothing. Full incident: docs/runs/2026-09-05-build-comment-consolidation.md#restartalways-not-on-failure
 Restart=always
 RestartSec=10
 
@@ -729,11 +615,9 @@ RestartSec=10
 # both must finish within this window, so give it an hour of headroom.
 TimeoutStartSec=3600
 
-# Pre-pull the image with a plain `podman pull` (bounded only by TimeoutStartSec), and ONLY when
-# it's missing so routine restarts don't re-hit the network. This is load-bearing: the implicit
-# pull inside `podman run` is HARD-CAPPED at 5 min under systemd and kills a slow first pull —
-# confirmed on-box, first start died at exactly 5m03s on the 32 GB image. Updating the image is
-# then a deliberate `podman pull` (see vllm.md), not a surprise re-download on every start.
+# Pre-pull the image with plain `podman pull`, only when missing. Load-bearing: the implicit
+# pull inside `podman run` is hard-capped at 5 min under systemd — confirmed killing a slow
+# first pull at exactly 5m03s on the 32 GB image.
 ExecStartPre=/bin/sh -c 'podman image exists docker.io/kyuz0/vllm-therock-gfx1201:latest || podman pull docker.io/kyuz0/vllm-therock-gfx1201:latest'
 
 # Podman doesn't create missing bind-mount sources.

@@ -14,20 +14,10 @@ for bin in podman crun; do
 done
 
 ### 1. Seeded lemonade defaults
-# nightly channel is CORRECTNESS, NOT PREFERENCE — do not "simplify" it to stable or preview.
-# Cited, so the next person does not have to take it on trust: lemonade-sdk/lemonade#1787
-# ("v10.3.0: ROCm preview/stable channels silently fall back to CPU on gfx1201 (RDNA4) — 7x
-# performance regression vs v10.2.0", open since 2026-05-03). Neither `preview` (ROCm 7.12 /
-# TheRock) nor `stable` (ROCm 7.2) contains HIP support for gfx1201; `llama-server --list-devices`
-# prints an empty device list and the server then runs on CPU with NO error and NO warning —
-# ~70 tok/s becomes ~10. Only `nightly` ships the per-arch builds
-# (llama-bXXXX-ubuntu-rocm-gfx120X-x64.zip) that detect the R9700 at all. A silent 7x is the
-# worst possible failure mode, which is why this is a pin and not a default.
-# ctx_size because lemonade auto-tunes to 157140
-# on a 27B — raise per-model if you have headroom. No rocm_args: `--load-mode mmap` was pinned
-# throughout the SELinux bisect and carried forward untested. Isolated afterwards by loading a
-# model without it under full confinement — ROCm loads fine, so it is gone. (lemonade passes its
-# own `--no-mmap` to llama-server regardless, which is probably why it never mattered.)
+# nightly channel pinned because stable/preview have no gfx1201 support — a silent ~7x
+# CPU fallback. lemonade-sdk/lemonade#1787. ctx_size: lemonade auto-tunes to 157140 on
+# a 27B; override to 131072. `--load-mode mmap` removed after SELinux bisect (ROCm loads
+# fine without it). Full details: docs/runs/2026-09-05-build-comment-consolidation.md#nightly-channel-pin
 mkdir -p /usr/share/kinoite
 cat > /usr/share/kinoite/lemonade-defaults.json << 'EOF'
 {
@@ -44,51 +34,13 @@ EOF
 # on every start, per key (see kinoite-lemonade-seed and the ExecStartPre in the Quadlet).
 # Names become user.<name> at runtime — run one with `lemonade run user.<name>`.
 #
-# This is a coding/testing box: a Q6 quality floor with big context. `Qwen3.8-27B-Fast` is the
-# one deliberate exception — the same model at IQ4_XS, kept ALONGSIDE the Q6_K entry rather than
-# replacing it, so the quality floor stays the default and speed is an explicit choice. It has
-# been benchmarked but NOT quality-tested. Why Q6 rather than Q8 costs nothing here:
-# docs/explanation/quant-selection.md.
-#
-# Sizing for these ctx values is in the recipe_options block below — the measured
-# MiB/token/card figure, not a per-architecture estimate. Do not size against a dense-model KV
-# rule of thumb: Qwen3.8-27B is hybrid qwen3_5, 48 of 64 layers linear-attention with
-# constant-size state, and a dense estimate is off by roughly 4x.
-#
-# checkpoint pins the exact GGUF filename (all single-file here — no split parts). The two 27B
-# dense models and the 35B MoE are vision-capable (mmproj-F16.gguf); the coder is text-only.
-#
-# PIN FILENAMES AGAINST THE API, NOT AGAINST THE PATTERN. The main file here is
-# `Qwen3.8-27B-UD-Q6_K.gguf` — the UD- prefix is load-bearing and there is no plain
-# `Qwen3.8-27B-Q6_K.gguf` in that repo, so a plausible-looking name fails on first pull:
-#
-#     curl -s https://huggingface.co/api/models/<repo> | python3 -c 'import json,sys;
-#     [print(f["rfilename"]) for f in json.load(sys.stdin)["siblings"]]'
-#
-# EVERY model here that has an MTP head available uses it, and unsloth ships MTP in two
-# packagings that need DIFFERENT recipe shapes:
-#
-#   1. SEPARATE draft file, same repo — Qwen3.8-27B, at
-#      unsloth/Qwen3.8-27B-GGUF:MTP/mtp-Qwen3.8-27B-Q4_0.gguf (1.37 GB).
-#      Needs the `checkpoints` OBJECT form with a `draft` key. In that form mmproj moves
-#      INSIDE the object and every value is fully qualified `repo:file` — the bare-filename
-#      mmproj only works alongside the scalar `checkpoint` key.
-#
-#   2. EMBEDDED in the main GGUF, in a sibling repo — Qwen3.6-27B and Qwen3.6-35B-A3B, via
-#      unsloth/<model>-MTP-GGUF. There is no mtp-*.gguf in those repos; the head is inside the
-#      weights, which is why the same quant is slightly larger there. Stays the scalar
-#      `checkpoint` form — repoint the repo. Q6_K filenames are identical in both, so this is a
-#      pure repo swap, not a requant.
-#
-# In both forms lemonade adds `--spec-type draft-mtp --spec-draft-n-max 3` itself; form 2 passes
-# no `-md`, because llama.cpp reads the head out of the main file. Nothing here passes them
-# manually. Verified on-box by grepping the launched llama-server command line for each form.
-#
-# Qwen3-Coder-30B is the one model with no MTP option — neither
-# unsloth/Qwen3-Coder-30B-A3B-Instruct-MTP-GGUF nor -Coder-30B-MTP-GGUF exists (both 404 via a
-# 401 from the HF API), and the base repo has no mtp file. Recheck on a model bump.
-#
-# What MTP is worth here: docs/runs/2026-08-20-mtp-speculation.md.
+# Recipes: Q6_K quality floor with MTP on every model that has it (unsloth ships MTP
+# in two packagings — separate draft file vs. embedded in the main GGUF — needing
+# different recipe shapes). IQ4_XS Fast is the speed exception, benchmarked but not
+# quality-tested. Qwen3-Coder-30B is the only model without MTP.
+# Throughput figures: docs/runs/2026-08-20-mtp-speculation.md.
+# Quant rationale: docs/explanation/quant-selection.md.
+# Full MTP packaging and ctx sizing detail: docs/runs/2026-09-05-build-comment-consolidation.md#why-q6-floor-why-mtp-why-two-packaging-shapes
 
 command -v python3 >/dev/null || { echo "lemonade.sh: missing python3 (JSON validation)" >&2; exit 1; }
 
@@ -168,67 +120,23 @@ EOF
 # Per-model ctx and llamacpp_args, keyed by the fully-qualified user.<name> id.
 # backend inherits rocm from defaults.json.
 #
-# `-sm tensor -fa on` is baked on the four Qwen3.8-27B recipes and NOT on the other three.
-# That split is deliberate, and each half has a reason:
+# `-sm tensor -fa on` baked on the four Qwen3.8-27B recipes only.
+# ON: +44.4% over layer split, composes with MTP, leads vLLM at every depth.
+# OFF on Qwen3.6-27B, Qwen3.6-35B-A3B, Qwen3-Coder-30B: `-sm tensor` has an architecture
+# gate whose failure mode is a hard load failure; none has been loaded here.
+# Four constraints: `-fa on` mandatory, iGPU excluded at visibility (not per-flag),
+# ctx hand-computed (0.0444 MiB/token/card + 12174 MiB/card; `--fit` disabled),
+# `--chat-template-kwargs` carries both keys in one JSON object.
+# Full rationale and tensor-split constraints: docs/runs/2026-09-05-build-comment-consolidation.md#-sm-tensor-split-across-recipes
+# Measured: docs/runs/2026-08-30-tensor-split.md, docs/runs/2026-08-30-quant-sweep.md.
 #
-#   ON, because tensor split is +44.4% over layer split on this model and composes with the
-#   MTP head rather than trading against it, and because layer split LOSES to vLLM below
-#   ~6-7K context on the heavy quants — which is what an agentic loop's opening turns look
-#   like. Measured: docs/runs/2026-08-30-tensor-split.md, docs/runs/2026-08-30-quant-sweep.md.
+# Passthrough is the only route: the lemond binary contains no `--split-mode` / `-devd` /
+# `--spec-draft-device` / `-ngld` strings. Recipe `llamacpp_args` is appended last and merges
+# per flag.
 #
-#   OFF on Qwen3.6-27B, Qwen3.6-35B-A3B and Qwen3-Coder-30B because none has been loaded here.
-#   `-sm tensor` has an architecture gate whose failure mode is a HARD LOAD FAILURE, not a slow
-#   path, and upstream's exclusion list names MoE families — two of these three are MoE.
-#   Load one by hand before baking the flag on it.
-#
-# Four constraints this configuration depends on. Breaking any of them is a load failure or a
-# silent regression, not a slowdown:
-#
-#   1. `-fa on` is mandatory. Without it: `SPLIT_MODE_TENSOR requires flash_attn to be enabled`.
-#
-#   2. Device exclusion is NOT expressible here and must stay at the container. Do not "fix"
-#      this by adding `-dev ROCm0,ROCm1` — it restricts the MAIN model only, and every MTP
-#      recipe also loads a draft model with its own `-devd` list defaulting to all devices.
-#      Measured: `-dev` alone still aborts with `invalid kernel file`. The ExecStartPre that
-#      writes ROCR_VISIBLE_DEVICES is the other half of this file and they cannot ship apart.
-#      lemonade's own `--llamacpp-device` does not help either — it sets LLAMA_ARG_DEVICE,
-#      which is `--device`, main model only.
-#
-#   3. These ctx values are HAND-COMPUTED CONSTANTS, because `--fit` does not run under tensor
-#      split. From 0.0444 MiB/token/card plus a 12174 MiB/card fixed term (Q6_K_XL + MTP):
-#      131072 -> ~17.9 GB/card, 262144 -> ~23.8 GB/card, both inside a 32 GB card.
-#      Re-check on a model or quant bump; nothing will do it for you.
-#
-#   4. `--chat-template-kwargs` must carry BOTH keys in one JSON object. lemonade merges arg
-#      layers per flag, and the `qwen35` architecture default already sets that flag with
-#      `preserve_thinking`. A recipe setting it REPLACES the object, so splitting the keys
-#      silently loses preserve_thinking.
-#
-# Passthrough is the only route for any of this: the lemond binary contains no `--split-mode`,
-# `-sm`, `-devd`, `--spec-draft-device`, `-ngld` or `--gpu-layers-draft` string at all. Recipe
-# `llamacpp_args` is appended LAST and merges per flag, so it can override what lemonade
-# generates without wiping the qwen35 sampler block. Note config.json `llamacpp.rocm_args` is a
-# second, global route — it is lemonade's own file, seeded from defaults.json on first run only,
-# so check what a live box actually carries there before adding anything.
-#
-# By hand against the bundled binary, where nothing derives visibility for you:
-#
-#     HIP_VISIBLE_DEVICES=0,1 llama-server -m <gguf> -ngl 99 -c 32768 -sm tensor -fa on \
-#         --spec-type draft-mtp -md <mtp.gguf> -ngld 99 --spec-draft-n-max 4
-
-# REASONING EFFORT is pinned to MEDIUM on the four Qwen3.8-27B recipes — the llama.cpp half of
-# vllm.sh's VLLM_REASONING_EFFORT pin.
-#
-# Absence is NOT neutral: Qwen3.8's template resolves `reasoning_effort|default('xhigh')`, so
-# omitting the key selects the MAXIMUM level and prepends a think-harder paragraph to every
-# request. medium is the one level that renders empty. It adds no budget and no cap.
-# Measured: docs/runs/2026-08-31-reasoning-effort-tokens.md.
-#
-# Not set on the other three, and that is settled rather than untested — templates grepped
-# 2026-08-31: the Qwen3.6 pair has enable_thinking/preserve_thinking and no reasoning_effort,
-# and Qwen3-Coder-30B has none of the three. Setting it there is inert, not harmful.
-#
-# To revert: drop the key (absence = xhigh). No quality A/B has been run either way.
+# REASONING EFFORT pinned to MEDIUM on the four Qwen3.8-27B recipes. Absence selects xhigh
+# (template resolves `reasoning_effort|default('xhigh')`). medium renders empty. No quality
+# A/B run. Full rationale: docs/runs/2026-09-05-build-comment-consolidation.md#reasoning-effort-pin-1
 
 cat > /usr/share/kinoite/lemonade-recipes/recipe_options.json << 'EOF'
 {
@@ -252,22 +160,15 @@ for f in user_models recipe_options; do
 done
 
 ### 2. SELinux: let containers mmap /dev/kfd
-# container-selinux grants container domains hsa_device_t {open read write ioctl ...}
-# but NOT map, and ROCm mmaps /dev/kfd. Without this every model load dies ~25ms in
-# with an HSA abort — "Memory critical error by agent node-0 ... Reason: Memory in
-# use.", exit 134 — which looks nothing like a permission problem and cost a long
-# bisect to find. Confirmed by the only AVC in the whole trace:
-#   denied { map } tclass=chr_file tcontext=...:hsa_device_t:s0
+# container-selinux grants hsa_device_t {open read write ioctl ...} but NOT map,
+# and ROCm mmaps /dev/kfd. Without this every model load dies ~25ms in with an HSA
+# abort (exit 134) — looks nothing like a permission problem. The alternative
+# (SecurityLabelDisable=true or --ipc=host) turns off SELinux entirely and is not
+# worth it. A narrower CIL module granting only map is worth doing if the boolean's
+# breadth matters. Full incident: docs/runs/2026-09-05-build-comment-consolidation.md#selinux-map-denial-on-devkfd
 #
-# Boolean state lives in /var/lib/selinux, so it can't ship in the image — same
-# constraint as nix-selinux.service, and the same fix: a guarded oneshot. The check
-# makes it a no-op after first boot.
-#
-# The alternative that also "worked" — SecurityLabelDisable=true or --ipc=host on the
-# container (podman drops label separation when sharing host IPC) — buys the same thing
-# by turning SELinux off for the container entirely. Not worth it for one permission.
-# Narrower still would be a CIL module granting only map on hsa_device_t; worth doing
-# if this boolean's breadth ever matters.
+# Boolean state lives in /var/lib/selinux, so it can't ship in the image — a guarded
+# oneshot, no-op after first boot.
 for bin in getsebool setsebool; do
     command -v "$bin" >/dev/null || { echo "lemonade.sh: missing $bin" >&2; exit 1; }
 done
@@ -293,27 +194,17 @@ EOF
 # users/ (not users/$UID/) — the UID isn't knowable at build time.
 mkdir -p /etc/containers/systemd/users
 ### Recipe seeding
-# Merges the image's seeds into the user's config PER KEY, and is why this is a script rather
-# than the obvious `test -f <file> || install <file>`. That form is all-or-nothing per FILE:
-# lemonade's Web UI writes user_models.json the first time anyone adds a custom model, and from
-# then on every image seed is blocked forever — silently, because the conditional is doing
-# exactly what it says. Observed on the box: one user-added model kept all five seeded recipes
-# out of the model list indefinitely. Merging per key keeps user entries untouched and still
-# delivers seeds the user has never seen.
+# Merges the image's seeds into the user's config PER KEY on every start. Per-file
+# seeding (test -f || install) is all-or-nothing: lemonade's Web UI writes
+# user_models.json the first time anyone adds a custom model, and from then on every
+# image seed is blocked forever — silently. Per-key merge keeps user entries untouched
+# and delivers changed recipes on restart.
 #
-# THE IMAGE OWNS THE KEYS IT SHIPS. Every key present in the baked seed is reconciled on each
-# start, not merely added when absent. Add-only was the first cut and it failed the moment a
-# shipped recipe CHANGED rather than appeared: 2570e9b put `-sm tensor -fa on
-# --spec-draft-p-min 0.1` on all four Qwen3.8 recipes, and only the two brand-new keys got it —
-# `user.Qwen3.8-27B` and `-Fast` already existed, so they kept `{"ctx_size": 131072}` and the
-# measured 24%-and-tensor-split work simply never reached the box, silently. Nothing in the
-# journal said so, because the conditional was doing exactly what it said.
-#
-# What this costs: a hand edit to a SHIPPED recipe (through the Web UI or the file) is reverted
-# on the next start. To keep a tweak, fork it under a new name — a key the image does not ship
-# is never touched, which is what protects the user's own models. What it buys: recipe fixes
-# land on reboot, with no `rm` ritual, and re-seeding is idempotent (the diff is per key, so an
-# unchanged file is not rewritten at all).
+# The image OWNS the keys it ships: every key present in the baked seed is
+# reconciled, not merely added when absent. Add-only failed when a shipped recipe
+# CHANGED (2570e9b added `-sm tensor` to the Qwen3.8 recipes; only the brand-new
+# keys got it — the existing ones kept their old args, silently).
+# Full story: docs/runs/2026-09-05-build-comment-consolidation.md#recipe-seeding-add-only-was-the-first-cut-and-failed
 install -D -m 0755 /dev/stdin /usr/libexec/kinoite-lemonade-seed << 'SEEDEOF'
 #!/usr/bin/python3
 """Reconcile baked lemonade recipe seeds into the user's config, per key."""
@@ -376,38 +267,23 @@ SEEDEOF
 python3 -c 'import ast,sys; ast.parse(open("/usr/libexec/kinoite-lemonade-seed").read())'
 
 ### Device visibility for the lemonade container
-# WHY THIS EXISTS: the gfx120X-only llamacpp-rocm bundle has no kernels for the gfx1036 iGPU,
-# and podman's `AddDevice=/dev/dri` hands the container every render node including it. Layer
-# split survived that by accident — it assigned no layers to a device it could see — but
-# anything that uses EVERY visible device dies on the first decode with
-# `ROCm error: invalid kernel file`. That is `-sm tensor`, which the seeds now carry.
+# The gfx120X-only llamacpp-rocm bundle has no kernels for the gfx1036 iGPU.
+# `AddDevice=/dev/dri` hands the container every render node including it.
+# Layer split survived that by accident; `-sm tensor` dies on first decode.
 #
-# WHY VISIBILITY AND NOT A FLAG. `-dev` restricts only the MAIN model, and every MTP recipe also
-# loads a draft model with its own `-devd` list that lemonade cannot emit (the string is not in
-# the lemond binary). A visibility variable is one setting, process-wide, covering every model
-# llama-server opens now or later. See docs/reference/gpu-topology.md.
+# Visibility (not per-flag): `-dev` restricts only the main model; the MTP draft
+# has its own device list. `ROCR_VISIBLE_DEVICES` covers everything.
 #
-# WHY ROCR_VISIBLE_DEVICES AND NOT HIP_VISIBLE_DEVICES. Both work. ROCR indexes the KFD
-# GPU-agent list in topology-node order — exactly the order the loop below walks. HIP orders by
-# PCI BDF, which agrees here only because the nodes happen to be in ascending bus order; that is
-# a coincidence this file would then depend on.
+# ROCR not HIP: ROCR indexes KFD GPU-agent list in topology-node order (the order
+# the derivation walks). HIP orders by PCI BDF — a coincidence here.
 #
-# WHY A DERIVED FAMILY AND NOT A LITERAL `0,1`. DRM numbering reshuffles across kernels and
-# boots. The rule is "keep every GPU agent of the same gfx target as the most capable one",
-# which needs no index and no model name, and generalises correctly: a mismatched pair is not a
-# tensor-split candidate anyway.
+# Derived, not literal: DRM numbering reshuffles. The rule is "keep every GPU agent
+# of the same gfx target as the most capable one" — needs no index or model name.
 #
-# WHY NOT MATCH THE BUNDLE'S KERNEL LIST INSTEAD. It would have to be a *set* — the bundle
-# covers gfx1200, gfx1201 and gfx1250, and gfx1250 is 125000 rather than 1200xx, so a "1200xx"
-# filter would silently exclude a supported card. The bundle also lives under
-# ~/.local/share/lemonade, is downloaded at runtime, and so is not readable at first start.
-# simd_count is in /sys and is always there.
-#
-# FAILS OPEN, DELIBERATELY, AND THE ORDERING IS THE MECHANISM. The file is TRUNCATED FIRST and
-# only then filled in, so every path that goes wrong leaves an EMPTY env file rather than a
-# stale or absent one. Empty means podman constrains nothing and lemonade starts on layer split.
-# Absent is fatal: `EnvironmentFile=` becomes `--env-file`, and podman treats a missing env file
-# as an error, so a derivation bug would become a container that will not start.
+# Fails open: the file is truncated first, then filled. Every error path leaves an
+# EMPTY env file, which means unconstrained (layer split, same as pre-2026-08-30).
+# Absent would be fatal (podman treats missing --env-file as error).
+# Full rationale: docs/runs/2026-09-05-build-comment-consolidation.md#device-visibility-why-rocr-not-hip-why-derived-not-literal
 install -D -m 0755 /dev/stdin /usr/libexec/kinoite-lemonade-gpus << 'GPUEOF'
 #!/bin/bash
 # Write ROCR_VISIBLE_DEVICES for lemonade.container, derived from KFD topology.
@@ -477,10 +353,9 @@ ContainerName=lemonade
 # (a recursive chown on every start).
 UserNS=keep-id:uid=10001,gid=10001
 
-# No GroupAdd=keep-groups. It was a headless fallback for render/video membership, and it is
-# measured unnecessary: /dev/kfd and the render nodes are mode 0666 from systemd-udev's base
-# rules, so no group membership is involved. Removing it also sidesteps the known rootless
-# flakiness (containers/podman#27876, #28364). Verified by loading a model with it absent.
+# GroupAdd=keep-groups removed: measured unnecessary — /dev/kfd and render nodes
+# are mode 0666 from systemd-udev's base rules. Sidesteps known rootless flakiness
+# (podman#27876, #28364). Full details: docs/runs/2026-09-05-build-comment-consolidation.md#groupaddkeep-groups-removed
 
 # Directory: podman adds every node under it, iGPU included. See docs/reference/gpu-topology.md.
 AddDevice=/dev/kfd

@@ -49,23 +49,9 @@ install_pkgs lact
 
 # Deliberately NOT enabled. LACT is kept as the interactive GUI for tuning
 # experiments; section 4 owns what actually gets applied at boot.
-#
-# Two measured reasons, both in docs/runs/2026-08-23-tuning-durability.md:
-#   - LACT reverts the power cap when it stops. `systemctl stop lactd` puts
-#     `power1_cap` straight back to 300 W. A setting LACT owns only holds for as
-#     long as LACT is resident, which makes it the wrong place for a boot-time
-#     tuning that should survive anything short of a reboot.
-#   - Nothing it can apply is worth a resident daemon here. Only `power1_cap`
-#     survives a runtime suspend/resume at all, and section 4 writes that in one
-#     sysfs write with no daemon.
-#
-# What is NOT a reason any more: holding the dGPUs awake. That was true of the
-# version measured earlier and is fixed as of 0.10.0 (upstream #828 / PR #836) —
-# 100 s resident with both cards at `runtime_status=suspended` throughout. If a
-# future bump regresses it, that is a re-test, not an assumption.
-#
-# Start it by hand when you want the GUI: `sudo systemctl start lactd`. Note it
-# will then apply whatever is in /etc/lact/config.yaml on top of section 4.
+# LACT reverts the power cap when it stops and nothing it can apply is worth a
+# resident daemon. Holding the dGPUs awake is no longer a concern (fixed as of
+# 0.10.0). Full details: docs/runs/2026-09-05-build-comment-consolidation.md#lact-daemon-disabled
 systemctl disable lactd.service 2>/dev/null || true
 
 ### 4. Baked GPU tunings — power cap, optional undervolt and fan curve
@@ -74,28 +60,20 @@ systemctl disable lactd.service 2>/dev/null || true
 # the `pwm1_enable` this card lacks, and `amd-smi metric` *dumps core* on gfx1201
 # because it cannot parse `OD_SCLK_OFFSET`. See docs/reference/gpu-sysfs.md.
 #
-# DURABILITY IS NOT UNIFORM, and this is the whole reason the script looks the way
-# it does. Measured by hand with lactd stopped:
+# DURABILITY IS NOT UNIFORM. Measured by hand with lactd stopped:
 #   power1_cap      survives a runtime suspend/resume cycle       -> set once, sticks
 #   voltage offset  wiped to 0mV on every D3->D0 transition       -> ~10 s of idle
 #   fan curve       wiped to `0C 0%` on every D3->D0 transition   -> same OD table
-# So only the power cap is genuinely "apply at boot and forget". The other two are
-# shipped unset, with the knobs present and documented, because maintaining them
-# would mean re-applying every time a card wakes for a workload.
+# So only the power cap is genuinely "apply at boot and forget." The other two are
+# shipped unset because maintaining them would mean re-applying every time a card
+# wakes for a workload. Full table: docs/runs/2026-09-05-build-comment-consolidation.md#gpu-tuning-durability
 #
-# THE FAN CURVE IS A THERMAL AND EFFICIENCY KNOB, NOT A PERFORMANCE ONE. Under sustained 27B
-# decode the stock firmware curve is far too quiet, and at 88-93C the cards leak enough extra
-# current to pin themselves against the cap below, which clamps sclk. Cooling them releases all
-# of that — and changes throughput by -0.1%, because batch-1 decode is memory-bandwidth bound
-# and mclk never leaves top DPM either way. A/B: docs/runs/2026-08-25-vllm-context-and-clocks.md.
-#
-# So: worth applying for ~18C and ~90 W across the pair, and worth knowing that a
-# THROTTLED flag here costs nothing in tok/s. That curve is deliberately aggressive
-# (it pins the fans near 100% at these temperatures) because it was built to remove
-# thermals as a variable for the A/B; something like
-# `FAN_CURVE="50:35 65:45 75:60 85:80 95:100"` lands ~80C at far lower RPM for daily
-# use. Still shipped unset for the D3->D0 reason above — a baked default would
-# silently evaporate ~10 s after the cards go idle, which is worse than not having one.
+# FAN CURVE: under sustained 27B decode the stock firmware curve is far too quiet.
+# At 88-93C the cards leak enough extra current to pin themselves against the cap,
+# which clamps sclk. Cooling releases all of that — and changes throughput by -0.1%
+# (batch-1 decode is memory-bandwidth bound; mclk never leaves top DPM). Worth ~18C
+# and ~90 W across the pair. A/B: docs/runs/2026-08-25-vllm-context-and-clocks.md.
+# Shipped unset for the D3->D0 reason above.
 install -D -m 0755 /dev/stdin /usr/libexec/kinoite-gpu-tune << 'EOF'
 #!/bin/bash
 # Apply the baked AMD GPU tunings to the discrete cards. `apply` from the unit's

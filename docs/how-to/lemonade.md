@@ -55,35 +55,25 @@ Warm one and it appears:
 
     podman exec lemonade lemonade pull user.Qwen3.8-27B-Q6XL
 
-"Downloaded" means EVERY component of the recipe, not just the big one: `main`, `draft` and
-`mmproj` each have to be in the cache. A 25 GB main GGUF sitting on disk next to a missing
-928 MB `mmproj-F16.gguf` still counts as not downloaded, and the model stays out of the list.
-Seen on the box 2026-08-31: `-Q6XL` and `-Q8XL` had their main and MTP draft files from the
-2026-08-30 benchmarking run but no mmproj, so all seven recipes read `downloaded: false`
-against `Cache built: 129 total, 3 downloaded`.
+"Downloaded" means EVERY component of the recipe — `main`, `draft` and `mmproj`
+each have to be in the cache. A main GGUF on disk next to a missing mmproj still
+counts as not downloaded, and the model stays out of the list.
 
 Every recipe with an MTP head available uses it; lemonade turns speculation on by itself
-and you do not pass any flags — verified `--spec-type draft-mtp --spec-draft-n-max 3` on
-the launched llama-server for both packagings unsloth uses (separate draft file, and head
-embedded in the main GGUF). Qwen3-Coder-30B is the exception: no MTP build exists for it.
+and you do not pass any flags. Qwen3-Coder-30B is the exception: no MTP build exists for it.
 
 The two Qwen3.6 entries come from the `-MTP-GGUF` sibling repos rather than the plain ones,
-at the identical Q6_K filenames — a repo swap, not a requant. Their sizes above are ~0.3 GB
-larger than the plain builds for exactly that reason: the head rides inside the weights.
-
-Measured on the pair for Qwen3.8-27B at IQ4_XS: 30.40 tok/s without MTP, 56.86 with (+87%).
-The other entries were not benchmarked — they read more bytes per token, so expect lower
-absolute numbers; the speculation multiplier should broadly carry, but that is an
-extrapolation. Re-measure before quoting a figure for any entry but the IQ4_XS one.
+at the identical Q6_K filenames — a repo swap, not a requant. Their sizes are ~0.3 GB larger
+than the plain builds because the MTP head rides inside the weights.
 
 Qwen3.8-27B is the default all-rounder (MTP + Developer Role); Qwen3-Coder-30B is the
-coding workhorse; -Fast trades the Q6 floor for roughly 1.6x fewer weight bytes per token
-and has been benchmarked but NOT quality-tested. Q6 quality floor WITH big context —
-these ctx exceed one card, so they
-use the layer split across both R9700s, which is the AUTOMATIC default here (measured:
-~14 GB per R9700, nothing on the iGPU). At 128K the KV cache is large (~33 GB on a dense
-27B); if it doesn't fit the pair, drop ctx (~24K single-card) or add q8_0 KV-quant. A load
-can no longer spill onto the iGPU — it is excluded automatically (see "Device visibility").
+coding workhorse; -Fast trades the Q6 floor for a lighter quant. The seeded ctx values
+exceed one card and use the automatic two-card layer split. At 128K the KV cache is large
+(~33 GB on a dense 27B); if it doesn't fit the pair, drop ctx or add q8_0 KV-quant. The
+iGPU is excluded automatically (see "Device visibility").
+
+Throughput figures for MTP and tensor split are in "Performance notes" below; per-quant
+numbers in [runs/2026-08-30-quant-sweep](../runs/2026-08-30-quant-sweep.md).
 
 Even more context: add q8_0 KV-quant (-fa -ctk q8_0 -ctv q8_0 in a recipe's llamacpp_args) —
 worth up to ~2x on the dense-attention Coder seed, but only ~7.5% measured on a hybrid, see
@@ -291,15 +281,11 @@ recipe's llamacpp_args in recipe_options.json:
 **Flash attention is verified working on gfx1201** (2026-08-30, llamacpp-rocm b1305) and q8_0 K+V
 loads and generates correctly, so the old "unverified, confirm -fa first" caveat is retired.
 
-WHAT IS NOT VERIFIED IS THE SIZE OF THE WIN, AND FOR THE HYBRIDS IT IS SMALL. "Halves KV" is a
-DENSE-attention rule. Measured on Qwen3.5-4B (arch qwen35, the same hybrid family as the two
-Qwen3.8/3.6 27B seeds) at ctx 65536: 6352 -> 5875 MiB across the pair, a 477 MiB / ~7.5% saving,
-because only 16 of 64 layers hold a growing cache and the other 48 are constant-size SSM state
-that KV-quant does not touch. Where it should still pay properly is user.Qwen3-Coder-30B — dense
-attention, ~0.098 GB/1K, seeded at 256K — and that arm has NOT been run: the GGUF is not in the
-cache and the pull was dropped on 2026-08-30 because nothing on this box runs that model. So the
-dense number is UNKNOWN, not assumed. Measure it before baking a KV-quant default anywhere, and
-do not size any seed against an assumed 2x.
+WHAT IS NOT VERIFIED IS THE SIZE OF THE WIN, AND FOR THE HYBRIDS IT IS SMALL. Measured on
+Qwen3.5-4B (same qwen35 hybrid family) at ctx 65536: a 477 MiB / ~7.5% saving, because only
+16 of 64 layers hold a growing cache and the other 48 are constant-size SSM state that
+KV-quant does not touch. It should help more on the dense Qwen3-Coder-30B, which is
+unmeasured. See [explanation/quant-selection](../explanation/quant-selection.md).
 
 ## Coding / agent use
 
@@ -323,43 +309,19 @@ linger (below) and don't let it idle-unload, or you re-process the whole prompt 
 
 ## Other gotchas
 
-### "invalid kernel file" — three devices are visible and one of them is the iGPU
+### "invalid kernel file" means the iGPU is visible. The llamacpp-rocm build is gfx120X-only
+and this box has three ROCm devices — the two R9700s (gfx1201) plus the Granite Ridge
+iGPU (gfx1036), for which the build has no kernels. Anything touching every visible
+device dies on the first decode.
 
-    ggml/src/ggml-cuda/ggml-cuda.cu:106: ROCm error
-    ROCm error: invalid kernel file
-      hipGetLastError()
+This hits two paths differently:
 
-The server LOADS, then core-dumps on the first decode. It reads like a bug in whatever you
-just switched on; it is not. The llamacpp-rocm build is gfx120X-only and this box has THREE
-ROCm devices — ROCm0 and ROCm1 are the R9700s (gfx1201) and **ROCm2 is the Granite Ridge
-iGPU (gfx1036), for which the build contains no kernels at all.** Anything that touches every
-visible device therefore dies the moment it dispatches.
+    -sm tensor              uses every VISIBLE device -> hits it
+    --spec-type draft-mtp   draft model has its own device list, defaulting to all -> hits it
+    -sm layer (the default) puts no layers on the iGPU -> never hit
 
-This is now the SECOND consumer of the iGPU-exclusion rule, and the two hit differently:
-
-    -sm tensor              splits weights and KV across every VISIBLE device -> hits it
-    --spec-type draft-mtp   the draft model has its OWN device list, defaulting to all -> hits it
-    -sm layer (the default) just puts no layers on the iGPU -> never hit it, which is why
-                            nothing in this image pins devices today
-
-The `-dev` flag is NOT a sufficient fix, and this cost real time on 2026-08-30: `-sm tensor
--fa on -dev ROCm0,ROCm1` still aborts, because `-dev` restricts the MAIN model only and the
-MTP draft head went to all three. There is a matching `-devd`/`--spec-draft-device`, but you
-have to know it exists and lemonade does not emit one.
-
-**Fix it at visibility, not per flag** — one setting, covers every model the process loads:
-
-    HIP_VISIBLE_DEVICES=0,1     # what ~/bench/*.sh uses
-    ROCR_VISIBLE_DEVICES=0,1    # indexes GPU AGENTS, so 0,1 is the pair
-
-Both were verified on 2026-08-30 with `-sm tensor` + `--spec-type draft-mtp`, each on its own
-with no `-dev` and no `-devd`: same VRAM (10252 MiB per card), same draft acceptance, no abort.
-
-**IN THE CONTAINER THIS IS ALREADY DONE FOR YOU** since 2026-08-30 — see "Device visibility"
-under "Performance notes". If you hit this error from `systemctl --user start lemonade`, the
-derivation did not run or came up empty; check it before debugging anything else. The section
-above is what still applies when you run the bundled `llama-server` BY HAND, where nothing
-sets the variable for you.
+The `-dev` flag only covers the main model, not the MTP draft, so `-dev ROCm0,ROCm1` alone
+does NOT fix it. Exclusion at visibility (`ROCR_VISIBLE_DEVICES=0,1`) covers everything.
 
 Re-derive `0,1` rather than trusting it — DRM and device indices move with kernels and slots:
 

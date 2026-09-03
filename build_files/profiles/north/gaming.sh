@@ -45,8 +45,8 @@ test -d "/usr/share/steam/compatibilitytools.d/${GE_VERSION}" || {
     exit 1
 }
 
-### split lock detection off (baked kernel arg)
-# The kernel's split-lock throttling costs some Proton titles ~10x frame rate.
+# Split lock detection off: costs some Proton titles ~10x frame rate.
+# docs/runs/2026-09-05-build-comment-consolidation.md#split-lock-detection-cost
 # bootc merges every kargs.d entry (10-amdgpu, 20-sensors, 30-gaming).
 mkdir -p /usr/lib/bootc/kargs.d
 cat > /usr/lib/bootc/kargs.d/30-gaming.toml << 'EOF'

@@ -27,15 +27,13 @@ satisfy it.**
 
 Ways to drop the plug, all untested:
 
-- `video=<connector>:1920x1080@60e` in `kargs.d` — preferred, a real DRM output
-  with no userspace process holding a render node. Caveat: `video=` matches by
-  connector name and with three amdgpu devices those names are not unique;
-  confirm which card takes it.
+- `video=<connector>:1920x1080@60e` in `kargs.d` — a real DRM output with no
+  userspace render-node holder. Connector names are not unique across three
+  amdgpu devices; confirm which card takes it.
 - `drm.edid_firmware=<connector>:edid/<file>.bin` with a blob in
-  `/usr/lib/firmware/edid/`. May need it in initramfs.
-- A persistent `krfb-virtualmonitor` unit ordered before Sunshine. Last resort:
-  krfb holds a render node the whole time it runs, which buys back the
-  always-awake dGPU that going on-demand eliminated.
+  `/usr/lib/firmware/edid/`; may need it in initramfs.
+- A persistent `krfb-virtualmonitor` unit ordered before Sunshine — last resort,
+  since krfb holds a render node and pins the GPU awake.
 
 ## Why the config is seeded — don't "simplify" it away
 
@@ -49,8 +47,7 @@ The Arch-only `CAP_SYS_NICE` bug does not apply — Fedora sets
 `KWIN_WAYLAND_NO_PERMISSION_CHECKS=1` is not needed.
 
 Seeding only ever adds *missing* keys, so an existing `sunshine.conf` keeps a
-stale `undo … ensure`. Fix it in the Web UI, or delete the `global_prep_cmd`
-line and let it re-seed.
+stale `undo … ensure`. Delete the `global_prep_cmd` line to let it re-seed.
 
 ## `--exclusive` is needed in practice
 
@@ -68,10 +65,7 @@ Fixed by moving state to `$XDG_STATE_HOME/sunshine-vm/`, plus a login-path net
 that re-enables connected outputs when none are on. `PIDFILE` deliberately stays
 in the runtime dir — a PID from a previous boot is worse than none.
 
-Recovery: `kscreen-doctor output.HDMI-A-3.enable`.
-
-Note a `systemctl --global enable` cannot be undone with `--user disable`; it
-needs `--user mask`.
+If outputs are still off after a stream: `kscreen-doctor output.HDMI-A-3.enable`.
 
 ## The virtual monitor is on-demand, not at login
 

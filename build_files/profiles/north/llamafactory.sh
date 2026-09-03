@@ -1,21 +1,16 @@
 #!/bin/bash
 set -ouex pipefail
 
-# LLaMA-Factory fine-tuning as a rootless Quadlet — the THIRD local-LLM stack on this box, and
-# the only one that trains. lemonade.sh does llama.cpp GGUF inference; vllm.sh does batched
-# tensor-parallel inference; this produces the weights they load. All three share the same
-# HuggingFace model store (see the volume below), so a base model pulled here is already present
-# for inference, and an adapter exported to GGUF here is already visible to lemonade.
+# LLaMA-Factory replaced unsloth. Built on the box rather than pulled — upstream
+# docker-rocm bases on a rocm/pytorch image with unproven gfx1201 coverage.
+# Decision: docs/decisions/2026-08-30-llamafactory-over-unsloth.md.
+# Full rationale: docs/runs/2026-09-05-build-comment-consolidation.md#replaced-unslothsh
 #
-# Deliberately NOT enabled: no [Install], nothing in services-north.sh beyond the sleep hook.
-# Started by hand with `systemctl --user start llamafactory`. Runbook lives in
-# /usr/share/kinoite/llamafactory.md (source: docs/how-to/llamafactory.md); this file explains
-# WHY, that file explains WHAT TO TYPE.
+# bitsandbytes >=0.50.0 is a CORRECTNESS bound (first PyPI release with the full
+# RDNA path). 0.50.2 verified on this box. Do not relax.
 #
-# REPLACED unsloth.sh, and the image is BUILT ON THE BOX rather than pulled — upstream's
-# docker-rocm bases on a rocm/pytorch image whose gfx1201 coverage is unproven, while AMD's
-# whl-multi-arch index has a real gfx1201 target. Both calls, and what outlived them:
-# docs/decisions/2026-08-30-llamafactory-over-unsloth.md.
+# NOT installed: flash-attn (no RDNA4), deepspeed (multi-node, this is one box),
+# liger-kernel (CUDA/CDNA, unproven on RDNA4).
 #
 # `pip freeze` is captured into the image because it is built outside CI, so the manifest inside
 # it is the only record of what actually landed.
@@ -73,16 +68,10 @@ RUN pip install --no-cache-dir --no-build-isolation -e "/opt/llamafactory[metric
 # Tensile GEMM on this arch — so 4-bit is not optional here. Previously this arrived via unsloth's
 # `amd` extra; nothing pulls it in now, so it is explicit.
 #
-# The >=0.50.0 floor is a CORRECTNESS bound, not a preference: upstream's own pyproject comment
-# calls it the first PyPI release carrying the full RDNA path (blocksize/warp decoupling, fused
-# SIMT GEMM, the RDNA3/4 workgroup fix). Anything older is unreliable at 4-bit on ROCm.
-# 0.50.2 is the version verified on this box. Do not relax the floor.
+# bitsandbytes >=0.50.0 is the CORRECTNESS floor — see the file header.
 RUN pip install --no-cache-dir "bitsandbytes>=0.50.0"
 
-# NOT installed, each for a measured or documented reason:
-#   flash-attn    — no RDNA4 support. Upstream's own ROCm Dockerfile defaults it off.
-#   deepspeed     — multi-node sharding; this is one box and the posture below is single-card.
-#   liger-kernel  — Triton kernels written against CUDA/CDNA; unproven on RDNA4.
+# flash-attn, deepspeed, liger-kernel: NOT installed — see the file header.
 
 # Jupyter is the code-first half. LLaMA Board trains but does NOT author datasets, and the first
 # project here is dataset-shaped — a labelling rubric has to be written somewhere.

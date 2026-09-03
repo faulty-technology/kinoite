@@ -11,10 +11,8 @@ set -ouex pipefail
 #
 # The virtual display is created on demand by the seeded global_prep_cmd (`ensure`)
 # and destroyed by its `undo` (`down`), NOT at login — sunshine-virtual-monitor.service
-# is shipped disabled as of 2026-08-18 because krfb holds a render node and pinned a GPU
-# awake full time. See sunshine.sh. A crash mid-stream skips `undo`, so ExecStopPost runs
-# `down` as the net: it re-enables outputs an --exclusive stream disabled, restores the
-# previous primary, and drops the monitor.
+# Shipped disabled as of 2026-08-18: krfb holds a render node and pins the GPU
+# awake.  Full story: docs/runs/2026-09-05-build-comment-consolidation.md#krfb-shipped-disabled-to-avoid-pinning-a-gpu-awake
 #
 # Use the canonical unit name. pvermeer's package also ships a sunshine.service
 # compat symlink, but upstream only declares it as an [Install] Alias= — which
@@ -105,13 +103,9 @@ systemctl enable kinoite-linger.service
 # here: nothing in podman, systemd or amdgpu expresses "stop this rootless user unit before the
 # kernel sleeps".
 #
-# Two shapes were rejected:
-#   - A USER unit. The systemd user manager ships no sleep-related target at all, so there is no
-#     user-scoped event to hook.
-#   - A /usr/lib/systemd/system-sleep/ drop-in. Those run inside systemd-suspend.service, which
-#     freezes user.slice — the very manager this hook has to talk to. systemd-suspend.service(8)
-#     also calls that directory "hacks". A unit ordered Before=sleep.target runs outside that
-#     window and can be exercised without suspending the box.
+# Sleep hook: system unit, not user (user manager has no sleep target) and not a
+# /usr/lib/systemd/system-sleep/ drop-in (freezes user.slice). Full rationale:
+# docs/runs/2026-09-05-build-comment-consolidation.md#sleep-hook-two-rejected-shapes
 #
 # Serves all three LLM stacks, so kinoite-* and defined here — same rationale as linger above.
 # Depends on kinoite-linger.service for /run/user/<uid>/bus; mask that and this silently no-ops.

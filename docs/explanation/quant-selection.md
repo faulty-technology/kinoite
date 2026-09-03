@@ -4,7 +4,7 @@ The seeded recipes are Q6_K with one deliberate IQ4_XS exception. The reasoning
 is one measurement: **the weight-size axis is flat above ~25 GB**
 ([runs/2026-08-30-quant-sweep](../runs/2026-08-30-quant-sweep.md)).
 
-## Q6 lands on Q8, not between Q8 and IQ4
+## Q6 and Q8 decode at the same speed, only IQ4 is faster
 
 25.3 GB and 31.5 GB of weights decode at the same rate to within noise, while
 14.0 GB is 26% faster. Do not model this box's decode as proportional to weight
@@ -30,5 +30,4 @@ as an explicit, separately-named choice rather than a replacement.
 
 **Quality.** Bits-per-weight is not an output-quality metric, and every
 throughput table in this repo is silent on it. No A/B between FP8, Q8_K_XL and
-IQ4_XS has been run on this box. Judge the quality cost yourself before making
-IQ4_XS a default.
+IQ4_XS has been run on this box.

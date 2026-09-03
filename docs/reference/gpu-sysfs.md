@@ -50,33 +50,18 @@ All five points must be in range **before** you commit:
     done
     echo c > fan_curve      # rc=0
 
-Staging one point and committing returns EINVAL, and the staged value still
-reads back, which makes it look like it worked. Worse, a rejected commit poisons
-the table: the next `c` on `pp_od_clk_voltage` also fails with EINVAL until the
-curve is reset. If a commit ever returns nonzero:
+Partial commit returns EINVAL and poisons subsequent `pp_od_clk_voltage` commits
+until the curve is reset:
 
     echo r > fan_curve; echo c > fan_curve
 
 ## Reading
 
-`pp_od_clk_voltage` and `power1_cap` return **EBUSY on a runtime-suspended card**
-rather than waking it. They are passive instruments, unlike `sensors`. Read them
-first, and do not read an EBUSY as an error.
-
-`performance_level=manual` is not required. `vo -25` + `c` commits at `auto`,
-rc=0, and `vo 0` + `c` cleanly reverts.
+`pp_od_clk_voltage` and `power1_cap` return EBUSY on a runtime-suspended card.
+`performance_level=manual` is not required for voltage offset writes.
 
 ## amd-smi is not an option
 
-Two independent reasons:
-
-1. It **aborts** on gfx1201 once OverDrive is unlocked. `amd-smi metric` dumps
-   core on `rocm_smi.cc:1595 … Assertion 'txt_power_dev_od_voltage.contains_title_key(kTAG_GFXCLK) || … kTAG_OD_SCLK' failed`,
-   because it parses `pp_od_clk_voltage` and gfx1201 exposes `OD_SCLK_OFFSET`,
-   which it does not know. `amd-smi list` still works; anything touching OD info
-   does not.
-2. Even working, `amd-smi set` has no voltage-offset argument and no curve
-   concept. Its `--fan` sets a fixed PWM through hwmon, which needs the
-   `pwm1_enable` this card does not have.
-
-Tool version 26.2.0. Read and write sysfs directly.
+`amd-smi metric` dumps core on gfx1201 because it cannot parse `OD_SCLK_OFFSET`
+in `pp_od_clk_voltage`. `amd-smi set` has no voltage-offset argument and its
+`--fan` needs `pwm1_enable`, which this card lacks. Read and write sysfs directly.

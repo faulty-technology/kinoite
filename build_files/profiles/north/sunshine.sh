@@ -396,15 +396,10 @@ Environment=WAYLAND_DISPLAY=wayland-0
 ExecStopPost=-/usr/libexec/sunshine-virtual-display down
 EOF
 
-### Virtual display unit — SHIPPED BUT NOT ENABLED (changed 2026-08-18)
-# It used to be `systemctl --global enable`d, so every login started krfb whether or
-# not anyone streamed. krfb-virtualmonitor holds a DRM render node for as long as it
-# runs, which pins whichever GPU backs it into D0 — the same class of problem as the
-# CoolerControl polling (see motherboard.sh). On this box that meant a dedicated GPU
-# awake at ~30% fan around the clock for a monitor nobody was looking at.
-#
-# Streaming does not need it at login: the seeded global_prep_cmd runs `ensure`, which
-# falls through to `up` and creates the display on demand when a stream starts.
+### Virtual display unit — shipped but not enabled since 2026-08-18
+# krfb-virtualmonitor holds a DRM render node and pins the GPU awake (~30% fan
+# around the clock). Streaming creates the display on demand via global_prep_cmd.
+# Full story: docs/runs/2026-09-05-build-comment-consolidation.md#virtual-display-unit-shipped-but-not-enabled
 #
 # Kept as a shipped-but-disabled unit because it is still the right answer for a
 # genuinely headless box, where losing the virtual output means KWin reaches zero

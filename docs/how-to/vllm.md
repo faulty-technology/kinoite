@@ -154,14 +154,8 @@ fresh load at a fixed prompt; and a run that happens to emit `<think>` blocks is
 one that does not, which is why the harness pins `enable_thinking: false`.
 
 The reason it is expensive: on gfx1201 every fast all-reduce backend is arch-gated to CDNA, so TP
-falls through to the generic PYNCCL path. Confirmed in the startup log:
-
-    Using ['PYNCCL'] all-reduce backends (in dispatch order) for group 'tp:0' out of potential
-    backends: ['NCCL_SYMM_MEM','QUICK_REDUCE','FLASHINFER','CUSTOM','SYMM_MEM','PYNCCL']
-
-Both gates are hard-coded to ["gfx94","gfx95"] in this image: `use_custom_allreduce()` in
-vllm/platforms/rocm.py and `supported_archs` in
-vllm/distributed/device_communicators/quick_all_reduce.py. No flag or env var changes that.
+falls through to the generic PYNCCL path. See [explanation/vllm-decode-budget](../explanation/vllm-decode-budget.md)
+for the full breakdown, ruled-out dead ends, and RCCL version tracking.
 
 Knobs. A systemd drop-in does NOT work for these — this is a Quadlet container, so
 `[Service] Environment=` lands on the podman process, not inside the container. Shadow the unit:
@@ -224,21 +218,10 @@ image build.
 
 Not worth chasing: QuickReduce (arch-gated, never RDNA4); PP=2 instead of TP=2 (batch-1 decode
 serialises both shards, ~21 tok/s, worse); TP=1 (29 GB of weights + KV will not fit 30.4 GB
-usable); PCIe tuning (already 5.0 x16); the one-shot Triton JIT warnings (not steady state).
-Higher ceiling but invasive: this image already patches `_ON_MI3XX` in rocm.py to include gfx1201,
-so patching `use_custom_allreduce()` the same way may light up the one-shot custom all-reduce —
-generic HIP, but needs correctness checking (garbage output / hangs), and pairs with `iommu=pt`
-(`rpm-ostree kargs --append=iommu=pt`, reboot; no IOMMU kargs are set today). NOTE: someone
-already did this — stilldeadcode/vllm-radiance ships it as `RADIANCE_USE_R4D_AR` (the
-`ar_oneshot_2rank_exact` kernel from libr4d), so the cheap way to evaluate the idea is to run
-that image rather than to patch this one. The 11% comm ceiling still applies either way — see
-docs/runs/2026-08-30-p2p-bandwidth.md.
-
-P2P IS AVAILABLE AND IT IS ONLY PCIe. Peer access is enabled between every pair, but a copy
-between the two R9700s runs at the same speed as a copy to host memory — there is no fast direct
-link, so P2P just removes a host bounce. A working one-shot all-reduce is therefore not vacuous
-and also not a step change: the 11% comm share is the ceiling on all of it. Matrices, NUMA
-distances and the iGPU figure: docs/runs/2026-08-30-p2p-bandwidth.md.
+usable); PCIe tuning (already 5.0 x16). vllm-radiance ships a custom all-reduce
+(`RADIANCE_USE_R4D_AR`) that may bypass the PYNCCL fallback — unevaluated, see the open item in
+docs/overview.md. The 11% comm ceiling applies to all of it:
+[docs/runs/2026-08-30-p2p-bandwidth](../runs/2026-08-30-p2p-bandwidth.md).
 
 Qwen3.8-27B is vision-capable; the launcher serves it text-only (--language-model-only) to save
 VRAM. To enable vision, drop that flag in the launcher copy (costs VRAM).
@@ -325,34 +308,21 @@ Changing `VLLM_MAX_BATCHED_TOKENS` changes `compile_ranges_endpoints`, so the fi
 it misses the compile cache — expect ~80 s of `init engine` instead of ~12 s, once. Changing
 `VLLM_GPU_UTIL` does not; it restarts in ~10 s.
 
-## KV cache grouping: the padding warning is normal, and this split is already optimal
+## KV cache grouping: the padding warning is normal
 
 The startup log says:
 
     WARNING kv_cache_utils.py:1174 Add 3 padding layers, may waste at most 6.25% KV cache memory
 
-Not an error, and not fixable here. vLLM slices layers into equal-size groups for KV management,
-and any bucket that does not divide evenly is padded with placeholder layers that still get
-allocated real memory. Group size is the SMALLEST bucket (upstream picks `min` over the buckets —
-the FIXME in kv_cache_utils.py acknowledges it is the wrong strategy for complex patterns).
+Not an error. vLLM slices layers into equal-size groups for KV management; any
+bucket that doesn't divide evenly is padded. This model's buckets: 48
+linear-attention + 17 full-attention (16 from the model + the 1-layer MTP
+head). Group size 17 means 48 pads to 51: 4 groups × 17 = 68 slots for 65 real
+layers, 3 padding = 6.25%. The 1-layer MTP head keeps the split optimal — a
+multi-layer drafter would form a third bucket and waste more.
 
-This box's buckets: 48 gated-delta-net (linear attention) + 17 full attention (16 from the model
-+ the 1-layer MTP head, which merges into the full-attention bucket). min = 17, so 48 pads to 51:
-4 groups x 17 = 68 slots for 65 real layers, 3 padding. 3/48 = 6.25%, exactly the warning. Group
-size 17 is provably optimal under the only constraint that matters (never more groups than today):
-18 -> 7 wasted, 24 -> 7, 48 -> 31; zero waste would need a size dividing both 48 and 17, and
-gcd(48,17) = 1, i.e. 65 groups. Even a perfect patch is worth at most the 3 padding slots —
-~4% of the pool (~10K of the ~225K tokens at 0.80).
-
-THE TRAP is a multi-layer drafter, which forms a third bucket. A 5-layer DFlash2-style drafter
-against 48+16 gives buckets 48/16/5, min = 5, 48 -> 50 and 16 -> 20: 15 groups x 5 = 75 slots
-for 69 layers, 8% wasted before counting 15 per-request round-ups. An upstream patch that
-searches for the least-wasteful group size instead of `min` (their buckets -> size 8, 9 groups,
-72 slots) reportedly reclaimed ~21% of KV on that pairing (evaluated against this repo 2026-08-27;
-their pads sat in expensive full-attention slots, which is why it beats the naive 4.2% block-count
-estimate). None of it applies here: the 1-layer MTP head is what keeps this box in the good case —
-a drafter with 4 or 8 layers would waste nothing either. If you ever swap MTP for a multi-layer
-drafter, re-read that warning line before believing the pool numbers.
+If you ever swap MTP for a multi-layer drafter, re-read that warning before
+trusting the pool numbers.
 
 ## Concurrency: the MTP drafter crashes if disable_padded_drafter_batch is on
 
@@ -451,41 +421,20 @@ needing it must send "auto" and tolerate a missing call, or give up speculation.
 Turning MTP off (VLLM_SPECULATIVE=) restores strict mode by itself, because without speculation
 the deferral is correct.
 
-WHEN TO UNDO THIS. An image with the fix already exists — kyuz0's `dev` and
-`rocm7.14.0-torch2.11.0-vllm0.27.1` tags are a 2026-08-12 build of vLLM 0.27.1, comfortably past
-the 2026-07-04 fix (the first release after it was 0.25.0 on 07-11). We are NOT on it on purpose:
-0.27.1 is the build already measured ~15% slower at MTP decode (34.66 vs 40.75, see "Decode
-performance"), so taking it trades throughput for a tool-calling guarantee this box barely uses.
-
-**THE IMAGE-BUMP RULE IS THREE CONDITIONS, not two.** A candidate must be (1) post-07-04, so it
-carries the fix, (2) not a decode regression, and (3) must not reintroduce the TP=2 hang. The
-third one exists because RCCL moves as a side effect of an image bump — why, and the RCCL
-versions each image ships: docs/explanation/vllm-decode-budget.md.
-
-Don't judge any of that from the tag name. The date-stamped tags stop at 20260613-143121 while
-the newer build hides under `dev`/version tags, so the tag list is not chronological — and two
-tag names are not two builds. Re-checked 2026-08-30: `dev`, `rocm7.14.0-torch2.11.0-vllm0.27.1`
-and `sha-c5dd87e` are ONE image, digest `sha256:f36940bd…`, created 2026-08-12T18:56:46Z. Every
-other `sha-*` tag predates `:latest` (`sha256:55fa7796…`, 2026-06-13T14:54:38Z). Compare digests:
-
-    skopeo inspect docker://docker.io/kyuz0/vllm-therock-gfx1201:<tag> | grep -iE 'created|Digest'
-
-And confirm the fix is actually in a candidate image rather than inferring from a version string —
-#44297 added a `trim_reasoning_for_advance` helper, so it is present iff this prints something:
+WHEN TO UNDO THIS. An image with the fix exists — kyuz0's `dev` and
+`rocm7.14.0-torch2.11.0-vllm0.27.1` tags (2026-08-12 build of vLLM 0.27.1).
+Measured ~15% slower at MTP decode, so it's a throughput-for-correctness trade.
+To verify a candidate carries the fix:
 
     podman run --rm --entrypoint "" docker.io/kyuz0/vllm-therock-gfx1201:<tag> \
         grep -rl trim_reasoning_for_advance /opt/venv/lib64/python3.12/site-packages/vllm
 
-Verified 2026-08-30: absent in `:latest`, present in the 0.27.1 image (`v1/core/sched/scheduler.py`
-and `v1/structured_output/__init__.py`). Check the RCCL version in the same pass — it is the
-thing condition (3) is about:
+Absent in `:latest`, present in the 0.27.1 image. Also check the RCCL version —
+an image bump can reintroduce the TP=2 hang
+([explanation/vllm-decode-budget](../explanation/vllm-decode-budget.md)).
 
-    podman run --rm --entrypoint "" docker.io/kyuz0/vllm-therock-gfx1201:<tag> \
-        bash -c 'strings $(find / -name librccl.so.1 2>/dev/null | head -1) | grep -m1 "RCCL version"'
-
-To undo: delete the `export VLLM_ENFORCE_STRICT_TOOL_CALLING` block from the launcher in
-build_files/profiles/north/vllm.sh, rebuild, and remove any shadowed vllm.container that carries
-the same Environment= line.
+To undo: delete the `export VLLM_ENFORCE_STRICT_TOOL_CALLING` block from
+`vllm.sh`, rebuild.
 
 ## Thinking / the reasoning field
 
