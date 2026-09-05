@@ -130,7 +130,7 @@ EOF
 # Full rationale and tensor-split constraints: docs/runs/2026-09-05-build-comment-consolidation.md#-sm-tensor-split-across-recipes
 # Measured: docs/runs/2026-08-30-tensor-split.md, docs/runs/2026-08-30-quant-sweep.md.
 #
-# Passthrough is the only route: the lemond binary contains no `--split-mode` / `-devd` /
+# Passthrough is the only route: the lemonade binary contains no `--split-mode` / `-devd` /
 # `--spec-draft-device` / `-ngld` strings. Recipe `llamacpp_args` is appended last and merges
 # per flag.
 #
@@ -338,6 +338,124 @@ echo "kinoite-lemonade-gpus: gfx_target_version $target -> ROCR_VISIBLE_DEVICES=
 GPUEOF
 bash -n /usr/libexec/kinoite-lemonade-gpus
 
+### Browser origin allowlist for a `tailscale serve` front end
+# lemonade hardcodes its CORS allowlist to loopback (127.0.0.1, [::1], .localhost) and
+# answers every other Origin with 403 {"error": "Origin not allowed"}. Fronting the
+# Web UI with `tailscale serve` therefore loads the page but 403s every XHR it makes.
+#
+# Derived: baking the tailnet name into this public repo would publish it,
+# and it goes stale on a node rename. The helper asks tailscaled instead, and only for
+# serve rules that actually proxy to lemonade's own port, so a box with no such rule is
+# left at loopback-only — unchanged from before this existed.
+#
+# Exact origins only: `*.ts.net` matches nothing and `*` allows everything. Measured
+# against lemonade 11.5.2: docs/runs/2026-09-03-lemonade-origin-allowlist.md
+install -D -m 0755 /dev/stdin /usr/libexec/kinoite-lemonade-origins << 'ORIGEOF'
+#!/usr/bin/python3
+"""Write LEMONADE_ALLOWED_ORIGINS for lemonade.container from `tailscale serve` config.
+
+Runs as an ExecStartPre on the host, because the value has to be in the container's
+environment before podman creates it.
+
+Fail closed: an empty output file means "loopback origins only", which is lemonade's own
+default and the behaviour before this helper existed. Never exits nonzero for a runtime
+problem — a derivation failure must not block the server. The file is always created,
+because podman treats a missing --env-file as fatal.
+"""
+
+import json
+import os
+import subprocess
+import sys
+from urllib.parse import urlsplit
+
+LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+
+if len(sys.argv) < 2:
+    sys.exit("usage: kinoite-lemonade-origins <output-env-file> [backend-port]")
+out = sys.argv[1]
+port = int(sys.argv[2]) if len(sys.argv) > 2 else 13305
+
+
+def warn(msg):
+    print(f"kinoite-lemonade-origins: {msg}", file=sys.stderr)
+
+
+try:
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    open(out, "w").close()
+except OSError as exc:
+    warn(f"cannot write {out}: {exc}; starting with loopback origins only")
+    raise SystemExit(0)
+# From here on the file exists and is empty, so every early exit is a fall back to
+# loopback-only rather than a failed container start.
+
+try:
+    proc = subprocess.run(
+        ["tailscale", "serve", "status", "--json"],
+        capture_output=True, text=True, timeout=10,
+    )
+except (OSError, subprocess.SubprocessError) as exc:
+    warn(f"cannot run tailscale: {exc}; loopback origins only")
+    raise SystemExit(0)
+if proc.returncode != 0:
+    warn(f"tailscale serve status failed: {proc.stderr.strip()}; loopback origins only")
+    raise SystemExit(0)
+try:
+    cfg = json.loads(proc.stdout)
+except ValueError as exc:
+    warn(f"unparseable serve config: {exc}; loopback origins only")
+    raise SystemExit(0)
+if not isinstance(cfg, dict):
+    print("kinoite-lemonade-origins: no tailscale serve config; loopback origins only")
+    raise SystemExit(0)
+
+
+def proxies_here(handler):
+    """True if this serve handler forwards to lemonade's port on loopback."""
+    target = handler.get("Proxy") if isinstance(handler, dict) else None
+    if not target:
+        return False                      # Path/Text handlers serve files, not us
+    parts = urlsplit(target if "//" in target else f"//{target}")
+    try:
+        return parts.hostname in LOOPBACK and parts.port == port
+    except ValueError:                    # malformed port in the serve config
+        return False
+
+
+# Only handlers under "Web" are considered: those are the ones Tailscale fronts with
+# HTTP(S), so they are the only ones a browser sends an Origin for. A raw TCPForward is
+# a byte pipe with no origin of its own and is deliberately not covered.
+tcp = cfg.get("TCP") or {}
+origins = []
+for hostport, web in (cfg.get("Web") or {}).items():
+    handlers = (web or {}).get("Handlers") or {}
+    if not any(proxies_here(h) for h in handlers.values()):
+        continue
+    host, _, listen = hostport.rpartition(":")
+    # Tailscale terminates TLS unless the port was served with --http.
+    scheme = "http" if (tcp.get(listen) or {}).get("HTTP") else "https"
+    default = "80" if scheme == "http" else "443"
+    # A browser omits the default port from the Origin header; matching is textual.
+    origin = f"{scheme}://{host}" if listen == default else f"{scheme}://{host}:{listen}"
+    if origin not in origins:
+        origins.append(origin)
+
+if not origins:
+    print(f"kinoite-lemonade-origins: no serve rule proxies to port {port}; "
+          "loopback origins only")
+    raise SystemExit(0)
+
+try:
+    with open(out, "w") as fh:
+        fh.write("LEMONADE_ALLOWED_ORIGINS=" + ",".join(origins) + "\n")
+except OSError as exc:
+    warn(f"cannot write {out}: {exc}; loopback origins only")
+    raise SystemExit(0)
+print("kinoite-lemonade-origins: LEMONADE_ALLOWED_ORIGINS=" + ",".join(origins))
+ORIGEOF
+python3 -c 'import ast; ast.parse(open("/usr/libexec/kinoite-lemonade-origins").read())'
+
 cat > /etc/containers/systemd/users/lemonade.container << 'EOF'
 [Unit]
 Description=Lemonade Server (local LLM, containerized ROCm)
@@ -361,7 +479,11 @@ UserNS=keep-id:uid=10001,gid=10001
 AddDevice=/dev/kfd
 AddDevice=/dev/dri
 
-# Unauthenticated API — the 127.0.0.1 prefix is what keeps it off the tailnet.
+# Unauthenticated API — the 127.0.0.1 prefix keeps it off the tailnet DIRECTLY, but it
+# does not stop a host-side reverse proxy: `tailscale serve` in front of this port
+# reaches it over loopback and exposes every endpoint, /internal/mcp/* included.
+# LEMONADE_API_KEY is the guard there; lemonade only warns about this when it BINDS a
+# non-loopback host, so it stays silent behind a proxy. See lemonade.md.
 PublishPort=127.0.0.1:13305:13305
 
 # %h is expanded by systemd, not Quadlet. :z not :Z — :Z would relabel the whole
@@ -385,6 +507,11 @@ Environment=LEMONADE_DEFAULTS_PATH=/opt/lemonade/.cache/lemonade/defaults.json
 # to expand at runtime, which is what this needs. Verified both ways with `quadlet -dryrun`.
 EnvironmentFile=%t/kinoite-lemonade/gpus.env
 
+# Browser origins lemonade will accept, computed per start by the ExecStartPre below. Empty
+# unless `tailscale serve` fronts this port, and empty means loopback-only. Same bare-`%t`
+# rule as above.
+EnvironmentFile=%t/kinoite-lemonade/origins.env
+
 [Service]
 # First start pulls a multi-GB image against systemd's 90s default.
 TimeoutStartSec=900
@@ -401,6 +528,10 @@ ExecStartPre=/usr/libexec/kinoite-lemonade-seed
 
 # Excludes the iGPU by VISIBILITY before the container exists. Fails open — see the helper.
 ExecStartPre=/usr/libexec/kinoite-lemonade-gpus %t/kinoite-lemonade/gpus.env
+
+# Lets a `tailscale serve` front end past lemonade's loopback-only CORS check. Fails closed
+# to loopback-only — see the helper.
+ExecStartPre=/usr/libexec/kinoite-lemonade-origins %t/kinoite-lemonade/origins.env 13305
 
 # No [Install] — hand-started on purpose.
 EOF

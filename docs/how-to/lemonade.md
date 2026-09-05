@@ -11,6 +11,8 @@ Ships at /etc/containers/systemd/users/lemonade.container, NOT enabled.
     curl -s http://127.0.0.1:13305/live
 
 Web UI and API on http://127.0.0.1:13305 — loopback only, unauthenticated.
+To reach it from another machine see "Reaching it from another machine" below;
+do not just point a proxy at it, that publishes an API with no credential.
 `systemctl --user enable lemonade` is expected to fail: generator-produced units
 have no [Install] to act on. That's the guardrail, not a bug.
 
@@ -98,6 +100,70 @@ FIRST run only, and nothing reconciles it afterwards. Change it with `lemonade c
 The huggingface cache is the shared model store: vLLM and any future stack mount the same
 path, so a model pulled by either is reused by both. Owned by you (UserNS=keep-id), so
 du/rm/backup tools work normally.
+
+## Reaching it from another machine (tailscale serve)
+
+The server binds loopback only. To use the Web UI from a laptop, front it with
+`tailscale serve` on the box:
+
+    tailscale serve --bg 13305    # needs sudo unless `tailscale set --operator=$USER`
+
+lemond refuses any browser Origin that is not loopback, answering 403
+`{"error": "Origin not allowed"}`. The page loads and every request it makes
+fails, which looks like a broken UI rather than a rejection. The image handles
+this: an ExecStartPre reads the box's serve config each start and allows the
+origins that proxy to 13305. Restart lemonade after adding or changing a serve
+rule — nothing re-reads it while the container runs.
+
+    systemctl --user restart lemonade
+
+Check what it derived:
+
+    journalctl --user -u lemonade | grep kinoite-lemonade-origins
+    # kinoite-lemonade-origins: LEMONADE_ALLOWED_ORIGINS=https://<node>.<tailnet>.ts.net
+
+    cat /run/user/$UID/kinoite-lemonade/origins.env   # the file podman reads
+
+Run the derivation by hand without touching the service:
+
+    /usr/libexec/kinoite-lemonade-origins /tmp/origins.env && cat /tmp/origins.env
+
+**AN EMPTY `origins.env` IS NOT A FAILURE, IT IS THE FALLBACK** — it means
+loopback-only, exactly as before this existed. Expect it on a box with no serve
+rule for 13305. Only `Web` handlers count; a raw `--tcp` forward is not covered.
+
+To set origins by hand — a reverse proxy other than tailscale, or a derivation
+that got it wrong — use a Quadlet drop-in. `Environment=` becomes `--env`, which
+beats the generated `--env-file`, so this overrides the helper:
+
+    mkdir -p ~/.config/containers/systemd/lemonade.container.d
+    cat > ~/.config/containers/systemd/lemonade.container.d/20-origins.conf << 'END'
+    [Container]
+    Environment=LEMONADE_ALLOWED_ORIGINS=https://proxy.example.com
+    END
+    systemctl --user daemon-reload && systemctl --user restart lemonade
+
+Values are exact scheme-plus-host, comma-separated for several. `*` allows
+everything. Subdomain wildcards like `*.ts.net` match nothing and fail silently.
+A drop-in shadows the derivation completely, so delete it once it is not needed
+or it will pin a stale hostname. Measured:
+[runs/2026-09-03-lemonade-origin-allowlist](../runs/2026-09-03-lemonade-origin-allowlist.md).
+
+### Serving it makes the API public to your tailnet
+
+The loopback bind is what keeps this unauthenticated API private, and a proxy in
+front of it reaches the server over loopback like anything else on the box. Once
+served, every tailnet node can reach every endpoint with no credential —
+including `/internal/mcp/*`, which launches processes. lemond warns about this
+only when it BINDS a non-loopback host, so behind a proxy it says nothing.
+
+Set an API key in the same drop-in to close it:
+
+    Environment=LEMONADE_API_KEY=<secret>
+
+`LEMONADE_ADMIN_API_KEY` on its own only covers `/internal/*` and leaves `/api`,
+`/v0` and `/v1` open. Clients then send `Authorization: Bearer <secret>`; the Web
+UI has a field for it under settings.
 
 ## If ROCm dies at model load
 
