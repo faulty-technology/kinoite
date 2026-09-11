@@ -30,8 +30,9 @@ wants most of both cards.
     vLLM        :8000    + Open WebUI :3000, the OpenAI surface
     LLaMA-Factory :7860  + Jupyter :8889, the only one that trains
 
-lemonade ships Q6_K seeds with MTP and `-sm tensor` on the four Qwen3.8-27B
-recipes. vLLM ships FP8, MTP k=4, prefix caching on, strict tool calling off.
+lemonade ships Q6_K seeds with MTP and `-sm tensor` on the seven Qwen3.8-27B
+recipes (four stock Unsloth, three DavidAU `-Turbo` uncensored fine-tune).
+vLLM ships FP8, MTP k=4, prefix caching on, strict tool calling off.
 
 GPU tuning is `kinoite-gpu-tune.service`: a 235 W cap per card at boot, with
 `VOLTAGE_OFFSET_MV` and `FAN_CURVE` knobs shipped unset because the OverDrive
@@ -78,6 +79,15 @@ table does not survive an idle cycle. `lactd` ships disabled.
 - [ ] `-sm tensor` is NOT baked on Qwen3.6-27B, Qwen3.6-35B-A3B or
       Qwen3-Coder-30B. None has been loaded here, and the architecture gate's
       failure mode is a hard load failure. Load each once before baking.
+- [ ] **The three `-Turbo` recipes have never been loaded.** Added 2026-09-10.
+      `-sm tensor` and the `medium` reasoning pin are baked on the strength of
+      the GGUF headers matching the stock Qwen3.8 seeds exactly — architecture
+      `qwen35`, 866 tensors, 65 blocks, embedded `blk.64.nextn.*` head — not on
+      a load here. Load one and confirm it serves before trusting the flags.
+- [ ] **MTP acceptance on the `-Turbo` seeds is unmeasured.** Upstream says to
+      fall back to the plain non-MTP builds if acceptance drops below ~50%, and
+      ships them; nothing here has checked which side of that line this box is
+      on. `bench.py` against `-Turbo` vs `-Turbo-Fast` would settle it.
 
 ### vLLM — `vllm.sh`
 

@@ -34,10 +34,20 @@ EOF
 # on every start, per key (see kinoite-lemonade-seed and the ExecStartPre in the Quadlet).
 # Names become user.<name> at runtime — run one with `lemonade run user.<name>`.
 #
-# Recipes: Q6_K quality floor with MTP on every model that has it (unsloth ships MTP
-# in two packagings — separate draft file vs. embedded in the main GGUF — needing
-# different recipe shapes). IQ4_XS Fast is the speed exception, benchmarked but not
+# Recipes: Q6_K quality floor with MTP on every model that has it, shipped in two
+# packagings — separate draft file vs. embedded in the main GGUF — needing different
+# recipe shapes. IQ4_XS Fast is the speed exception, benchmarked but not
 # quality-tested. Qwen3-Coder-30B is the only model without MTP.
+#
+# The "mtp" LABEL is what turns speculation on, not the presence of a draft checkpoint:
+# lemonade adds `--spec-type draft-mtp` when it sees that label and `--model-draft` only
+# when a `draft` checkpoint resolves. So the embedded-head recipes carry no draft entry
+# and still speculate, off the model's own nextn tensors.
+#
+# The -Turbo trio is DavidAU's uncensored Qwen3.8-27B fine-tune (embedded head, no draft
+# file). Its GGUFs report architecture qwen35 with the same 866-tensor/65-block layout as
+# the stock Qwen3.8-27B seeds, which is why they inherit those recipes' flags below.
+# Upstream also ships non-MTP and reduced-footprint "LOW" builds; neither is seeded.
 # Throughput figures: docs/runs/2026-08-20-mtp-speculation.md.
 # Quant rationale: docs/explanation/quant-selection.md.
 # Full MTP packaging and ctx sizing detail: docs/runs/2026-09-05-build-comment-consolidation.md#why-q6-floor-why-mtp-why-two-packaging-shapes
@@ -91,6 +101,36 @@ cat > /usr/share/kinoite/lemonade-recipes/user_models.json << 'EOF'
     "size": 31.5,
     "labels": ["custom", "vision", "reasoning", "coding", "mtp"]
   },
+  "Qwen3.8-27B-Turbo": {
+    "source": "huggingface",
+    "checkpoints": {
+      "main": "DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF:Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-Q6_K.gguf",
+      "mmproj": "DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF:mmproj-F16.gguf"
+    },
+    "recipe": "llamacpp",
+    "size": 25.0,
+    "labels": ["custom", "vision", "reasoning", "coding", "mtp", "uncensored"]
+  },
+  "Qwen3.8-27B-Turbo-Fast": {
+    "source": "huggingface",
+    "checkpoints": {
+      "main": "DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF:Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-IQ4_XS.gguf",
+      "mmproj": "DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF:mmproj-F16.gguf"
+    },
+    "recipe": "llamacpp",
+    "size": 18.0,
+    "labels": ["custom", "vision", "reasoning", "coding", "mtp", "uncensored", "fast"]
+  },
+  "Qwen3.8-27B-Turbo-Q8": {
+    "source": "huggingface",
+    "checkpoints": {
+      "main": "DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF:Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-Q8_0.gguf",
+      "mmproj": "DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF:mmproj-F16.gguf"
+    },
+    "recipe": "llamacpp",
+    "size": 31.2,
+    "labels": ["custom", "vision", "reasoning", "coding", "mtp", "uncensored"]
+  },
   "Qwen3.6-27B": {
     "source": "huggingface",
     "checkpoint": "unsloth/Qwen3.6-27B-MTP-GGUF:Qwen3.6-27B-Q6_K.gguf",
@@ -120,10 +160,12 @@ EOF
 # Per-model ctx and llamacpp_args, keyed by the fully-qualified user.<name> id.
 # backend inherits rocm from defaults.json.
 #
-# `-sm tensor -fa on` baked on the four Qwen3.8-27B recipes only.
+# `-sm tensor -fa on` baked on the seven Qwen3.8-27B recipes only.
 # ON: +44.4% over layer split, composes with MTP, leads vLLM at every depth.
 # OFF on Qwen3.6-27B, Qwen3.6-35B-A3B, Qwen3-Coder-30B: `-sm tensor` has an architecture
 # gate whose failure mode is a hard load failure; none has been loaded here.
+# The -Turbo three clear that gate on the same qwen35 tensor layout the stock Qwen3.8
+# recipes were measured on, but have not themselves been loaded here.
 # Four constraints: `-fa on` mandatory, iGPU excluded at visibility (not per-flag),
 # ctx hand-computed (0.0444 MiB/token/card + 12174 MiB/card; `--fit` disabled),
 # `--chat-template-kwargs` carries both keys in one JSON object.
@@ -134,23 +176,29 @@ EOF
 # `--spec-draft-device` / `-ngld` strings. Recipe `llamacpp_args` is appended last and merges
 # per flag.
 #
-# REASONING EFFORT pinned to MEDIUM on the four Qwen3.8-27B recipes. Absence selects xhigh
+# REASONING EFFORT pinned to MEDIUM on the seven Qwen3.8-27B recipes. Absence selects xhigh
 # (template resolves `reasoning_effort|default('xhigh')`). medium renders empty. No quality
 # A/B run. Full rationale: docs/runs/2026-09-05-build-comment-consolidation.md#reasoning-effort-pin-1
 
 cat > /usr/share/kinoite/lemonade-recipes/recipe_options.json << 'EOF'
 {
-  "user.Qwen3.8-27B":      { "ctx_size": 131072,
-                             "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1 --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'" },
-  "user.Qwen3.8-27B-Fast": { "ctx_size": 131072,
-                             "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1 --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'" },
-  "user.Qwen3.8-27B-Q6XL": { "ctx_size": 131072,
-                             "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1 --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'" },
-  "user.Qwen3.8-27B-Q8XL": { "ctx_size": 131072,
-                             "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1 --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'" },
-  "user.Qwen3.6-27B":     { "ctx_size": 131072 },
-  "user.Qwen3.6-35B-A3B": { "ctx_size": 131072 },
-  "user.Qwen3-Coder-30B": { "ctx_size": 262144 }
+  "user.Qwen3.8-27B":            { "ctx_size": 131072,
+                                   "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1 --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'" },
+  "user.Qwen3.8-27B-Fast":       { "ctx_size": 131072,
+                                   "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1 --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'" },
+  "user.Qwen3.8-27B-Q6XL":       { "ctx_size": 131072,
+                                   "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1 --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'" },
+  "user.Qwen3.8-27B-Q8XL":       { "ctx_size": 131072,
+                                   "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1 --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'" },
+  "user.Qwen3.8-27B-Turbo":      { "ctx_size": 131072,
+                                   "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1 --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'" },
+  "user.Qwen3.8-27B-Turbo-Fast": { "ctx_size": 131072,
+                                   "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1 --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'" },
+  "user.Qwen3.8-27B-Turbo-Q8":   { "ctx_size": 131072,
+                                   "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1 --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'" },
+  "user.Qwen3.6-27B":            { "ctx_size": 131072 },
+  "user.Qwen3.6-35B-A3B":        { "ctx_size": 131072 },
+  "user.Qwen3-Coder-30B":        { "ctx_size": 262144 }
 }
 EOF
 

@@ -27,19 +27,23 @@ Loading the first model then downloads the llama.cpp + ROCm bundle (~2.3 GB) int
 
 ## Recipes (baked custom models)
 
-Curated Unsloth Qwen GGUFs, reconciled into config/user_models.json on every start.
+Curated Qwen GGUFs (Unsloth, plus DavidAU for the -Turbo trio), reconciled into
+config/user_models.json on every start.
 List and run (via the Web UI, or the CLI inside the container):
 
     podman exec lemonade lemonade list
     podman exec lemonade lemonade run user.Qwen3.8-27B     # downloads on first run
 
-    user.Qwen3.8-27B       newest dense, vision+thinking, Developer Role  MTP  UD-Q6_K    23.4 GB   ctx 128K
-    user.Qwen3.8-27B-Fast  same model, 4-bit — the speed pick             MTP  UD-IQ4_XS  15.6 GB   ctx 128K
-    user.Qwen3.8-27B-Q6XL  same model, heavy quant — the quality pick     MTP  UD-Q6_K_XL 25.3 GB   ctx 128K
-    user.Qwen3.8-27B-Q8XL  same model, heaviest that still fits the pair  MTP  UD-Q8_K_XL 31.5 GB   ctx 128K
-    user.Qwen3.6-27B       dense, vision+thinking                         MTP  Q6_K       22.9 GB   ctx 128K
-    user.Qwen3.6-35B-A3B   fast MoE (~3B active), vision+thinking         MTP  UD-Q6_K    30.0 GB   ctx 128K
-    user.Qwen3-Coder-30B   agentic coding MoE, 256K native, text-only     --   Q6_K       25.1 GB   ctx 256K
+    user.Qwen3.8-27B             newest dense, vision+thinking, Developer Role    MTP  UD-Q6_K     23.4 GB  ctx 128K
+    user.Qwen3.8-27B-Fast        same model, 4-bit — the speed pick               MTP  UD-IQ4_XS   15.6 GB  ctx 128K
+    user.Qwen3.8-27B-Q6XL        same model, heavy quant — the quality pick       MTP  UD-Q6_K_XL  25.3 GB  ctx 128K
+    user.Qwen3.8-27B-Q8XL        same model, heaviest that still fits the pair    MTP  UD-Q8_K_XL  31.5 GB  ctx 128K
+    user.Qwen3.8-27B-Turbo       uncensored fine-tune, far fewer thinking tokens  MTP  Q6_K        25.0 GB  ctx 128K
+    user.Qwen3.8-27B-Turbo-Fast  same fine-tune, 4-bit — the speed pick           MTP  IQ4_XS      18.0 GB  ctx 128K
+    user.Qwen3.8-27B-Turbo-Q8    same fine-tune, 8-bit — the quality pick         MTP  Q8_0        31.2 GB  ctx 128K
+    user.Qwen3.6-27B             dense, vision+thinking                           MTP  Q6_K        22.9 GB  ctx 128K
+    user.Qwen3.6-35B-A3B         fast MoE (~3B active), vision+thinking           MTP  UD-Q6_K     30.0 GB  ctx 128K
+    user.Qwen3-Coder-30B         agentic coding MoE, 256K native, text-only       --   Q6_K        25.1 GB  ctx 256K
 
 ### A seeded recipe you cannot see in the Web UI
 
@@ -64,15 +68,42 @@ counts as not downloaded, and the model stays out of the list.
 Every recipe with an MTP head available uses it; lemonade turns speculation on by itself
 and you do not pass any flags. Qwen3-Coder-30B is the exception: no MTP build exists for it.
 
+What actually switches speculation on is the recipe's `mtp` LABEL — lemonade passes
+`--spec-type draft-mtp` whenever it sees that label, and passes `--model-draft` only when a
+`draft` checkpoint resolves. The two are independent, which is why a recipe whose MTP head
+rides inside the main GGUF names no draft file and still speculates. Strip `mtp` from a
+recipe's labels and it silently runs unspeculated.
+
 The two Qwen3.6 entries come from the `-MTP-GGUF` sibling repos rather than the plain ones,
 at the identical Q6_K filenames — a repo swap, not a requant. Their sizes are ~0.3 GB larger
 than the plain builds because the MTP head rides inside the weights.
 
+### The -Turbo trio
+
+`user.Qwen3.8-27B-Turbo*` is DavidAU's decensored, multi-stage Qwen3.8-27B fine-tune
+(`...-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF`). It answers
+prompts the stock seeds refuse, and it spends far fewer tokens thinking before it answers.
+Same `qwen35` architecture and the same flags as the stock Qwen3.8 recipes, so it gets
+`-sm tensor` and the `reasoning_effort: medium` pin too.
+
+Two knobs that matter here and nowhere else:
+
+- **Keep temperature at or below 1 and repetition_penalty at 1.** Upstream is explicit that
+  higher values degrade MTP acceptance; that costs throughput, not just quality.
+- **If token acceptance sits below ~50%, the MTP build is the slower choice.** Upstream ships
+  plain non-MTP quants of the same model at the same filenames minus the `-MTP-` infix, plus
+  reduced-footprint `-LOW-MTP-` IQ4_XS and Q6_K. None is seeded; add one by hand under a new
+  name if you need it.
+
+It is not aligned and will not refuse, so the tailnet-exposure warning under "Serving it
+makes the API public to your tailnet" applies to this recipe more than to the others.
+
 Qwen3.8-27B is the default all-rounder (MTP + Developer Role); Qwen3-Coder-30B is the
-coding workhorse; -Fast trades the Q6 floor for a lighter quant. The seeded ctx values
-exceed one card and use the automatic two-card layer split. At 128K the KV cache is large
-(~33 GB on a dense 27B); if it doesn't fit the pair, drop ctx or add q8_0 KV-quant. The
-iGPU is excluded automatically (see "Device visibility").
+coding workhorse; -Fast trades the Q6 floor for a lighter quant; -Turbo is the uncensored
+fine-tune. The seeded ctx values exceed one card and use the automatic two-card layer
+split. At 128K the KV cache is large (~33 GB on a dense 27B); if it doesn't fit the pair,
+drop ctx or add q8_0 KV-quant. The iGPU is excluded automatically (see "Device
+visibility").
 
 Throughput figures for MTP and tensor split are in "Performance notes" below; per-quant
 numbers in [runs/2026-08-30-quant-sweep](../runs/2026-08-30-quant-sweep.md).
@@ -195,8 +226,8 @@ Qwen3.8-27B on the R9700 pair. What the seeds ship and what it buys:
     + -sm tensor                                   81.8 tok/s   (+44% on top)
 
 Every seeded recipe that has an MTP head available uses it, and you do not pass
-the flags — lemonade adds `--spec-type draft-mtp --spec-draft-n-max 3` itself
-when the recipe names a draft head. Only `Qwen3-Coder-30B` runs unspeculated,
+the flags — lemonade adds `--spec-type draft-mtp` itself for any recipe carrying
+the `mtp` label (see "Recipes" above). Only `Qwen3-Coder-30B` runs unspeculated,
 because no MTP build of it exists upstream.
 
 `--spec-draft-n-max 4` is what was measured here. Upstream's general MTP advice
