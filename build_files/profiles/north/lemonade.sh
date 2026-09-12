@@ -424,6 +424,10 @@ Volume=%h/.local/share/lemonade/config:/opt/lemonade/.cache/lemonade:z
 # :z can't fix it because /usr is read-only. Hence the ExecStartPre copy below.
 Environment=LEMONADE_DEFAULTS_PATH=/opt/lemonade/.cache/lemonade/defaults.json
 
+# lemond keeps config.json, user_models.json and recipe_options.json in $XDG_CONFIG_HOME/lemonade,
+# which no volume covers. This puts them in the config/ volume, where the seeder writes.
+Environment=XDG_CONFIG_HOME=/opt/lemonade/.cache
+
 # Which GPU agents llama.cpp may use, computed per start by the ExecStartPre below.
 # Keep the `%t` BARE. podman-systemd.unit(5) says to write `./%t` for a path starting with a
 # specifier, and that advice is for paths meant to resolve against the unit directory — it is
