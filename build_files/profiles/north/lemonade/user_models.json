@@ -1,0 +1,107 @@
+{
+	"Qwen3.8-27B": {
+		"source": "huggingface",
+		"checkpoints": {
+			"main": "unsloth/Qwen3.8-27B-GGUF:Qwen3.8-27B-UD-Q6_K.gguf",
+			"draft": "unsloth/Qwen3.8-27B-GGUF:MTP/mtp-Qwen3.8-27B-Q4_0.gguf",
+			"mmproj": "unsloth/Qwen3.8-27B-GGUF:mmproj-F16.gguf"
+		},
+		"recipe": "llamacpp",
+		"size": 23.4,
+		"labels": ["custom", "vision", "reasoning", "coding", "mtp"]
+	},
+	"Qwen3.8-27B-Fast": {
+		"source": "huggingface",
+		"checkpoints": {
+			"main": "unsloth/Qwen3.8-27B-GGUF:Qwen3.8-27B-UD-IQ4_XS.gguf",
+			"draft": "unsloth/Qwen3.8-27B-GGUF:MTP/mtp-Qwen3.8-27B-Q4_0.gguf",
+			"mmproj": "unsloth/Qwen3.8-27B-GGUF:mmproj-F16.gguf"
+		},
+		"recipe": "llamacpp",
+		"size": 15.6,
+		"labels": ["custom", "vision", "reasoning", "coding", "mtp", "fast"]
+	},
+	"Qwen3.8-27B-Q6XL": {
+		"source": "huggingface",
+		"checkpoints": {
+			"main": "unsloth/Qwen3.8-27B-GGUF:Qwen3.8-27B-UD-Q6_K_XL.gguf",
+			"draft": "unsloth/Qwen3.8-27B-GGUF:MTP/mtp-Qwen3.8-27B-Q4_0.gguf",
+			"mmproj": "unsloth/Qwen3.8-27B-GGUF:mmproj-F16.gguf"
+		},
+		"recipe": "llamacpp",
+		"size": 25.3,
+		"labels": ["custom", "vision", "reasoning", "coding", "mtp"]
+	},
+	"Qwen3.8-27B-Q8XL": {
+		"source": "huggingface",
+		"checkpoints": {
+			"main": "unsloth/Qwen3.8-27B-GGUF:Qwen3.8-27B-UD-Q8_K_XL.gguf",
+			"draft": "unsloth/Qwen3.8-27B-GGUF:MTP/mtp-Qwen3.8-27B-Q4_0.gguf",
+			"mmproj": "unsloth/Qwen3.8-27B-GGUF:mmproj-F16.gguf"
+		},
+		"recipe": "llamacpp",
+		"size": 31.5,
+		"labels": ["custom", "vision", "reasoning", "coding", "mtp"]
+	},
+	"Qwen3.8-27B-Turbo": {
+		"source": "huggingface",
+		"checkpoints": {
+			"main": "DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF:Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-Q6_K.gguf",
+			"mmproj": "DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF:mmproj-F16.gguf"
+		},
+		"recipe": "llamacpp",
+		"size": 25.0,
+		"labels": ["custom", "vision", "reasoning", "coding", "mtp", "uncensored"]
+	},
+	"Qwen3.8-27B-Turbo-Fast": {
+		"source": "huggingface",
+		"checkpoints": {
+			"main": "DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF:Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-IQ4_XS.gguf",
+			"mmproj": "DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF:mmproj-F16.gguf"
+		},
+		"recipe": "llamacpp",
+		"size": 18.0,
+		"labels": [
+			"custom",
+			"vision",
+			"reasoning",
+			"coding",
+			"mtp",
+			"uncensored",
+			"fast"
+		]
+	},
+	"Qwen3.8-27B-Turbo-Q8": {
+		"source": "huggingface",
+		"checkpoints": {
+			"main": "DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF:Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-Q8_0.gguf",
+			"mmproj": "DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF:mmproj-F16.gguf"
+		},
+		"recipe": "llamacpp",
+		"size": 31.2,
+		"labels": ["custom", "vision", "reasoning", "coding", "mtp", "uncensored"]
+	},
+	"Qwen3.6-27B": {
+		"source": "huggingface",
+		"checkpoint": "unsloth/Qwen3.6-27B-MTP-GGUF:Qwen3.6-27B-Q6_K.gguf",
+		"mmproj": "mmproj-F16.gguf",
+		"recipe": "llamacpp",
+		"size": 22.9,
+		"labels": ["custom", "vision", "reasoning", "mtp"]
+	},
+	"Qwen3.6-35B-A3B": {
+		"source": "huggingface",
+		"checkpoint": "unsloth/Qwen3.6-35B-A3B-MTP-GGUF:Qwen3.6-35B-A3B-UD-Q6_K.gguf",
+		"mmproj": "mmproj-F16.gguf",
+		"recipe": "llamacpp",
+		"size": 30.0,
+		"labels": ["custom", "vision", "reasoning", "mtp"]
+	},
+	"Qwen3-Coder-30B": {
+		"source": "huggingface",
+		"checkpoint": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Qwen3-Coder-30B-A3B-Instruct-Q6_K.gguf",
+		"recipe": "llamacpp",
+		"size": 25.1,
+		"labels": ["custom", "coding"]
+	}
+}

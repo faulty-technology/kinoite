@@ -1,0 +1,8 @@
+{
+	"ctx_size": 131072,
+	"rocm_channel": "nightly",
+	"auto_evict": true,
+	"llamacpp": {
+		"backend": "rocm"
+	}
+}

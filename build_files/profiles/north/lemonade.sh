@@ -1,6 +1,8 @@
 #!/bin/bash
 set -ouex pipefail
 
+DIR="$(cd "$(dirname "$0")" && pwd)"
+
 # Lemonade Server (local LLM) as a rootless Quadlet. No host ROCm — lemonade's
 # llama.cpp builds bundle their own ROCm 7 runtime.
 #
@@ -18,17 +20,13 @@ done
 # CPU fallback. lemonade-sdk/lemonade#1787. ctx_size: lemonade auto-tunes to 157140 on
 # a 27B; override to 131072. `--load-mode mmap` removed after SELinux bisect (ROCm loads
 # fine without it). Full details: docs/runs/2026-09-05-build-comment-consolidation.md#nightly-channel-pin
+# auto_evict opts into Lemonade's dynamic VRAM management: an idle model first
+# downsizes its KV cache, then fully evicts (releasing its VRAM) once idle past
+# evict_idle_timeout. Lemonade exposes no global timeout — it is per-model — so the
+# 30-minute value is set per recipe below in recipe_options.json. Under global VRAM
+# pressure it also evicts to coexist with other GPU apps.
 mkdir -p /usr/share/kinoite
-cat > /usr/share/kinoite/lemonade-defaults.json << 'EOF'
-{
-  "ctx_size": 131072,
-  "rocm_channel": "nightly",
-  "llamacpp": {
-    "backend": "rocm"
-  }
-}
-EOF
-
+install -m 0644 "$DIR/lemonade/lemonade-defaults.json" /usr/share/kinoite/lemonade-defaults.json
 ### 1b. Curated custom-model recipes (always-present superset)
 # Baked to /usr/share/kinoite/lemonade-recipes and merged into the user's lemonade config
 # on every start, per key (see kinoite-lemonade-seed and the ExecStartPre in the Quadlet).
@@ -54,111 +52,17 @@ EOF
 
 command -v python3 >/dev/null || { echo "lemonade.sh: missing python3 (JSON validation)" >&2; exit 1; }
 
-mkdir -p /usr/share/kinoite/lemonade-recipes
-cat > /usr/share/kinoite/lemonade-recipes/user_models.json << 'EOF'
-{
-  "Qwen3.8-27B": {
-    "source": "huggingface",
-    "checkpoints": {
-      "main": "unsloth/Qwen3.8-27B-GGUF:Qwen3.8-27B-UD-Q6_K.gguf",
-      "draft": "unsloth/Qwen3.8-27B-GGUF:MTP/mtp-Qwen3.8-27B-Q4_0.gguf",
-      "mmproj": "unsloth/Qwen3.8-27B-GGUF:mmproj-F16.gguf"
-    },
-    "recipe": "llamacpp",
-    "size": 23.4,
-    "labels": ["custom", "vision", "reasoning", "coding", "mtp"]
-  },
-  "Qwen3.8-27B-Fast": {
-    "source": "huggingface",
-    "checkpoints": {
-      "main": "unsloth/Qwen3.8-27B-GGUF:Qwen3.8-27B-UD-IQ4_XS.gguf",
-      "draft": "unsloth/Qwen3.8-27B-GGUF:MTP/mtp-Qwen3.8-27B-Q4_0.gguf",
-      "mmproj": "unsloth/Qwen3.8-27B-GGUF:mmproj-F16.gguf"
-    },
-    "recipe": "llamacpp",
-    "size": 15.6,
-    "labels": ["custom", "vision", "reasoning", "coding", "mtp", "fast"]
-  },
-  "Qwen3.8-27B-Q6XL": {
-    "source": "huggingface",
-    "checkpoints": {
-      "main": "unsloth/Qwen3.8-27B-GGUF:Qwen3.8-27B-UD-Q6_K_XL.gguf",
-      "draft": "unsloth/Qwen3.8-27B-GGUF:MTP/mtp-Qwen3.8-27B-Q4_0.gguf",
-      "mmproj": "unsloth/Qwen3.8-27B-GGUF:mmproj-F16.gguf"
-    },
-    "recipe": "llamacpp",
-    "size": 25.3,
-    "labels": ["custom", "vision", "reasoning", "coding", "mtp"]
-  },
-  "Qwen3.8-27B-Q8XL": {
-    "source": "huggingface",
-    "checkpoints": {
-      "main": "unsloth/Qwen3.8-27B-GGUF:Qwen3.8-27B-UD-Q8_K_XL.gguf",
-      "draft": "unsloth/Qwen3.8-27B-GGUF:MTP/mtp-Qwen3.8-27B-Q4_0.gguf",
-      "mmproj": "unsloth/Qwen3.8-27B-GGUF:mmproj-F16.gguf"
-    },
-    "recipe": "llamacpp",
-    "size": 31.5,
-    "labels": ["custom", "vision", "reasoning", "coding", "mtp"]
-  },
-  "Qwen3.8-27B-Turbo": {
-    "source": "huggingface",
-    "checkpoints": {
-      "main": "DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF:Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-Q6_K.gguf",
-      "mmproj": "DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF:mmproj-F16.gguf"
-    },
-    "recipe": "llamacpp",
-    "size": 25.0,
-    "labels": ["custom", "vision", "reasoning", "coding", "mtp", "uncensored"]
-  },
-  "Qwen3.8-27B-Turbo-Fast": {
-    "source": "huggingface",
-    "checkpoints": {
-      "main": "DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF:Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-IQ4_XS.gguf",
-      "mmproj": "DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF:mmproj-F16.gguf"
-    },
-    "recipe": "llamacpp",
-    "size": 18.0,
-    "labels": ["custom", "vision", "reasoning", "coding", "mtp", "uncensored", "fast"]
-  },
-  "Qwen3.8-27B-Turbo-Q8": {
-    "source": "huggingface",
-    "checkpoints": {
-      "main": "DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF:Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-Q8_0.gguf",
-      "mmproj": "DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF:mmproj-F16.gguf"
-    },
-    "recipe": "llamacpp",
-    "size": 31.2,
-    "labels": ["custom", "vision", "reasoning", "coding", "mtp", "uncensored"]
-  },
-  "Qwen3.6-27B": {
-    "source": "huggingface",
-    "checkpoint": "unsloth/Qwen3.6-27B-MTP-GGUF:Qwen3.6-27B-Q6_K.gguf",
-    "mmproj": "mmproj-F16.gguf",
-    "recipe": "llamacpp",
-    "size": 22.9,
-    "labels": ["custom", "vision", "reasoning", "mtp"]
-  },
-  "Qwen3.6-35B-A3B": {
-    "source": "huggingface",
-    "checkpoint": "unsloth/Qwen3.6-35B-A3B-MTP-GGUF:Qwen3.6-35B-A3B-UD-Q6_K.gguf",
-    "mmproj": "mmproj-F16.gguf",
-    "recipe": "llamacpp",
-    "size": 30.0,
-    "labels": ["custom", "vision", "reasoning", "mtp"]
-  },
-  "Qwen3-Coder-30B": {
-    "source": "huggingface",
-    "checkpoint": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Qwen3-Coder-30B-A3B-Instruct-Q6_K.gguf",
-    "recipe": "llamacpp",
-    "size": 25.1,
-    "labels": ["custom", "coding"]
-  }
-}
-EOF
+# Fail the build loudly on a JSON typo rather than shipping a config lemonade rejects.
+for f in lemonade-defaults user_models recipe_options; do
+    python3 -m json.tool "$DIR/lemonade/$f.json" >/dev/null
+done
 
+mkdir -p /usr/share/kinoite/lemonade-recipes
+install -m 0644 "$DIR/lemonade/user_models.json" /usr/share/kinoite/lemonade-recipes/user_models.json
 # Per-model ctx and llamacpp_args, keyed by the fully-qualified user.<name> id.
 # backend inherits rocm from defaults.json.
+# evict_idle_timeout is the per-model idle window (seconds) before full VRAM eviction;
+# 1800 = 30 min. It complements the auto_evict opt-in in defaults.json above.
 #
 # `-sm tensor -fa on` baked on the seven Qwen3.8-27B recipes only.
 # ON: +44.4% over layer split, composes with MTP, leads vLLM at every depth.
@@ -180,33 +84,7 @@ EOF
 # (template resolves `reasoning_effort|default('xhigh')`). medium renders empty. No quality
 # A/B run. Full rationale: docs/runs/2026-09-05-build-comment-consolidation.md#reasoning-effort-pin-1
 
-cat > /usr/share/kinoite/lemonade-recipes/recipe_options.json << 'EOF'
-{
-  "user.Qwen3.8-27B":            { "ctx_size": 131072,
-                                   "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1 --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'" },
-  "user.Qwen3.8-27B-Fast":       { "ctx_size": 131072,
-                                   "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1 --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'" },
-  "user.Qwen3.8-27B-Q6XL":       { "ctx_size": 131072,
-                                   "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1 --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'" },
-  "user.Qwen3.8-27B-Q8XL":       { "ctx_size": 131072,
-                                   "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1 --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'" },
-  "user.Qwen3.8-27B-Turbo":      { "ctx_size": 131072,
-                                   "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1 --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'" },
-  "user.Qwen3.8-27B-Turbo-Fast": { "ctx_size": 131072,
-                                   "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1 --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'" },
-  "user.Qwen3.8-27B-Turbo-Q8":   { "ctx_size": 131072,
-                                   "llamacpp_args": "-sm tensor -fa on --spec-draft-p-min 0.1 --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'" },
-  "user.Qwen3.6-27B":            { "ctx_size": 131072 },
-  "user.Qwen3.6-35B-A3B":        { "ctx_size": 131072 },
-  "user.Qwen3-Coder-30B":        { "ctx_size": 262144 }
-}
-EOF
-
-# Fail the build loudly on a JSON typo rather than shipping a config lemonade rejects.
-for f in user_models recipe_options; do
-    python3 -m json.tool "/usr/share/kinoite/lemonade-recipes/$f.json" >/dev/null
-done
-
+install -m 0644 "$DIR/lemonade/recipe_options.json" /usr/share/kinoite/lemonade-recipes/recipe_options.json
 ### 2. SELinux: let containers mmap /dev/kfd
 # container-selinux grants hsa_device_t {open read write ioctl ...} but NOT map,
 # and ROCm mmaps /dev/kfd. Without this every model load dies ~25ms in with an HSA
