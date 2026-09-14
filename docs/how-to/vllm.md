@@ -88,21 +88,10 @@ docs/runs/2026-08-22-vllm-speculation-sweep.md.
 +19.1% single-stream and crashes the engine at n>=3 concurrent requests. See
 docs/decisions/2026-08-24-drop-padded-drafter-batch.md.
 
-Decode falls off hard with prompt depth once speculation is on. Budget with:
-
-    ms/forward_pass = 1.186 * (context in K tokens) + 47.2      valid 40-130K
-    tok/s = 1000 * acceptance_length / ms_per_pass              acceptance 2.5-2.8
-
-    ctx     ms/pass   tok/s @ acc 2.8
-      20K      71          39
-      40K      95          30
-      70K     130          22
-     128K     199          14
-
-At 70K the context term is 64% of the forward pass, so **context management
-beats every tuning knob here** — holding a working context at 20K instead of 70K
-is ~1.8x decode for free. Fit and validation in
-docs/runs/2026-08-25-vllm-context-and-clocks.md.
+Decode still slows with prompt depth: 59.73 ms/pass at 189 tokens, 120.50 at
+69,751 (docs/runs/2026-09-13-prod-drafter-attention.md). Context is about half
+of the forward pass at 70K, so **context management beats every tuning knob
+here** — a working context of ~9K instead of 70K is ~1.8x per forward pass.
 
 Two things that look like problems and are not, both settled by measurement:
 
@@ -173,7 +162,7 @@ image build.
    `disable_padded_drafter_batch` numbers below predate its removal on 08-24). Empty string
    disables it. To override — **the single quotes are load-bearing**:
 
-       Environment='VLLM_SPECULATIVE={"method":"mtp","num_speculative_tokens":4,"disable_padded_drafter_batch":true}'
+       Environment='VLLM_SPECULATIVE={"method":"mtp","num_speculative_tokens":4,"attention_backend":"TRITON_ATTN","disable_padded_drafter_batch":true}'
 
    Without them systemd strips the inner double quotes, vLLM gets `{method:mtp,...}`, and the unit
    dies with `status=2/INVALIDARGUMENT`. The launcher echoes the value at startup as
@@ -339,7 +328,7 @@ benchmark was single-stream, which is why it never caught this.
 
 To take the other side of that trade (keep the 19.1%, give up parallel tool calls):
 
-    Environment='VLLM_SPECULATIVE={"method":"mtp","num_speculative_tokens":3,"disable_padded_drafter_batch":true}'
+    Environment='VLLM_SPECULATIVE={"method":"mtp","num_speculative_tokens":3,"attention_backend":"TRITON_ATTN","disable_padded_drafter_batch":true}'
     Environment=VLLM_MAX_SEQS=2
 
 Single quotes are load-bearing — systemd strips bare double quotes and vLLM then rejects the
@@ -487,8 +476,8 @@ Since 2026-08-25 the launcher pins it:
 WHY, and it is not only about answer style. At xhigh the model will spend most of a small
 max_tokens budget inside `<think>` and return little or no content — that reads as a bug and is
 not one. The bigger cost is that reasoning tokens stay in the context and are re-read on every
-later forward pass: against the context model in "Decode performance"
-(`ms/pass = 1.186*ctxK + 47.2`), context is 64% of the forward pass at the ~70K an agentic loop
+later forward pass: against the depth figures in "Decode performance",
+context is about half of the forward pass at the ~70K an agentic loop
 actually runs at. Thinking is paid for once when it is generated and again by every turn after it.
 
 UNMEASURED on this box. `medium` is the conservative middle, not a benchmarked optimum, and no
@@ -542,15 +531,6 @@ OpenAI surface and prefill, not for throughput at agentic context depth.
 
 The full comparison, both engines' measured tables and the tool-calling
 differences: docs/explanation/engine-choice.md.
-
-One footnote worth keeping here, because it looks like a contradiction and is
-not. The context model above (`1.186*ctxK + 47.2`) was fitted at k=3; the box
-now ships k=4, whose fit is steeper (1.501) with a higher intercept (60.98). At
-70K the old model predicts 130.2 ms/pass which, at the acceptance it assumed
-(2.8), is 21.5 tok/s — and measured throughput at 70K is 21.31 tok/s. Acceptance
-rose (2.8 -> 3.52, +26%) and per-pass cost rose with it (+27%), and they cancel.
-The old model still predicts throughput correctly; just do not mix its ms/pass
-with a k=4 table's.
 
 ## Getting a shell inside the pod
 

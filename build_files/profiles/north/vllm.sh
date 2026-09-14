@@ -121,8 +121,10 @@ esac
 # (+19.1% single-stream but crashes at n>=3 concurrent). --no-async-scheduling removed
 # (measured 2026-09-03 at k=4: costs nothing). Full details:
 # docs/runs/2026-09-05-build-comment-consolidation.md#vllmsh
+# The drafter gets TRITON_ATTN explicitly: --attention-backend only reaches the target model.
+# docs/runs/2026-09-13-prod-drafter-attention.md
 EXTRA_ARGS=()
-SPEC_DEFAULT='{"method":"mtp","num_speculative_tokens":4}'
+SPEC_DEFAULT='{"method":"mtp","num_speculative_tokens":4,"attention_backend":"TRITON_ATTN"}'
 SPEC="${VLLM_SPECULATIVE-$SPEC_DEFAULT}"
 if [ -n "$SPEC" ]; then
     EXTRA_ARGS+=(--speculative-config "$SPEC")
@@ -154,7 +156,7 @@ esac
 
 # Reasoning effort: baked to MEDIUM, down from the model's own default (xhigh).
 # Unset = highest effort, not neutral. Thinking tokens cost on every subsequent
-# forward pass; at agentic context depth (~70K) context is 64% of the forward pass.
+# forward pass; at agentic context depth (~70K) context is about half of the forward pass.
 # medium is the conservative middle, not a benchmarked optimum; no quality A/B run.
 # The flag is guarded: a bad value yields a restart loop (vLLM exits 2/INVALIDARGUMENT
 # on unrecognised args; this unit is Restart=always). Full rationale:
@@ -407,7 +409,7 @@ def spec_default():
             return json.loads(m.group(1))
     except Exception:
         pass
-    return {"method": "mtp", "num_speculative_tokens": 4}
+    return {"method": "mtp", "num_speculative_tokens": 4, "attention_backend": "TRITON_ATTN"}
 
 def save_state():
     if os.path.exists(SHADOW):
