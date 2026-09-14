@@ -9,7 +9,7 @@ Two bootc images from one tree: `kinoite` (laptop) and `kinoite-north` (AMD
 ## Map
 
     docs/reference/     gpu-topology, gpu-sysfs, sensors
-    docs/how-to/        vllm, lemonade, llamafactory  <- these three SHIP to /usr/share/kinoite
+    docs/how-to/        vllm, lemonade, llamafactory, r9v  <- these four SHIP to /usr/share/kinoite
                         benchmark-engines, measure-gpu-idle, stream-with-sunshine,
                         fix-build-key-drift
     docs/explanation/   engine-choice, quant-selection, llama-cpp-tensor-split,
@@ -23,12 +23,13 @@ Start at `docs/explanation/engine-choice.md` for the LLM stack, or
 
 ## Current state of the LLM stack
 
-Three stacks, none enabled, all hand-started. They cannot run at once — each
+Four stacks, none enabled, all hand-started. They cannot run at once — each
 wants most of both cards.
 
     lemonade    :13305   llama.cpp GGUF, the decode path
     vLLM        :8000    + Open WebUI :3000, the OpenAI surface
     LLaMA-Factory :7860  + Jupyter :8889, the only one that trains
+    R9V         :8004    Qwen3.8 Flash Next 177B MoE on patched vLLM, one request at a time
 
 lemonade ships Q6_K seeds with MTP and `-sm tensor` on the seven Qwen3.8-27B
 recipes (four stock Unsloth, three DavidAU `-Turbo` uncensored fine-tune).
