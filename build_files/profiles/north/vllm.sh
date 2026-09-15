@@ -96,6 +96,28 @@ if command -v rocm-smi >/dev/null 2>&1; then
 fi
 echo "[vllm-serve] HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-<unset>} model=${VLLM_MODEL:?set VLLM_MODEL}"
 
+# Offline once the model is fully in the cache. Online, vLLM asks the Hub for the file list at startup
+# and exits when that fails, cached model or not, and Restart=always turns that into a loop. "Fully"
+# means the snapshot refs/main names holds config.json and every shard its index lists, so an
+# interrupted first download still resumes online. An HF_HUB_OFFLINE already set wins.
+cached() {
+    python3 - "$1" "${HF_HOME:-/root/.cache/huggingface}/hub" <<'PY'
+import json, os, sys
+repo = os.path.join(sys.argv[2], "models--" + sys.argv[1].replace("/", "--"))
+try:
+    snap = os.path.join(repo, "snapshots", open(os.path.join(repo, "refs", "main")).read().strip())
+    index = os.path.join(snap, "model.safetensors.index.json")
+    files = set(json.load(open(index))["weight_map"].values()) if os.path.exists(index) else {"model.safetensors"}
+except (OSError, ValueError, KeyError):
+    sys.exit(1)
+sys.exit(0 if all(os.path.exists(os.path.join(snap, f)) for f in files | {"config.json"}) else 1)
+PY
+}
+if [ -z "${HF_HUB_OFFLINE+x}" ] && cached "$VLLM_MODEL"; then
+    export HF_HUB_OFFLINE=1
+    echo "[vllm-serve] $VLLM_MODEL is cached; HF_HUB_OFFLINE=1"
+fi
+
 # fuse_norm_quant: kyuz0 disables this norm-quant graph fusion because it crashed on gfx1201.
 # That finding predates this image's vLLM (0.22.1rc1.dev499), so it's worth re-testing — but the
 # default stays FALSE (safe) so a restart can't be broken by an untested flag. To test:

@@ -137,14 +137,15 @@ STATE_DIR=/run/kinoite-llm-sleep
 # See llamafactory.sh.
 STOP_UNITS=(north-llm-pod.service vllm.service open-webui.service lemonade.service llamafactory.service r9v.service)
 
-# Restore goes through MEMBERS, never the pod: the pod's Wants= would start both members
-# unconditionally, losing the point of recording what was actually up.
+# The pod's Wants= starts both members whichever one is started, so vllm.service alone stands for
+# the pod: restoring open-webui by itself would bring vLLM up beside whatever else was running.
+# Open WebUI comes back with vLLM through the same Wants=.
 #
 # Restoring llamafactory brings back the SERVER (LLaMA Board/Jupyter), not an in-flight training
 # run — that process was killed with the container and its unsaved progress is gone. For a long
 # fine-tune, hold the box awake instead: `systemd-inhibit --what=sleep --why='fine-tune' sleep inf`
 # (or just don't let it idle-suspend). Documented in /usr/share/kinoite/llamafactory.md.
-RESTORE_UNITS=(vllm.service open-webui.service lemonade.service llamafactory.service r9v.service)
+RESTORE_UNITS=(vllm.service lemonade.service llamafactory.service r9v.service)
 
 # Above any plausible desktop (idle is tens of MiB per card, more when a dGPU drives the display)
 # and far below the ~28 GiB/card a loaded model holds. Only ever logged, never enforced.
@@ -313,6 +314,24 @@ vram_settle() {
     fi
 }
 
+# A container keeps the network it was created with: pasta copies the host's routes, and podman the
+# upstream DNS servers, at creation. `post` can run before NetworkManager has brought either back,
+# so wait for both before restoring. Bounded, and restores regardless.
+NET_WAIT_SECS=60
+wait_for_network() {
+    local deadline=$((SECONDS + NET_WAIT_SECS))
+    until [ -n "$(ip route show default 2>/dev/null)" ] \
+          && { [ ! -e /run/systemd/resolve/resolv.conf ] \
+               || grep -q '^nameserver' /run/systemd/resolve/resolv.conf; }; do
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            warn "no default route or upstream DNS after ${NET_WAIT_SECS}s; restoring anyway"
+            return 0
+        fi
+        sleep 1
+    done
+    log "network ready"
+}
+
 case "${1-}" in
     pre)
         mkdir -p "$STATE_DIR" || { warn "cannot create $STATE_DIR"; exit 0; }
@@ -328,6 +347,9 @@ case "${1-}" in
             exit 0
         fi
         UCTL_TIMEOUT=30   # `post` only enqueues jobs; nothing here should take long
+        if grep -qs . "$STATE_DIR"/*; then
+            wait_for_network
+        fi
         for_each_user resume_user
         ;;
     *)

@@ -569,12 +569,13 @@ no error at all — fans on, no video, no network, recoverable only by holding t
 
     before sleep   stops north-llm-pod + vllm + open-webui + lemonade (whichever are up),
                    recording what was running to /run/kinoite-llm-sleep/<uid>
-    after resume   starts back exactly those units, with --no-block
+    after resume   waits up to 60 s for a default route and DNS, then starts those units back
+                   with --no-block; vllm brings open-webui with it through the pod
 
 It **restores state, it does not enforce policy**: stop vLLM by hand before suspending and it
-stays stopped after you wake, so waking the box to stream a game leaves both dGPUs free. Restore
-goes through the MEMBER units, never the pod. `/run` is tmpfs on purpose — after a cold boot
-nothing starts, matching the missing `[Install]` sections.
+stays stopped after you wake, so waking the box to stream a game leaves both dGPUs free. Open
+WebUI running alone is not restored, because starting it starts the pod and vLLM with it. `/run`
+is tmpfs on purpose — after a cold boot nothing starts, matching the missing `[Install]` sections.
 
 Expect **1-2 minutes** before the API answers again; the weights reload even though the
 torch.compile cache survives. `journalctl --user -u vllm -f` and wait for `Application startup
@@ -587,7 +588,7 @@ Both edges can be tested **without suspending the box** — call the helper, not
 
     systemctl --user start vllm                    # wait for Application startup complete
     sudo /usr/libexec/kinoite-llm-sleep pre
-    cat /run/kinoite-llm-sleep/$UID                # vllm.service / open-webui.service
+    cat /run/kinoite-llm-sleep/$UID                # vllm.service
     grep . /sys/class/drm/card*/device/mem_info_vram_used   # ~28 GiB -> ~57 MiB in a few seconds
     sudo /usr/libexec/kinoite-llm-sleep post
 
