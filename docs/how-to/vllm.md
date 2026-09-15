@@ -208,8 +208,8 @@ image build.
 Not worth chasing: QuickReduce (arch-gated, never RDNA4); PP=2 instead of TP=2 (batch-1 decode
 serialises both shards, ~21 tok/s, worse); TP=1 (29 GB of weights + KV will not fit 30.4 GB
 usable); PCIe tuning (already 5.0 x16). vllm-radiance ships a custom all-reduce
-(`RADIANCE_USE_R4D_AR`) that may bypass the PYNCCL fallback — unevaluated, see the open item in
-docs/overview.md. The 11% comm ceiling applies to all of it:
+(`RADIANCE_USE_R4D_AR`); it was on in docs/runs/2026-09-15-radiance-mxfp4-dflash.md but never
+isolated. The 11% comm ceiling applies to all of it:
 [docs/runs/2026-08-30-p2p-bandwidth](../runs/2026-08-30-p2p-bandwidth.md).
 
 Qwen3.8-27B is vision-capable; the launcher serves it text-only (--language-model-only) to save

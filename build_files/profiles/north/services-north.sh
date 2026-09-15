@@ -26,7 +26,7 @@ systemctl --global enable app-dev.lizardbyte.app.Sunshine.service
 systemctl enable lemonade-selinux.service
 
 ### Linger for rootless user services
-# All four LLM stacks (lemonade.container, vllm.container, llamafactory.container, r9v.container) are rootless
+# All the LLM stacks (lemonade, vllm, llamafactory, r9v and radiance .container units) are rootless
 # user units. Without linger, systemd tears the user manager down at logout and takes a running
 # server with it — including a server started over SSH, the moment that SSH session ends. That
 # is a genuine trap on a headless-ish box: the model unloads mid-request for no visible reason.
@@ -37,7 +37,7 @@ systemctl enable lemonade-selinux.service
 # does. That also makes it survive a wipe-and-rebase, which a manual `loginctl` call would
 # not.
 #
-# Deliberately does NOT auto-start anything: none of the four .container files has an
+# Deliberately does NOT auto-start anything: none of the .container files has an
 # [Install] section, so a lingering user manager still starts no LLM at boot. This only keeps
 # a HAND-STARTED one alive past logout — which matters most for llamafactory, whose whole point
 # is a run that outlives the SSH session that launched it.
@@ -107,7 +107,7 @@ systemctl enable kinoite-linger.service
 # /usr/lib/systemd/system-sleep/ drop-in (freezes user.slice). Full rationale:
 # docs/runs/2026-09-05-build-comment-consolidation.md#sleep-hook-two-rejected-shapes
 #
-# Serves all four LLM stacks, so kinoite-* and defined here — same rationale as linger above.
+# Serves all the LLM stacks, so kinoite-* and defined here — same rationale as linger above.
 # Depends on kinoite-linger.service for /run/user/<uid>/bus; mask that and this silently no-ops.
 install -D -m 0755 /dev/stdin /usr/libexec/kinoite-llm-sleep << 'EOF'
 #!/bin/bash
@@ -135,7 +135,7 @@ STATE_DIR=/run/kinoite-llm-sleep
 # afterthought: a training run holds VRAM on BOTH R9700s (optimiser state and activations, not
 # just weights), and that is exactly the condition that hangs this box on suspend.
 # See llamafactory.sh.
-STOP_UNITS=(north-llm-pod.service vllm.service open-webui.service lemonade.service llamafactory.service r9v.service)
+STOP_UNITS=(north-llm-pod.service vllm.service open-webui.service lemonade.service llamafactory.service r9v.service radiance.service)
 
 # The pod's Wants= starts both members whichever one is started, so vllm.service alone stands for
 # the pod: restoring open-webui by itself would bring vLLM up beside whatever else was running.
@@ -145,7 +145,7 @@ STOP_UNITS=(north-llm-pod.service vllm.service open-webui.service lemonade.servi
 # run — that process was killed with the container and its unsaved progress is gone. For a long
 # fine-tune, hold the box awake instead: `systemd-inhibit --what=sleep --why='fine-tune' sleep inf`
 # (or just don't let it idle-suspend). Documented in /usr/share/kinoite/llamafactory.md.
-RESTORE_UNITS=(vllm.service lemonade.service llamafactory.service r9v.service)
+RESTORE_UNITS=(vllm.service lemonade.service llamafactory.service r9v.service radiance.service)
 
 # Above any plausible desktop (idle is tens of MiB per card, more when a dGPU drives the display)
 # and far below the ~28 GiB/card a loaded model holds. Only ever logged, never enforced.
@@ -370,6 +370,7 @@ Documentation=file:///usr/share/kinoite/vllm.md
 Documentation=file:///usr/share/kinoite/lemonade.md
 Documentation=file:///usr/share/kinoite/llamafactory.md
 Documentation=file:///usr/share/kinoite/r9v.md
+Documentation=file:///usr/share/kinoite/radiance.md
 
 # All four sleep services (suspend, hibernate, hybrid-sleep, suspend-then-hibernate) declare
 # Requires=sleep.target, so this one hook covers every flavour.

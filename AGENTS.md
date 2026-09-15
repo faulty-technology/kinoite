@@ -42,7 +42,7 @@ Blending reads as thorough and makes both halves unfindable.
 `tutorials/` will likely stay empty. That is correct — this repo has an
 operator, not a learner. Do not invent one to fill the slot.
 
-`docs/how-to/{vllm,lemonade,llamafactory,r9v}.md` ship to `/usr/share/kinoite/`
+`docs/how-to/{vllm,lemonade,llamafactory,r9v,radiance}.md` ship to `/usr/share/kinoite/`
 and get read on the box with no repo checked out. They stay self-contained:
 link out for evidence, never for instructions.
 

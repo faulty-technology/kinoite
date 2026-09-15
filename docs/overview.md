@@ -9,7 +9,7 @@ Two bootc images from one tree: `kinoite` (laptop) and `kinoite-north` (AMD
 ## Map
 
     docs/reference/     gpu-topology, gpu-sysfs, sensors
-    docs/how-to/        vllm, lemonade, llamafactory, r9v  <- these four SHIP to /usr/share/kinoite
+    docs/how-to/        vllm, lemonade, llamafactory, r9v, radiance  <- these SHIP to /usr/share/kinoite
                         benchmark-engines, measure-gpu-idle, stream-with-sunshine,
                         fix-build-key-drift
     docs/explanation/   engine-choice, quant-selection, llama-cpp-tensor-split,
@@ -23,13 +23,14 @@ Start at `docs/explanation/engine-choice.md` for the LLM stack, or
 
 ## Current state of the LLM stack
 
-Four stacks, none enabled, all hand-started. They cannot run at once — each
+Five stacks, none enabled, all hand-started. They cannot run at once — each
 wants most of both cards.
 
     lemonade    :13305   llama.cpp GGUF, the decode path
     vLLM        :8000    + Open WebUI :3000, the OpenAI surface
     LLaMA-Factory :7860  + Jupyter :8889, the only one that trains
     R9V         :8004    Qwen3.8 Flash Next 177B MoE on patched vLLM, one request at a time
+    radiance    :8005    Qwen3.8-27B MXFP4 + DFlash2 on patched vLLM, 8 sequences, 262K context
 
 lemonade ships Q6_K seeds with MTP and `-sm tensor` on the seven Qwen3.8-27B
 recipes (four stock Unsloth, three DavidAU `-Turbo` uncensored fine-tune).
@@ -92,16 +93,11 @@ table does not survive an idle cycle. `lactd` ships disabled.
 
 ### vLLM — `vllm.sh`
 
-- [ ] **vllm-radiance, unevaluated for throughput.** Swapping is a launcher
-      rewrite, not a one-line `Image=` change — radiance wants
-      `ROCM_AITER_UNIFIED_ATTN` (or `R4D`) where `vllm-serve.sh` hard-codes
-      `TRITON_ATTN` for RDNA4 numerics, and its recipe sets ten
-      `VLLM_ROCM_USE_AITER_*` toggles. Test by hand with `podman run` against the
-      shared model cache and `bench.py` first. The image is 4.0 GB compressed
-      against kyuz0's 32 GB and is already pulled. Its recipe needs
-      `--shm-size 4g --cap-add SYS_PTRACE`; do NOT copy its
-      `--group-add render/video` — those groups do not exist in the container and
-      rootless podman fails with `Unable to find group render`.
+- [ ] **radiance-vllm-mxfp4 output quality is unmeasured.** It decodes 170.75
+      tok/s at 70K against the Q8XL daily driver's 56.78, and ran 8 streams clean
+      [runs/2026-09-15-radiance-mxfp4-dflash.md], but on 4-bit MXFP4 weights and
+      an FP8 KV cache at scale 1.0. One sanity prompt and one tool call are the
+      only output checks.
 - [ ] **DFlash2 drafter vs KV-cache group padding — documented, not yet
       triggered.** The current MTP head is already optimal; the trap only fires
       if a multi-layer drafter is swapped in. See

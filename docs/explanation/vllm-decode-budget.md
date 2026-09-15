@@ -68,7 +68,10 @@ All eliminated by measurement on this box. Do not re-chase without new evidence:
 
 That last one covers **stock version bumps only** — not the gfx1201-patched
 builds (stilldeadcode/vllm-radiance, tcclaviger/vllm), which ship hand-written
-kernels. Neither has been run on this box. Radiance's prefix-caching and
+kernels. tcclaviger/vllm has not been run on this box; radiance-vllm-mxfp4 has,
+and its MXFP4 serve decodes about three times the Q8XL daily driver at depth
+([runs/2026-09-15-radiance-mxfp4-dflash](../runs/2026-09-15-radiance-mxfp4-dflash.md)).
+Radiance's prefix-caching and
 drafter-batch flags turned out to be flags this image already had, and both were
 adopted.
 
