@@ -38,7 +38,7 @@ Meta's Muse Glimmer 30B at UD-Q8_K_XL with a DFlash drafter and `-sm tensor`,
 loaded and benchmarked here [runs/2026-09-14-muse-glimmer-q8xl-load.md].
 vLLM ships FP8, MTP k=4, prefix caching on, strict tool calling off.
 
-GPU tuning is `kinoite-gpu-tune.service`: a 235 W cap per card at boot, with
+GPU tuning is `kinoite-gpu-tune.service`: a 250 W cap per card at boot, with
 `VOLTAGE_OFFSET_MV` and `FAN_CURVE` knobs shipped unset because the OverDrive
 table does not survive an idle cycle. `lactd` ships disabled.
 
@@ -46,18 +46,12 @@ table does not survive an idle cycle. `lactd` ships disabled.
 
 ### GPU tuning — `amdgpu.sh`, `tuning.sh`
 
-- [ ] **Measure what the power cap actually costs.** Unmeasured; the prediction
-      is "almost nothing", since decode is bandwidth-bound and mclk was already
-      pinned at top DPM under load. Run `bench.py` at the default cap, 235 W and
-      210 W from a fresh load at a fixed prompt, recording tok/s and
-      `power1_average`. If draw never approaches 235 W the cap is cosmetic and
-      the number can be chosen for acoustics.
 - [ ] **Decide whether an undervolt is worth maintaining at all.** No longer
       blocked, but wiped on every idle cycle, so keeping one means re-running
-      `kinoite-gpu-tune apply` once a loaded model pins the cards awake. Decide
-      after the cap measurement. If it earns its keep, tune per card (start
-      -50 mV, step -25 mV under sustained load until unstable, back off one step;
-      two dies may differ) and load-test before baking a default.
+      `kinoite-gpu-tune apply` once a loaded model pins the cards awake. If it
+      earns its keep, tune per card (start -50 mV, step -25 mV under sustained
+      load until unstable, back off one step; two dies may differ) and load-test
+      before baking a default.
 - [ ] **Fan curve is available but unused.** Wiped on every idle cycle and
       bounded below by the 30% firmware floor, so it can only shape ramp-up on an
       already-awake card. Worth a curve only if the cards sit awake and audible

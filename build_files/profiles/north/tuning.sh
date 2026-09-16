@@ -86,7 +86,7 @@ set -uo pipefail
 
 # --- defaults; override in /etc/kinoite/gpu-tune.conf --------------------------------
 # Watts. Empty leaves the card at its default cap.
-POWER_CAP_W=235
+POWER_CAP_W=250
 # Millivolts, negative for an undervolt (e.g. -50). Empty leaves it alone.
 # NOTE: wiped on every idle cycle. See the durability table in tuning.sh.
 VOLTAGE_OFFSET_MV=
@@ -330,7 +330,7 @@ install -D -m 0644 /dev/stdin /usr/share/kinoite/gpu-tune.conf.example << 'EOF'
 # Power cap in watts. THE ONLY SETTING HERE THAT SURVIVES AN IDLE CYCLE.
 # Ceiling is 330 W with the ppfeaturemask karg applied, 300 W without it.
 # Empty string leaves the card at its default.
-POWER_CAP_W=235
+POWER_CAP_W=250
 
 # GPU voltage offset in millivolts, negative to undervolt. OD_RANGE is -200..0 mV.
 #
