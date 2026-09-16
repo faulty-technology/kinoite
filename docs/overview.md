@@ -93,11 +93,11 @@ table does not survive an idle cycle. `lactd` ships disabled.
 
 ### vLLM — `vllm.sh`
 
-- [ ] **radiance-vllm-mxfp4 output quality is unmeasured.** It decodes 170.75
-      tok/s at 70K against the Q8XL daily driver's 56.78, and ran 8 streams clean
-      [runs/2026-09-15-radiance-mxfp4-dflash.md], but on 4-bit MXFP4 weights and
-      an FP8 KV cache at scale 1.0. One sanity prompt and one tool call are the
-      only output checks.
+- [ ] **radiance-vllm-mxfp4 quality is measured on arithmetic only.** GSM8K 500q
+      paired: 88.80% against the Q8XL daily driver's 88.00%, p = 0.618
+      [runs/2026-09-15-radiance-gsm8k-q8xl.md]. That rules out gross damage from
+      the 4-bit weights, not a 2–3 point loss. Prose, code and multi-turn tool
+      use are still unchecked.
 - [ ] **DFlash2 drafter vs KV-cache group padding — documented, not yet
       triggered.** The current MTP head is already optimal; the trap only fires
       if a multi-layer drafter is swapped in. See
