@@ -40,7 +40,9 @@ vLLM ships FP8, MTP k=4, prefix caching on, strict tool calling off.
 
 GPU tuning is `kinoite-gpu-tune.service`: a 250 W cap per card at boot, with
 `VOLTAGE_OFFSET_MV` and `FAN_CURVE` knobs shipped unset because the OverDrive
-table does not survive an idle cycle. `lactd` ships disabled.
+table does not survive an idle cycle. The cap number is a choice, not a
+measurement [decisions/2026-09-15-gpu-power-cap-250w.md]. `lactd` ships
+disabled.
 
 ## Open
 
