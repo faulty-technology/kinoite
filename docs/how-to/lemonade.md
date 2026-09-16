@@ -27,7 +27,7 @@ Loading the first model then downloads the llama.cpp + ROCm bundle (~2.3 GB) int
 
 ## Recipes (baked custom models)
 
-Curated Qwen GGUFs (Unsloth, plus DavidAU for the -Turbo trio), reconciled into
+Curated Qwen and Muse Glimmer GGUFs (Unsloth, plus DavidAU for the -Turbo trio), reconciled into
 config/user_models.json on every start.
 List and run (via the Web UI, or the CLI inside the container):
 
@@ -44,6 +44,7 @@ List and run (via the Web UI, or the CLI inside the container):
     user.Qwen3.6-27B             dense, vision+thinking                           MTP  Q6_K        22.9 GB  ctx 128K
     user.Qwen3.6-35B-A3B         fast MoE (~3B active), vision+thinking           MTP  UD-Q6_K     30.0 GB  ctx 128K
     user.Qwen3-Coder-30B         agentic coding MoE, 256K native, text-only       --   Q6_K        25.1 GB  ctx 256K
+    user.Muse-Glimmer-30B-Q8XL   Meta's agentic dense 30B, vision+reasoning       DFL  UD-Q8_K_XL  32.3 GB  ctx 128K
 
 ### A seeded recipe you cannot see in the Web UI
 
@@ -65,8 +66,10 @@ Warm one and it appears:
 each have to be in the cache. A main GGUF on disk next to a missing mmproj still
 counts as not downloaded, and the model stays out of the list.
 
-Every recipe with an MTP head available uses it; lemonade turns speculation on by itself
-and you do not pass any flags. Qwen3-Coder-30B is the exception: no MTP build exists for it.
+Every recipe with an MTP head or a DFlash drafter available uses it (`MTP` or `DFL` in the
+table); lemonade turns speculation on by itself and you do not pass any flags.
+Qwen3-Coder-30B is the exception: no MTP build exists for it. DFlash is switched on
+differently from MTP, see "Muse Glimmer" below.
 
 What actually switches speculation on is the recipe's `mtp` LABEL — lemonade passes
 `--spec-type draft-mtp` whenever it sees that label, and passes `--model-draft` only when a
@@ -97,6 +100,48 @@ Two knobs that matter here and nowhere else:
 
 It is not aligned and will not refuse, so the tailnet-exposure warning under "Serving it
 makes the API public to your tailnet" applies to this recipe more than to the others.
+
+### Muse Glimmer
+
+`user.Muse-Glimmer-30B-Q8XL` is Meta's Muse Glimmer 30B, a dense agentic model with a vision
+encoder, from `unsloth/Muse-Glimmer-30B-GGUF`. The recipe pulls three files, and all three
+have to be in the cache before it counts as downloaded, about 38 GB together:
+
+    Muse-Glimmer-30B-UD-Q8_K_XL.gguf       weights
+    mmproj-Muse-Glimmer-30B-BF16.gguf      vision encoder
+    dflash-kquant.gguf                     DFlash drafter
+
+It speculates with DFlash, not MTP, and lemonade needs two things to turn that on:
+
+- **A `draft` checkpoint whose filename starts with `dflash-`.**
+- **The `dflash` label.** Strip it and lemonade does not pass the drafter at all, so the
+  model silently runs unspeculated. An `mtp` label does not substitute for it.
+
+`--spec-draft-n-max 15` is set in its `llamacpp_args`. The drafter predicts a block of 16
+tokens per pass and llama.cpp's default draft length is 3, which would leave most of each
+block unused. Anything above 15 is clamped to 15.
+
+Reasoning is not pinned. The template defaults to `high` when a request sets nothing. Send
+`reasoning_effort` (`low`, `medium`, `high` or `xhigh`) per request to change it; llama.cpp
+hands it to the template as the reasoning strength. Upstream recommends `high` or `xhigh`
+for coding and agentic work.
+
+Upstream's sampling settings are temperature 1.0, top_p 0.95 and top_k 64. Set them in the
+client; the recipe does not.
+
+It ships with `-sm tensor -fa on` and the drafter, and both earn their place. Measured on
+raw llama-server at ctx 98304, 512 tokens, against the same run's other arms and the
+Q8XL daily driver:
+
+    tensor split vs layer split          1.14–1.46x faster at every depth
+    DFlash vs no speculation             1.54–2.87x faster at every depth (2.34x at 70K)
+    vs user.Qwen3.8-27B-Q8XL             0.89x on the ~30-token control prompts,
+                                         1.16x at 191 tokens, 0.88x at 9.5K,
+                                         1.09x at 38K, 1.24x at 70K (69.88 vs 56.24 tok/s)
+
+Loaded through lemonade at the shipped ctx 131072, it holds 20.4 GiB on one R9700 and
+16.6 GiB on the other. Full tables:
+[runs/2026-09-14-muse-glimmer-q8xl-load](../runs/2026-09-14-muse-glimmer-q8xl-load.md).
 
 Qwen3.8-27B is the default all-rounder (MTP + Developer Role); Qwen3-Coder-30B is the
 coding workhorse; -Fast trades the Q6 floor for a lighter quant; -Turbo is the uncensored
@@ -225,10 +270,11 @@ Qwen3.8-27B on the R9700 pair. What the seeds ship and what it buys:
     + MTP draft head                               56.9 tok/s   (+87%)
     + -sm tensor                                   81.8 tok/s   (+44% on top)
 
-Every seeded recipe that has an MTP head available uses it, and you do not pass
-the flags — lemonade adds `--spec-type draft-mtp` itself for any recipe carrying
-the `mtp` label (see "Recipes" above). Only `Qwen3-Coder-30B` runs unspeculated,
-because no MTP build of it exists upstream.
+Every seeded recipe that has an MTP head or a DFlash drafter available uses it, and
+you do not pass the flags. lemonade adds `--spec-type draft-mtp` itself for any
+recipe carrying the `mtp` label, and `--spec-type draft-dflash` for a recipe with
+both the `dflash` label and a `dflash-` draft file (see "Recipes" above). Only
+`Qwen3-Coder-30B` runs unspeculated, because no MTP build of it exists upstream.
 
 `--spec-draft-n-max 4` is what was measured here. Upstream's general MTP advice
 is `n-max 16 --spec-draft-p-min 0.8`, tuned for other models; for Qwen3.8 a large

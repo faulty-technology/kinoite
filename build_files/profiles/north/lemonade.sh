@@ -35,12 +35,17 @@ install -m 0644 "$DIR/lemonade/lemonade-defaults.json" /usr/share/kinoite/lemona
 # Recipes: Q6_K quality floor with MTP on every model that has it, shipped in two
 # packagings — separate draft file vs. embedded in the main GGUF — needing different
 # recipe shapes. IQ4_XS Fast is the speed exception, benchmarked but not
-# quality-tested. Qwen3-Coder-30B is the only model without MTP.
+# quality-tested. Qwen3-Coder-30B is the only model that does not speculate.
 #
 # The "mtp" LABEL is what turns speculation on, not the presence of a draft checkpoint:
 # lemonade adds `--spec-type draft-mtp` when it sees that label and `--model-draft` only
 # when a `draft` checkpoint resolves. So the embedded-head recipes carry no draft entry
 # and still speculate, off the model's own nextn tensors.
+#
+# Muse-Glimmer-30B-Q8XL speculates with a DFlash drafter instead, and lemonade needs BOTH
+# signals for that: a `draft` checkpoint whose filename starts with `dflash-`, and a
+# "dflash" label. Without the label lemonade drops the draft file as well as the spec
+# type, so the recipe would silently run unspeculated. It carries no "mtp" label.
 #
 # The -Turbo trio is DavidAU's uncensored Qwen3.8-27B fine-tune (embedded head, no draft
 # file). Its GGUFs report architecture qwen35 with the same 866-tensor/65-block layout as
@@ -70,6 +75,8 @@ install -m 0644 "$DIR/lemonade/user_models.json" /usr/share/kinoite/lemonade-rec
 # gate whose failure mode is a hard load failure; none has been loaded here.
 # The -Turbo three clear that gate on the same qwen35 tensor layout the stock Qwen3.8
 # recipes were measured on, but have not themselves been loaded here.
+# ON on Muse-Glimmer-30B-Q8XL too, which was loaded here with it and its DFlash drafter,
+# and against layer split: docs/runs/2026-09-14-muse-glimmer-q8xl-load.md.
 # Four constraints: `-fa on` mandatory, iGPU excluded at visibility (not per-flag),
 # ctx hand-computed (0.0444 MiB/token/card + 12174 MiB/card; `--fit` disabled),
 # `--chat-template-kwargs` carries both keys in one JSON object.
@@ -83,6 +90,11 @@ install -m 0644 "$DIR/lemonade/user_models.json" /usr/share/kinoite/lemonade-rec
 # REASONING EFFORT pinned to MEDIUM on the seven Qwen3.8-27B recipes. Absence selects xhigh
 # (template resolves `reasoning_effort|default('xhigh')`). medium renders empty. No quality
 # A/B run. Full rationale: docs/runs/2026-09-05-build-comment-consolidation.md#reasoning-effort-pin-1
+# Muse-Glimmer-30B-Q8XL carries no pin: its template falls back to `high`, and a request's
+# reasoning_effort still reaches it as the template's reasoning_strength.
+#
+# `--spec-draft-n-max 15` on Muse-Glimmer-30B-Q8XL: the DFlash drafter emits a block of 16
+# (anchor plus 15 drafts) and llama.cpp's default draft length is 3.
 
 install -m 0644 "$DIR/lemonade/recipe_options.json" /usr/share/kinoite/lemonade-recipes/recipe_options.json
 ### 2. SELinux: let containers mmap /dev/kfd

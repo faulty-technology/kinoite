@@ -33,7 +33,9 @@ wants most of both cards.
     radiance    :8005    Qwen3.8-27B MXFP4 + DFlash2 on patched vLLM, 8 sequences, 262K context
 
 lemonade ships Q6_K seeds with MTP and `-sm tensor` on the seven Qwen3.8-27B
-recipes (four stock Unsloth, three DavidAU `-Turbo` uncensored fine-tune).
+recipes (four stock Unsloth, three DavidAU `-Turbo` uncensored fine-tune), plus
+Meta's Muse Glimmer 30B at UD-Q8_K_XL with a DFlash drafter and `-sm tensor`,
+loaded and benchmarked here [runs/2026-09-14-muse-glimmer-q8xl-load.md].
 vLLM ships FP8, MTP k=4, prefix caching on, strict tool calling off.
 
 GPU tuning is `kinoite-gpu-tune.service`: a 235 W cap per card at boot, with
@@ -90,6 +92,11 @@ table does not survive an idle cycle. `lactd` ships disabled.
       fall back to the plain non-MTP builds if acceptance drops below ~50%, and
       ships them; nothing here has checked which side of that line this box is
       on. `bench.py` against `-Turbo` vs `-Turbo-Fast` would settle it.
+- [ ] **Muse Glimmer is benchmarked, not evaluated.** Output quality against the
+      Qwen3.8 Q8XL daily driver is untested. Only `--spec-draft-n-max 15` was
+      run, and decode was measured on raw llama-server at ctx 98304 rather than
+      through lemonade at the shipped 131072.
+      [runs/2026-09-14-muse-glimmer-q8xl-load.md]
 
 ### vLLM — `vllm.sh`
 

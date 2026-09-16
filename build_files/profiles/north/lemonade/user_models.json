@@ -103,5 +103,16 @@
 		"recipe": "llamacpp",
 		"size": 25.1,
 		"labels": ["custom", "coding"]
+	},
+	"Muse-Glimmer-30B-Q8XL": {
+		"source": "huggingface",
+		"checkpoints": {
+			"main": "unsloth/Muse-Glimmer-30B-GGUF:Muse-Glimmer-30B-UD-Q8_K_XL.gguf",
+			"draft": "unsloth/Muse-Glimmer-30B-GGUF:dflash-kquant.gguf",
+			"mmproj": "unsloth/Muse-Glimmer-30B-GGUF:mmproj-Muse-Glimmer-30B-BF16.gguf"
+		},
+		"recipe": "llamacpp",
+		"size": 32.3,
+		"labels": ["custom", "vision", "reasoning", "coding", "dflash"]
 	}
 }
