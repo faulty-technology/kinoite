@@ -37,12 +37,13 @@ recipes (four stock Unsloth, three DavidAU `-Turbo` uncensored fine-tune), plus
 Meta's Muse Glimmer 30B at UD-Q8_K_XL with a DFlash drafter and `-sm tensor`,
 loaded and benchmarked here [runs/2026-09-14-muse-glimmer-q8xl-load.md].
 All seven Qwen3.8 recipes sit at ctx 262,144, the checkpoint's native window;
-they were at half of it until 2026-09-18. Q8XL is the only one with slots: two,
+they were at half of it until 2026-09-18. Q8XL is the only one with slots: three,
 sharing that pool, because lemonade otherwise passes `--parallel 1` and
 serializes every concurrent sub-agent request
-[runs/2026-09-18-lemonade-parallel-slots.md]. It ran four until a retained slot's
-cache was shown to evict the others at this box's session depth
-[runs/2026-09-18-kv-quant-and-slot-count.md].
+[runs/2026-09-18-lemonade-parallel-slots.md]. Three is one per live conversation
+in this box's core-agent-plus-two-workers fan-out, which is what a slot is sized
+by; it was 4, then briefly 2
+[decisions/2026-09-18-three-slots-on-q8xl.md].
 vLLM ships FP8, MTP k=4, prefix caching on, strict tool calling off.
 
 GPU tuning is `kinoite-gpu-tune.service`: a 250 W cap per card at boot, with
@@ -102,12 +103,13 @@ disabled.
       measured and baked [runs/2026-09-18-lemonade-parallel-slots.md]. The same
       two flags apply to any of them, but each costs the VRAM of its own pool and
       none has been loaded with slots here.
-- [ ] **Two slots is a correction, not a measured optimum.** 4 lost to 2 on
-      cache residency [runs/2026-09-18-kv-quant-and-slot-count.md], but 2 and 8
-      were never swept against each other, and the 262,144 pool was sized to
-      clear this box's p90 prompt depth with the VRAM left over, not to a
-      measured knee. The pool still cannot hold the observed 565K peak of
-      concurrent demand.
+- [ ] **Three slots is fitted to the current fan-out, not a swept optimum.**
+      One slot per live conversation [decisions/2026-09-18-three-slots-on-q8xl.md];
+      a wider fan-out needs a wider setting. Slot counts were never swept against
+      each other, and the 262,144 pool was sized to clear this box's p90 prompt
+      depth with the VRAM left over, not to a measured knee. The pool still
+      cannot hold the observed 565K peak of concurrent demand, and two ~170K
+      sessions collide at any slot count.
 - [ ] **Muse Glimmer is benchmarked, not evaluated.** Output quality against the
       Qwen3.8 Q8XL daily driver is untested. Only `--spec-draft-n-max 15` was
       run, and decode was measured on raw llama-server at ctx 98304 rather than

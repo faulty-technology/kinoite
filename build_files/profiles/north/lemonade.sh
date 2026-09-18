@@ -98,7 +98,7 @@ install -m 0644 "$DIR/lemonade/user_models.json" /usr/share/kinoite/lemonade-rec
 # `--spec-draft-n-max 15` on Muse-Glimmer-30B-Q8XL: the DFlash drafter emits a block of 16
 # (anchor plus 15 drafts) and llama.cpp's default draft length is 3.
 #
-# `--parallel 2 --kv-unified` with ctx 262144 on Qwen3.8-27B-Q8XL, and on nothing else.
+# `--parallel 3 --kv-unified` with ctx 262144 on Qwen3.8-27B-Q8XL, and on nothing else.
 # lemonade passes `--parallel 1` itself, so without this the daily driver serializes every
 # concurrent sub-agent request behind the one in flight. `--ctx-size` is the whole KV pool
 # rather than a per-slot size: unified, the slots share 262144 cells dynamically, so one deep
@@ -107,10 +107,17 @@ install -m 0644 "$DIR/lemonade/user_models.json" /usr/share/kinoite/lemonade-rec
 # pool needs no rope scaling to reach it. Costs ~5.5 GiB per card over one slot at 131072, and
 # nothing single-stream. The pool is still a bound, and exceeding it kills every live stream
 # after prefill rather than rejecting one request.
-# Two slots rather than four: a retained slot holds its conversation's cache whether or not it
-# is generating, so four ~170K sessions oversubscribe the 262144 pool and evict each other on
-# nearly every switch, while three or more streams are live under 2% of busy wall time.
-# Halving the slots halves that competition at almost no concurrency cost.
+# Three slots, because a slot does two jobs and the second one sizes it. It runs a request, and
+# it RETAINS that conversation's cache between requests, so the count follows the number of live
+# conversations rather than the number of simultaneous ones. This box's agent fans out to two
+# worker streams from one core agent: three conversations, interleaved far more often than
+# overlapping, and a slot short means whichever one comes back next reprocesses from zero.
+# Slots are cheap next to the pool — 21,443 / 21,615 / 22,359 MiB per card for 1 / 2 / 4 at ctx
+# 131072 — so the reason not to add them is pool competition, which only bites once the cells
+# are actually full. Four was too many at ~170K session depth, where the caches oversubscribe
+# 262144 and evict on nearly every switch. Two was too few for this fan-out.
+# None of this helps two deep sessions at once: 2 x ~170K exceeds the pool at any slot count,
+# and only a larger pool moves that.
 # Pool semantics and VRAM: docs/runs/2026-09-18-lemonade-parallel-slots.md
 # Slot count, eviction and the rejected KV quantisation:
 # docs/runs/2026-09-18-kv-quant-and-slot-count.md
