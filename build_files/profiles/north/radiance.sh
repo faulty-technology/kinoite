@@ -1,8 +1,10 @@
 #!/bin/bash
 set -ouex pipefail
 
-# radiance: Qwen3.8-27B in native MXFP4 with the DFlash2 FP8 drafter, on radiance-vllm-mxfp4's
+# radiance: Qwen3.8-27B at MXFP4 with the DFlash2 FP8 drafter, on radiance-vllm-mxfp4's
 # patched vLLM. A hand-started LLM stack beside lemonade, vLLM, LLaMA-Factory and R9V, on :8005.
+# The weights are AMD's post-training quant (Quark with AWQ), not a 4-bit-trained model, and are
+# served as MXFP4 rather than upcast.
 # Measured speed, concurrency and memory: docs/runs/2026-09-15-radiance-mxfp4-dflash.md.
 for bin in podman git; do
     command -v "$bin" >/dev/null || { echo "radiance.sh: missing $bin" >&2; exit 1; }

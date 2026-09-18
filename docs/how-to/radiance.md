@@ -4,8 +4,10 @@
 > runbooks beside this one (`vllm.md`, `lemonade.md`, `llamafactory.md`, `r9v.md`,
 > `radiance.md`) are here in `/usr/share/kinoite/`.
 
-Qwen3.8-27B in native MXFP4 with the DFlash2 FP8 drafter, served by
-radiance-vllm-mxfp4's patched vLLM: TP=2, up to 8 sequences, 262,144-token context.
+Qwen3.8-27B at MXFP4 with the DFlash2 FP8 drafter, served by radiance-vllm-mxfp4's
+patched vLLM: TP=2, up to 8 sequences, 262,144-token context. The weights are AMD's
+post-training quantization of the released model (`amd/Qwen3.8-27B-Quark-AWQ-MXFP4`,
+Quark with AWQ) — not a model trained at 4 bits — served as MXFP4 rather than upcast.
 Ships at /etc/containers/systemd/users/radiance.container, NOT enabled. It cannot
 share the GPUs with the other stacks.
 
