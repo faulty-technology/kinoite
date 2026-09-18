@@ -36,6 +36,11 @@ lemonade ships Q6_K seeds with MTP and `-sm tensor` on the seven Qwen3.8-27B
 recipes (four stock Unsloth, three DavidAU `-Turbo` uncensored fine-tune), plus
 Meta's Muse Glimmer 30B at UD-Q8_K_XL with a DFlash drafter and `-sm tensor`,
 loaded and benchmarked here [runs/2026-09-14-muse-glimmer-q8xl-load.md].
+All seven Qwen3.8 recipes sit at ctx 262,144, the checkpoint's native window;
+they were at half of it until 2026-09-18. Q8XL is the only one with slots: four,
+sharing that pool, because lemonade otherwise passes `--parallel 1` and
+serializes every concurrent sub-agent request
+[runs/2026-09-18-lemonade-parallel-slots.md].
 vLLM ships FP8, MTP k=4, prefix caching on, strict tool calling off.
 
 GPU tuning is `kinoite-gpu-tune.service`: a 250 W cap per card at boot, with
@@ -79,15 +84,25 @@ disabled.
 - [ ] `-sm tensor` is NOT baked on Qwen3.6-27B, Qwen3.6-35B-A3B or
       Qwen3-Coder-30B. None has been loaded here, and the architecture gate's
       failure mode is a hard load failure. Load each once before baking.
-- [ ] **The three `-Turbo` recipes have never been loaded.** Added 2026-09-10.
-      `-sm tensor` and the `medium` reasoning pin are baked on the strength of
-      the GGUF headers matching the stock Qwen3.8 seeds exactly — architecture
-      `qwen35`, 866 tensors, 65 blocks, embedded `blk.64.nextn.*` head — not on
-      a load here. Load one and confirm it serves before trusting the flags.
+- [ ] **Two of the three `-Turbo` recipes have never been loaded.** Added
+      2026-09-10. `-sm tensor` and the `medium` reasoning pin are baked on the
+      strength of the GGUF headers matching the stock Qwen3.8 seeds exactly —
+      architecture `qwen35`, 866 tensors, 65 blocks, embedded `blk.64.nextn.*`
+      head. Turbo-Q8 has since been loaded at ctx 262144 and served with both
+      flags [runs/2026-09-18-lemonade-parallel-slots.md], which clears the
+      architecture gate for that tensor layout; `-Turbo` and `-Turbo-Fast` are
+      still untested.
 - [ ] **MTP acceptance on the `-Turbo` seeds is unmeasured.** Upstream says to
       fall back to the plain non-MTP builds if acceptance drops below ~50%, and
       ships them; nothing here has checked which side of that line this box is
       on. `bench.py` against `-Turbo` vs `-Turbo-Fast` would settle it.
+- [ ] **The other six Qwen3.8 recipes still ship one slot.** Only Q8XL was
+      measured and baked [runs/2026-09-18-lemonade-parallel-slots.md]. The same
+      two flags apply to any of them, but each costs the VRAM of its own pool and
+      none has been loaded with slots here.
+- [ ] **Four slots is a guess, not a measured optimum.** 2, 4 and 8 were not
+      swept against each other, and the 262,144 pool was sized to clear this
+      box's p90 prompt depth with the VRAM left over, not to a measured knee.
 - [ ] **Muse Glimmer is benchmarked, not evaluated.** Output quality against the
       Qwen3.8 Q8XL daily driver is untested. Only `--spec-draft-n-max 15` was
       run, and decode was measured on raw llama-server at ctx 98304 rather than

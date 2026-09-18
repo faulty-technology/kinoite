@@ -34,13 +34,13 @@ List and run (via the Web UI, or the CLI inside the container):
     podman exec lemonade lemonade list
     podman exec lemonade lemonade run user.Qwen3.8-27B     # downloads on first run
 
-    user.Qwen3.8-27B             newest dense, vision+thinking, Developer Role    MTP  UD-Q6_K     23.4 GB  ctx 128K
-    user.Qwen3.8-27B-Fast        same model, 4-bit — the speed pick               MTP  UD-IQ4_XS   15.6 GB  ctx 128K
-    user.Qwen3.8-27B-Q6XL        same model, heavy quant — the quality pick       MTP  UD-Q6_K_XL  25.3 GB  ctx 128K
-    user.Qwen3.8-27B-Q8XL        same model, heaviest that still fits the pair    MTP  UD-Q8_K_XL  31.5 GB  ctx 128K
-    user.Qwen3.8-27B-Turbo       uncensored fine-tune, far fewer thinking tokens  MTP  Q6_K        25.0 GB  ctx 128K
-    user.Qwen3.8-27B-Turbo-Fast  same fine-tune, 4-bit — the speed pick           MTP  IQ4_XS      18.0 GB  ctx 128K
-    user.Qwen3.8-27B-Turbo-Q8    same fine-tune, 8-bit — the quality pick         MTP  Q8_0        31.2 GB  ctx 128K
+    user.Qwen3.8-27B             newest dense, vision+thinking, Developer Role    MTP  UD-Q6_K     23.4 GB  ctx 256K
+    user.Qwen3.8-27B-Fast        same model, 4-bit — the speed pick               MTP  UD-IQ4_XS   15.6 GB  ctx 256K
+    user.Qwen3.8-27B-Q6XL        same model, heavy quant — the quality pick       MTP  UD-Q6_K_XL  25.3 GB  ctx 256K
+    user.Qwen3.8-27B-Q8XL        same model, heaviest that still fits the pair    MTP  UD-Q8_K_XL  31.5 GB  256K pool, 4 slots
+    user.Qwen3.8-27B-Turbo       uncensored fine-tune, far fewer thinking tokens  MTP  Q6_K        25.0 GB  ctx 256K
+    user.Qwen3.8-27B-Turbo-Fast  same fine-tune, 4-bit — the speed pick           MTP  IQ4_XS      18.0 GB  ctx 256K
+    user.Qwen3.8-27B-Turbo-Q8    same fine-tune, 8-bit — the quality pick         MTP  Q8_0        31.2 GB  ctx 256K
     user.Qwen3.6-27B             dense, vision+thinking                           MTP  Q6_K        22.9 GB  ctx 128K
     user.Qwen3.6-35B-A3B         fast MoE (~3B active), vision+thinking           MTP  UD-Q6_K     30.0 GB  ctx 128K
     user.Qwen3-Coder-30B         agentic coding MoE, 256K native, text-only       --   Q6_K        25.1 GB  ctx 256K
@@ -145,10 +145,17 @@ Loaded through lemonade at the shipped ctx 131072, it holds 20.4 GiB on one R970
 
 Qwen3.8-27B is the default all-rounder (MTP + Developer Role); Qwen3-Coder-30B is the
 coding workhorse; -Fast trades the Q6 floor for a lighter quant; -Turbo is the uncensored
-fine-tune. The seeded ctx values exceed one card and use the automatic two-card layer
-split. At 128K the KV cache is large (~33 GB on a dense 27B); if it doesn't fit the pair,
-drop ctx or add q8_0 KV-quant. The iGPU is excluded automatically (see "Device
-visibility").
+fine-tune. The seeded ctx values exceed one card: the seven Qwen3.8 recipes split with
+`-sm tensor`, the rest use the automatic two-card layer split. All seven sit at 262,144,
+which is this checkpoint's native window — they were at half of it until 2026-09-18.
+
+The KV cache is what ctx costs, and on these hybrids it is smaller than the dense
+arithmetic suggests: measured on Qwen3.8-27B-Q8XL, doubling ctx from 131,072 to 262,144
+added 5.5 GiB PER CARD, so the whole 256K cache is about 22 GiB across the pair, not the
+~66 GB a dense 27B would need. Only 16 of 64 layers hold a growing cache (see "Context
+size & caching"). Loaded at 262,144 the pair holds 27.0 / 25.8 GiB for Q8XL and 25.0 /
+23.9 GiB for Turbo-Q8, both of 31.9 GiB per card. If a recipe does not fit, drop its ctx
+or add q8_0 KV-quant. The iGPU is excluded automatically (see "Device visibility").
 
 Throughput figures for MTP and tensor split are in "Performance notes" below; per-quant
 numbers in [runs/2026-08-30-quant-sweep](../runs/2026-08-30-quant-sweep.md).
@@ -319,8 +326,10 @@ Evidence, method and full tables:
    only ever sees the R9700s. See "Device visibility" below, and "invalid kernel
    file" under "Other gotchas" for the failure it prevents.
 3. **`--fit` does not work** under tensor split, so `-c` must be hand-sized. Use
-   0.0444 MiB/token/card plus a 12174 MiB fixed term (Q6_K_XL with MTP head):
-   `ctx_size 131072` -> ~17.9 GB/card, `262144` -> ~23.8 GB/card.
+   0.0444 MiB/token/card plus a fixed term that is PER QUANT — 12174 MiB for
+   Q6_K_XL with MTP head, ~15623 MiB for Q8_K_XL, the difference being weights.
+   Q6_K_XL: `ctx_size 131072` -> ~17.9 GB/card, `262144` -> ~23.8 GB/card.
+   Q8_K_XL: ~21.4 and ~27.0 GB/card, both confirmed by loading it.
 4. **No RCCL**, so the reduction falls back to the generic butterfly path even
    with exactly two devices. `GGML_CUDA_ALLREDUCE` accepts `internal`/`nccl` but
    neither changes it — this is a build-time opt-in, not a setting.
@@ -401,10 +410,13 @@ llama.cpp also reuses the KV cache of a request's common prefix automatically; n
 configure for that.
 
 The lever for LONG context is VRAM for the KV cache, which is SEPARATE from weights and
-grows linearly with ctx_size. For the dense 27Bs (64 layers, 4 KV heads, head_dim 256)
-it is ~0.25 GB per 1K tokens at fp16 — so 128K ~= 32 GB, on TOP of the ~23 GB weights;
-the MoEs are ~0.10 GB/1K (2.5x lighter). So a 27B Q6 at 128K is ~56 GB total — it only
-fits by SPLITTING across both R9700s, which is what the seeded contexts assume.
+grows linearly with ctx_size. MEASURED on Qwen3.8-27B-Q8XL with `-fa on` and `-sm tensor`,
+by loading the same recipe at 131,072 and at 262,144: ~0.084 GB per 1K tokens across the
+pair, so 128K ~= 11 GiB and 256K ~= 22 GiB, on TOP of the weights. That is about a third
+of what the layer arithmetic predicts for a dense 27B, because only 16 of these 64 layers
+hold a growing cache and the other 48 are constant-size SSM state. The MoEs are lighter
+again, unmeasured here. Even so, a 27B at 256K only fits by SPLITTING across both R9700s,
+which is what the seeded contexts assume.
 
 That split is AUTOMATIC here — default -sm layer already spreads layers (and their KV)
 across both R9700s and, measured at ctx 32768, put nothing on the gfx1036 iGPU (only its
@@ -449,6 +461,48 @@ The Coder seed is already the native 262144 (256K), which needs the two-card spl
 Keep it warm: an agent resends a large, mostly-unchanged prompt every turn, and llama.cpp
 reuses the common prefix's KV automatically — but only while the model stays loaded. Enable
 linger (below) and don't let it idle-unload, or you re-process the whole prompt each turn.
+
+### Parallel sub-agents
+
+lemonade starts llama-server with `--parallel 1`, so by default a second request waits for
+the first to finish. Only `user.Qwen3.8-27B-Q8XL` is seeded differently: four slots sharing
+one 262,144-token KV pool. Four agents on short prompts finish in about half the wall clock
+of the same four queued, and each one's first token arrives in ~5 s rather than ~20 s. A
+lone request is exactly as fast either way.
+
+At 40K-token prompts the box is prefill-bound and interleaving four cold prefills costs
+about what queueing them does. What the pool buys there is residency: four agents' contexts
+stay cached at once, so their SECOND turn is where the time comes back.
+
+Check what a loaded model got:
+
+    journalctl --user -u lemonade -b | grep "load_model: initializing"
+    # n_slots = 4, n_ctx_slot = 262144, kv_unified = 'true'
+
+The pool is shared, not per slot, and `ctx_size` sizes the whole thing. THE SUM of every
+live context has to fit it: four agents at 40K each is fine, four at 70K is not. Exceeding
+it kills every stream in flight at once, after they have all paid for their prefill:
+
+    srv decode: Context size has been exceeded
+    srv update_slots: decode() failed
+
+A single request larger than the pool is rejected cleanly instead, before any prefill, with
+a 400 `exceed_context_size_error`. An over-long prompt therefore fails fast; it is never
+served badly. 262,144 is this checkpoint's native window (`qwen35.context_length` in the
+GGUF), so nothing is being stretched to reach it — the other Qwen3.8 seeds sit at 131,072,
+which is half of what the model does unaided. Going ABOVE 262,144 is what would need YaRN,
+and no recipe here configures it.
+
+To give another recipe slots, add to its llamacpp_args in recipe_options.json (the image
+reverts edits to the recipes it ships, so copy it to a new name first):
+
+    --parallel 4 --kv-unified
+
+and raise its ctx_size to cover the concurrent sum. Every slot costs KV, not weights: the
+Q8XL pool at 262,144 holds 27.0 GiB on one card and 25.8 GiB on the other, against 21.4 /
+20.3 GiB for one slot at 131,072. Without `--kv-unified` the pool is split statically
+instead — `--parallel 4` alone gives each slot a private quarter — which caps each agent
+harder but cannot starve one agent with another's context.
 
 ## Other gotchas
 

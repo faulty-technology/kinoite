@@ -1,36 +1,36 @@
 {
 	"user.Qwen3.8-27B": {
-		"ctx_size": 131072,
+		"ctx_size": 262144,
 		"evict_idle_timeout": 1800,
 		"llamacpp_args": "-sm tensor -fa on --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'"
 	},
 	"user.Qwen3.8-27B-Fast": {
-		"ctx_size": 131072,
+		"ctx_size": 262144,
 		"evict_idle_timeout": 1800,
 		"llamacpp_args": "-sm tensor -fa on --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'"
 	},
 	"user.Qwen3.8-27B-Q6XL": {
-		"ctx_size": 131072,
+		"ctx_size": 262144,
 		"evict_idle_timeout": 1800,
 		"llamacpp_args": "-sm tensor -fa on --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'"
 	},
 	"user.Qwen3.8-27B-Q8XL": {
-		"ctx_size": 131072,
+		"ctx_size": 262144,
 		"evict_idle_timeout": 1800,
-		"llamacpp_args": "-sm tensor -fa on --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'"
+		"llamacpp_args": "-sm tensor -fa on --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}' --parallel 4 --kv-unified"
 	},
 	"user.Qwen3.8-27B-Turbo": {
-		"ctx_size": 131072,
+		"ctx_size": 262144,
 		"evict_idle_timeout": 1800,
 		"llamacpp_args": "-sm tensor -fa on --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'"
 	},
 	"user.Qwen3.8-27B-Turbo-Fast": {
-		"ctx_size": 131072,
+		"ctx_size": 262144,
 		"evict_idle_timeout": 1800,
 		"llamacpp_args": "-sm tensor -fa on --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'"
 	},
 	"user.Qwen3.8-27B-Turbo-Q8": {
-		"ctx_size": 131072,
+		"ctx_size": 262144,
 		"evict_idle_timeout": 1800,
 		"llamacpp_args": "-sm tensor -fa on --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}'"
 	},

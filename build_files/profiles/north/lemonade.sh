@@ -78,7 +78,9 @@ install -m 0644 "$DIR/lemonade/user_models.json" /usr/share/kinoite/lemonade-rec
 # ON on Muse-Glimmer-30B-Q8XL too, which was loaded here with it and its DFlash drafter,
 # and against layer split: docs/runs/2026-09-14-muse-glimmer-q8xl-load.md.
 # Four constraints: `-fa on` mandatory, iGPU excluded at visibility (not per-flag),
-# ctx hand-computed (0.0444 MiB/token/card + 12174 MiB/card; `--fit` disabled),
+# ctx hand-computed (0.0444 MiB/token/card + 12174 MiB/card; `--fit` disabled) — the slope
+# holds at 262144, and the fixed term is per QUANT: it is Q6_K_XL's, and Q8XL needs ~15623
+# instead, docs/runs/2026-09-18-lemonade-parallel-slots.md,
 # `--chat-template-kwargs` carries both keys in one JSON object.
 # Full rationale and tensor-split constraints: docs/runs/2026-09-05-build-comment-consolidation.md#-sm-tensor-split-across-recipes
 # Measured: docs/runs/2026-08-30-tensor-split.md, docs/runs/2026-08-30-quant-sweep.md.
@@ -95,6 +97,16 @@ install -m 0644 "$DIR/lemonade/user_models.json" /usr/share/kinoite/lemonade-rec
 #
 # `--spec-draft-n-max 15` on Muse-Glimmer-30B-Q8XL: the DFlash drafter emits a block of 16
 # (anchor plus 15 drafts) and llama.cpp's default draft length is 3.
+#
+# `--parallel 4 --kv-unified` with ctx 262144 on Qwen3.8-27B-Q8XL, and on nothing else.
+# lemonade passes `--parallel 1` itself, so without this the daily driver serializes every
+# concurrent sub-agent request behind the one in flight. `--ctx-size` is the whole KV pool
+# rather than a per-slot size: unified, the four slots share 262144 cells dynamically, which
+# is what four agents at this box's p90 prompt depth need and what the 131072 pool could not
+# hold. 262144 is also the checkpoint's own `qwen35.context_length`, so the pool needs no rope
+# scaling to reach it. Costs ~5.5 GiB per card over one slot at 131072, and nothing single-stream. The pool
+# is still a bound, and exceeding it kills every live stream after prefill rather than
+# rejecting one request. Measured: docs/runs/2026-09-18-lemonade-parallel-slots.md
 
 install -m 0644 "$DIR/lemonade/recipe_options.json" /usr/share/kinoite/lemonade-recipes/recipe_options.json
 ### 2. SELinux: let containers mmap /dev/kfd
