@@ -98,15 +98,22 @@ install -m 0644 "$DIR/lemonade/user_models.json" /usr/share/kinoite/lemonade-rec
 # `--spec-draft-n-max 15` on Muse-Glimmer-30B-Q8XL: the DFlash drafter emits a block of 16
 # (anchor plus 15 drafts) and llama.cpp's default draft length is 3.
 #
-# `--parallel 4 --kv-unified` with ctx 262144 on Qwen3.8-27B-Q8XL, and on nothing else.
+# `--parallel 2 --kv-unified` with ctx 262144 on Qwen3.8-27B-Q8XL, and on nothing else.
 # lemonade passes `--parallel 1` itself, so without this the daily driver serializes every
 # concurrent sub-agent request behind the one in flight. `--ctx-size` is the whole KV pool
-# rather than a per-slot size: unified, the four slots share 262144 cells dynamically, which
-# is what four agents at this box's p90 prompt depth need and what the 131072 pool could not
-# hold. 262144 is also the checkpoint's own `qwen35.context_length`, so the pool needs no rope
-# scaling to reach it. Costs ~5.5 GiB per card over one slot at 131072, and nothing single-stream. The pool
-# is still a bound, and exceeding it kills every live stream after prefill rather than
-# rejecting one request. Measured: docs/runs/2026-09-18-lemonade-parallel-slots.md
+# rather than a per-slot size: unified, the slots share 262144 cells dynamically, so one deep
+# session can still take the whole pool. Static partition would cap each slot at 131072, under
+# this box's working depth. 262144 is also the checkpoint's own `qwen35.context_length`, so the
+# pool needs no rope scaling to reach it. Costs ~5.5 GiB per card over one slot at 131072, and
+# nothing single-stream. The pool is still a bound, and exceeding it kills every live stream
+# after prefill rather than rejecting one request.
+# Two slots rather than four: a retained slot holds its conversation's cache whether or not it
+# is generating, so four ~170K sessions oversubscribe the 262144 pool and evict each other on
+# nearly every switch, while three or more streams are live under 2% of busy wall time.
+# Halving the slots halves that competition at almost no concurrency cost.
+# Pool semantics and VRAM: docs/runs/2026-09-18-lemonade-parallel-slots.md
+# Slot count, eviction and the rejected KV quantisation:
+# docs/runs/2026-09-18-kv-quant-and-slot-count.md
 
 install -m 0644 "$DIR/lemonade/recipe_options.json" /usr/share/kinoite/lemonade-recipes/recipe_options.json
 ### 2. SELinux: let containers mmap /dev/kfd

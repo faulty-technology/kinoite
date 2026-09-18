@@ -17,7 +17,7 @@
 	"user.Qwen3.8-27B-Q8XL": {
 		"ctx_size": 262144,
 		"evict_idle_timeout": 1800,
-		"llamacpp_args": "-sm tensor -fa on --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}' --parallel 4 --kv-unified"
+		"llamacpp_args": "-sm tensor -fa on --chat-template-kwargs '{\"preserve_thinking\":true,\"reasoning_effort\":\"medium\"}' --parallel 2 --kv-unified"
 	},
 	"user.Qwen3.8-27B-Turbo": {
 		"ctx_size": 262144,
