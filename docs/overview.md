@@ -37,13 +37,16 @@ recipes (four stock Unsloth, three DavidAU `-Turbo` uncensored fine-tune), plus
 Meta's Muse Glimmer 30B at UD-Q8_K_XL with a DFlash drafter and `-sm tensor`,
 loaded and benchmarked here [runs/2026-09-14-muse-glimmer-q8xl-load.md].
 All seven Qwen3.8 recipes sit at ctx 262,144, the checkpoint's native window;
-they were at half of it until 2026-09-18. Q8XL is the only one with slots: three,
+they were at half of it until 2026-09-18. Q8XL is the only one with slots: four,
 sharing that pool, because lemonade otherwise passes `--parallel 1` and
 serializes every concurrent sub-agent request
-[runs/2026-09-18-lemonade-parallel-slots.md]. Three is one per live conversation
-in this box's core-agent-plus-two-workers fan-out, which is what a slot is sized
-by; it was 4, then briefly 2
-[decisions/2026-09-18-three-slots-on-q8xl.md].
+[runs/2026-09-18-lemonade-parallel-slots.md]. A slot is sized by live
+conversations, not simultaneous ones: three live here (core agent, one subagent,
+advisor-M) plus one of headroom for the handover
+[decisions/2026-09-19-four-slots-and-a-client-concurrency-cap.md]. It was 4, then
+2, then 3 over 2026-09-18/19 [decisions/2026-09-18-three-slots-on-q8xl.md].
+The client caps simultaneous subagents at 1, which is what made the slot count
+safe to raise; the two settings are one decision and move together.
 vLLM ships FP8, MTP k=4, prefix caching on, strict tool calling off.
 
 GPU tuning is `kinoite-gpu-tune.service`: a 250 W cap per card at boot, with
@@ -103,13 +106,18 @@ disabled.
       measured and baked [runs/2026-09-18-lemonade-parallel-slots.md]. The same
       two flags apply to any of them, but each costs the VRAM of its own pool and
       none has been loaded with slots here.
-- [ ] **Three slots is fitted to the current fan-out, not a swept optimum.**
-      One slot per live conversation [decisions/2026-09-18-three-slots-on-q8xl.md];
-      a wider fan-out needs a wider setting. Slot counts were never swept against
-      each other, and the 262,144 pool was sized to clear this box's p90 prompt
-      depth with the VRAM left over, not to a measured knee. The pool still
-      cannot hold the observed 565K peak of concurrent demand, and two ~170K
-      sessions collide at any slot count.
+- [ ] **Four slots is fitted to the current client, not a swept optimum.**
+      Three live conversations plus one of handover headroom
+      [decisions/2026-09-19-four-slots-and-a-client-concurrency-cap.md]; a wider
+      fan-out, or lifting the client's concurrency cap, needs a wider setting.
+      Slot counts were never swept against each other, and the 262,144 pool was
+      sized to clear this box's p90 prompt depth with the VRAM left over, not to
+      a measured knee. The pool still cannot hold the observed 565K peak of
+      concurrent demand, and two ~170K sessions collide at any slot count.
+- [ ] **The server is tuned against one client's settings.** `--parallel 4`
+      assumes `subagent` runs one at a time and advisor-M is on. Both live in
+      `~/.pi/agent/extensions/` on the laptop, off-repo and unversioned, so
+      nothing here notices if they change.
 - [ ] **Muse Glimmer is benchmarked, not evaluated.** Output quality against the
       Qwen3.8 Q8XL daily driver is untested. Only `--spec-draft-n-max 15` was
       run, and decode was measured on raw llama-server at ctx 98304 rather than

@@ -98,7 +98,7 @@ install -m 0644 "$DIR/lemonade/user_models.json" /usr/share/kinoite/lemonade-rec
 # `--spec-draft-n-max 15` on Muse-Glimmer-30B-Q8XL: the DFlash drafter emits a block of 16
 # (anchor plus 15 drafts) and llama.cpp's default draft length is 3.
 #
-# `--parallel 3 --kv-unified` with ctx 262144 on Qwen3.8-27B-Q8XL, and on nothing else.
+# `--parallel 4 --kv-unified` with ctx 262144 on Qwen3.8-27B-Q8XL, and on nothing else.
 # lemonade passes `--parallel 1` itself, so without this the daily driver serializes every
 # concurrent sub-agent request behind the one in flight. `--ctx-size` is the whole KV pool
 # rather than a per-slot size: unified, the slots share 262144 cells dynamically, so one deep
@@ -107,15 +107,19 @@ install -m 0644 "$DIR/lemonade/user_models.json" /usr/share/kinoite/lemonade-rec
 # pool needs no rope scaling to reach it. Costs ~5.5 GiB per card over one slot at 131072, and
 # nothing single-stream. The pool is still a bound, and exceeding it kills every live stream
 # after prefill rather than rejecting one request.
-# Three slots, because a slot does two jobs and the second one sizes it. It runs a request, and
+# Four slots, because a slot does two jobs and the second one sizes it. It runs a request, and
 # it RETAINS that conversation's cache between requests, so the count follows the number of live
-# conversations rather than the number of simultaneous ones. This box's agent fans out to two
-# worker streams from one core agent: three conversations, interleaved far more often than
-# overlapping, and a slot short means whichever one comes back next reprocesses from zero.
+# conversations rather than the number of simultaneous ones. This box's client holds three at a
+# time — core agent, one subagent, and advisor-M's turn-end reviewer — and the fourth slot is
+# headroom for the transient: a new subagent starting while the previous one's context is still
+# resident. Without it something must be evicted at every handover, and LRU picks by recency, so
+# the victim is often the core agent sitting idle while it blocks on a serial subagent run.
 # Slots are cheap next to the pool — 21,443 / 21,615 / 22,359 MiB per card for 1 / 2 / 4 at ctx
-# 131072 — so the reason not to add them is pool competition, which only bites once the cells
-# are actually full. Four was too many at ~170K session depth, where the caches oversubscribe
-# 262144 and evict on nearly every switch. Two was too few for this fan-out.
+# 131072. They are also no longer a contention risk: the client caps simultaneous subagents at 1
+# (subagent/index.ts MAX_CONCURRENCY), so at most two requests execute at once whatever the slot
+# count, and extra slots buy retention without buying prefill/decode collisions. Four was wrong
+# at ~170K session depth, where four caches oversubscribe 262144 and evict on nearly every
+# switch; the 128K per-agent budget removed that case.
 # None of this helps two deep sessions at once: 2 x ~170K exceeds the pool at any slot count,
 # and only a larger pool moves that.
 # Pool semantics and VRAM: docs/runs/2026-09-18-lemonade-parallel-slots.md
