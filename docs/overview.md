@@ -121,8 +121,12 @@ disabled.
       concurrent demand, and two ~170K sessions collide at any slot count.
 - [ ] **The server is tuned against one client's settings.** `--parallel 4`
       assumes `subagent` runs one at a time. That, and advisor-M's default, live
-      in `~/.pi/agent/extensions/` on the laptop, off-repo and unversioned, so
-      nothing here notices if they change.
+      in `~/.pi/agent/extensions/` on the laptop — off-repo, so nothing here
+      notices if they change. They are not unversioned: `~/.pi/agent` is its own
+      git repo, and `models.json` (base URLs, model ids, sampling, thinking
+      maps) is tracked there as of 2026-09-20, with a pre-commit hook keeping
+      real credentials in the gitignored `auth.json`. Two repos that have to
+      move together and nothing enforces it.
 - [ ] **Cache hits were counted without weighting by similarity.** llama.cpp
       selects a slot by LCP above a 0.100 threshold, so a request reusing 12% of
       its prefix logs as a hit and reprocesses the rest. Every slot-count
