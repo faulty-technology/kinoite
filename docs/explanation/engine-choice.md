@@ -18,6 +18,17 @@ caching off vLLM lost on prefill *and* decode. With it on it wins prefill by
 conversation is warm. So the remaining gap is a genuine engine-speed gap, not a
 missing-feature gap.
 
+**vLLM's prefill lead is depth-dependent, and it is gone at the depth this box
+runs.** Measured cold, against the daily driver: 2.1x at 9.5K tokens, 1.6x at
+37.8K, 1.3x at 69.8K, 0.95x at 149.8K and 0.91x at 169.3K
+([runs/2026-09-20-prefill-and-decode-at-operating-depth](../runs/2026-09-20-prefill-and-decode-at-operating-depth.md)).
+Quote the shallow figure only with its depth.
+
+**And prefill is the larger half of a deep turn, which every decode comparison
+above omits.** A cold 170K turn generating 512 tokens spends 94% of its wall clock
+in prefill on the daily driver — 189.5 s against 12.9 s. Ranking engines on decode
+alone ranks them on the smaller half; the same run measures both.
+
 ## Where each engine actually wins
 
 | axis | winner | margin | measured in |
@@ -26,7 +37,8 @@ missing-feature gap.
 | end-to-end agentic, current defaults | **llama.cpp** | 1.16x | [2026-08-31-agentic-decode](../runs/2026-08-31-agentic-decode.md) |
 | end-to-end agentic, vLLM caching off | **llama.cpp** | 2.01x | [2026-08-31-agentic-decode](../runs/2026-08-31-agentic-decode.md) |
 | warm-prefix TTFT | **vLLM + prefix caching** | 2.2x | [2026-08-31-agentic-decode](../runs/2026-08-31-agentic-decode.md) |
-| cold prefill throughput | **vLLM** | ~2.6x (1,355 vs 513 t/s) | [2026-08-31-journal-real-use](../runs/2026-08-31-journal-real-use.md) |
+| cold prefill throughput, shallow | **vLLM** | ~2.6x (1,355 vs 513 t/s) | [2026-08-31-journal-real-use](../runs/2026-08-31-journal-real-use.md) |
+| cold prefill throughput, 150K+ | **llama.cpp** | 1.10x — the lead inverts | [2026-09-20-prefill-and-decode-at-operating-depth](../runs/2026-09-20-prefill-and-decode-at-operating-depth.md) |
 | 4-way short concurrency | **vLLM** | 1.12x | [2026-08-30-engine-decode-depth](../runs/2026-08-30-engine-decode-depth.md) |
 | 4-way deep concurrency | **llama.cpp** | 2.46x | [2026-08-30-engine-decode-depth](../runs/2026-08-30-engine-decode-depth.md) |
 
