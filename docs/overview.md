@@ -137,14 +137,22 @@ disabled.
 
 ### vLLM — `vllm.sh`
 
-- [ ] **radiance-vllm-mxfp4 quality is measured on arithmetic only.** GSM8K 500q
-      paired: 88.80% against the Q8XL daily driver's 88.00%, p = 0.618
-      [runs/2026-09-15-radiance-gsm8k-q8xl.md]. That rules out gross damage from
-      the 4-bit weights, not a 2–3 point loss. Prose, code and multi-turn tool
-      use are still unchecked. The same limit applies to the fp8-KV question at
-      depth, now also settled only on arithmetic: 91.60% fp8 against 90.40% bf16
-      at 150K, p = 0.3075, with acceptance flat at 6.08 vs 6.04
-      [runs/2026-09-19-radiance-depth-and-fp8-kv-quality.md].
+- [ ] **radiance-vllm-mxfp4 quality is measured on arithmetic only — but at
+      depth, and tightly.** GSM8K 500q paired at ~150K: 96.00% against the Q8XL
+      daily driver's 95.00%, p = 0.18, agreement 98.2%, 95% CI on the difference
+      [−0.17, +2.17] points — so radiance is not worse by more than ~0.2 points
+      [runs/2026-09-20-radiance-vs-q8xl-quality-at-depth.md]. Prose, code,
+      multi-turn tool use and thinking-on are all still unchecked, and that is
+      what a daily driver is judged on. Same limit on the fp8-KV question at
+      depth: 91.60% fp8 against 90.40% bf16, p = 0.3075, acceptance flat at
+      6.08 vs 6.04 [runs/2026-09-19-radiance-depth-and-fp8-kv-quality.md].
+- [x] **Every GSM8K number measured here under a 512-token cap understates the
+      engine.** Raising the cap to 1024 was worth +6.80 points to Q8XL and +4.40
+      to radiance, and it cost the arms asymmetrically — Q8XL writes longer
+      solutions, so it collided with the cap more often, which manufactured an
+      apparently significant p = 0.006 radiance win that vanished at 1024
+      [runs/2026-09-20-radiance-vs-q8xl-quality-at-depth.md]. The 09-15 pair's
+      conclusion still holds; its absolute numbers are low by ~5–7 points.
 - [x] **radiance holds its flat slope to real operating depth.** The 09-15 series
       stopped at 69,751; extended to 169,251 it does not inflect but flattens —
       0.053 ms/1K to 70K, then 0.035 — and still decodes 146 tok/s at 170K
