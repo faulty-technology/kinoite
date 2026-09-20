@@ -44,6 +44,43 @@ The unit allows two hours for all of it.
 - **Suspend:** suspend stops it and wake starts it again (kinoite-llm-sleep), so
   expect the start time again.
 
+## Thinking, and what clients may send
+
+Served model ids are `Qwen3.8`, `Qwen3.6` and `Qwen3.8-MXFP4`, on `127.0.0.1:8005/v1`.
+
+Thinking is controlled per request, and the server default needs no flag — the pinned
+`qwen-fixed-v22.3.jinja` already resolves an unset effort to `medium`, the same level
+lemonade pins on its Qwen3.8 recipes, so the two engines match without configuration.
+
+    "chat_template_kwargs": {"reasoning_effort": "low" | "medium" | "xhigh"}
+    "chat_template_kwargs": {"reasoning_effort": "none"}      # thinking off
+    "chat_template_kwargs": {"enable_thinking": false}        # same thing
+
+Measured here on a problem hard enough to trigger it: `xhigh` produced 2,028 characters of
+reasoning, `low` 1,588, and `none` zero with the working inlined into `content` instead. On a
+trivial prompt no thinking block appears at any level — that is the model choosing, not a
+misconfiguration.
+
+Two things worth knowing before pointing a client at it:
+
+- **The reasoning text arrives in `message.reasoning`, not `message.reasoning_content`.**
+  A client reading `reasoning_content` sees nothing even though thinking ran.
+- **`high` is safe here, and is not safe everywhere.** Stock Qwen3.8 accepts only
+  `xhigh`/`medium`/`low` and raises on anything else, which vLLM returns as an HTTP 500
+  ([QwenLM/Qwen3.8#217](https://github.com/QwenLM/Qwen3.8/issues/217)). The fixed template
+  aliases instead — `high`/`max`/`ultracode`/`extreme` to `xhigh`, `minimal` to `low`,
+  `none`/`off` to thinking-off — and falls back to the default on an unrecognised value
+  rather than erroring. Verified against this server.
+
+## Switching back to lemonade
+
+The two cannot run at once; neither is enabled, so both are a command away:
+
+    systemctl --user stop radiance && systemctl --user start lemonade
+
+lemonade serves `127.0.0.1:13305/api/v1` with model id `Qwen3.8-27B-Q8XL`, so a client
+configured for one needs its base URL and model id changed for the other.
+
 ## Sharing the cards with a smaller model
 
 At the shipped settings it claims both cards whole — 32.5 of 32.6 GiB each — so nothing else can
