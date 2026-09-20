@@ -162,6 +162,17 @@ disabled.
       0.053 ms/1K to 70K, then 0.035 — and still decodes 146 tok/s at 170K
       [runs/2026-09-19-radiance-depth-and-fp8-kv-quality.md]. What bf16 KV would
       cost radiance in decode is still unmeasured; only its pool cost is known.
+- [x] **Concurrency at depth on radiance is free but not faster.** Wall clock
+      scales linearly with N at 45K and 150K per stream — speedup 0.99–1.02x,
+      zero preemptions, up to 6x150K = 900K against the 943,581-token pool
+      [runs/2026-09-20-radiance-concurrency-at-depth.md]. The work is
+      prefill-bound and prefill is compute-bound, so one stream already saturates
+      the cards; the 09-15 short-prompt figure (778 tok/s aggregate) is decode
+      batching, a different regime. **The client's `MAX_CONCURRENCY = 1` was
+      sized for lemonade's eviction-and-reprocess and does not transfer** —
+      raising it against radiance is safe, but buys latency shape and shallow
+      tasks, not faster deep fan-out. Mixed depths and prefix sharing between
+      subagents are the two cases that sweep could not see.
 - [x] **fp8 KV costs 9x the depth slope on the shipped `TRITON_ATTN`, and that
       is the backend's fault, not the dtype's.** It halves KV density exactly and
       admits 262,144, so the 09-18 "context rules vLLM out" verdict does not
