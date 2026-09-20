@@ -232,9 +232,37 @@ it either way. Raising the limit just lets one request consume more of that fixe
 So there is no memory reason to stay at 128K, only a batching one. Note a full 256K prompt is also
 several minutes of prefill, which is the better argument for the 128K default.
 
-No fp8 KV-quant needed at these sizes; add `--kv-cache-dtype fp8` in the launcher only if you also
-want vision or many concurrent sequences. (The model ships an MTP draft head and the launcher uses
-it by default — see `VLLM_SPECULATIVE` above.)
+**fp8 KV-quant depends entirely on the attention backend — do not enable it on the shipped one.**
+It halves KV density exactly (0.01855 MiB/token against 0.03708, a ratio of 1.999) and does admit
+262144. But on this launcher's `TRITON_ATTN` it costs 9.0x the depth slope, 7.795 ms per pass per
+1K against 0.868, and 5.0x the decode at 69,751 tokens. `ROCM_ATTN` is worse in absolute terms at
+every depth. Measured:
+[docs/runs/2026-09-19-vllm-fp8-kv-dtype-depth](../runs/2026-09-19-vllm-fp8-kv-dtype-depth.md)
+and
+[docs/runs/2026-09-19-vllm-fp8-kv-attention-backend](../runs/2026-09-19-vllm-fp8-kv-attention-backend.md).
+
+`ROCM_AITER_UNIFIED_ATTN` is the exception, and it is a real one:
+
+    backend                   bf16 slope   fp8 slope   fp8 penalty
+    TRITON_ATTN (shipped)     0.8671       7.795       9.0x
+    ROCM_ATTN                 3.9244      11.0216      2.8x
+    ROCM_AITER_UNIFIED_ATTN   cannot run   0.8013      --
+
+It runs fp8 KV at a *better* slope than the shipped backend manages at bf16, and it overtakes it
+outright between 69,751 and 149,739 tokens (interpolated crossover ~133K). At 169,251 tokens it is
+200.74 ms/pass against 206.38, while holding 380,042 KV tokens against 204,581 from the same
+memory — 1.86x the pool. Below ~133K the shipped `TRITON_ATTN` + bf16 is still better, so this is
+a depth-dependent choice, not a straight win. It also **cannot** run bf16 on gfx1201 at all: its
+Triton kernel wants 65,792 bytes of LDS against a 65,536 limit, and only fits because fp8 halves
+the K/V tiles.
+
+None of this is adopted, and output quality under fp8 KV on that backend is unmeasured — see the
+second run's "Not measured". The shipped launcher also has no knob for any of it: it takes neither
+`--kv-cache-dtype` nor `--attention-backend` from the environment, nor trailing arguments, so
+testing it means patching a copy (that run gives the three-line patch).
+
+(The model ships an MTP draft head and the launcher uses it by default — see `VLLM_SPECULATIVE`
+above.)
 
 ## VRAM / OOM
 

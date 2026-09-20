@@ -41,10 +41,14 @@ they were at half of it until 2026-09-18. Q8XL is the only one with slots: four,
 sharing that pool, because lemonade otherwise passes `--parallel 1` and
 serializes every concurrent sub-agent request
 [runs/2026-09-18-lemonade-parallel-slots.md]. A slot is sized by live
-conversations, not simultaneous ones: three live here (core agent, one subagent,
-advisor-M) plus one of headroom for the handover
-[decisions/2026-09-19-four-slots-and-a-client-concurrency-cap.md]. It was 4, then
-2, then 3 over 2026-09-18/19 [decisions/2026-09-18-three-slots-on-q8xl.md].
+conversations, not simultaneous ones
+[decisions/2026-09-19-four-slots-and-a-client-concurrency-cap.md]. That decision
+counted three — core agent, one subagent, advisor-M — plus one of handover
+headroom. advisor-M has since been defaulted off client-side, so a session holds
+two, and four covers two concurrent light sessions instead. Same count, and the
+handover headroom argument is unchanged; the third-conversation half of it no
+longer applies. It was 4, then 2, then 3 over 2026-09-18/19
+[decisions/2026-09-18-three-slots-on-q8xl.md].
 The client caps simultaneous subagents at 1, which is what made the slot count
 safe to raise; the two settings are one decision and move together.
 vLLM ships FP8, MTP k=4, prefix caching on, strict tool calling off.
@@ -107,7 +111,8 @@ disabled.
       two flags apply to any of them, but each costs the VRAM of its own pool and
       none has been loaded with slots here.
 - [ ] **Four slots is fitted to the current client, not a swept optimum.**
-      Three live conversations plus one of handover headroom
+      Two live conversations per session plus handover headroom, or two light
+      sessions at once
       [decisions/2026-09-19-four-slots-and-a-client-concurrency-cap.md]; a wider
       fan-out, or lifting the client's concurrency cap, needs a wider setting.
       Slot counts were never swept against each other, and the 262,144 pool was
@@ -115,9 +120,15 @@ disabled.
       a measured knee. The pool still cannot hold the observed 565K peak of
       concurrent demand, and two ~170K sessions collide at any slot count.
 - [ ] **The server is tuned against one client's settings.** `--parallel 4`
-      assumes `subagent` runs one at a time and advisor-M is on. Both live in
-      `~/.pi/agent/extensions/` on the laptop, off-repo and unversioned, so
+      assumes `subagent` runs one at a time. That, and advisor-M's default, live
+      in `~/.pi/agent/extensions/` on the laptop, off-repo and unversioned, so
       nothing here notices if they change.
+- [ ] **Cache hits were counted without weighting by similarity.** llama.cpp
+      selects a slot by LCP above a 0.100 threshold, so a request reusing 12% of
+      its prefix logs as a hit and reprocesses the rest. Every slot-count
+      measurement on 2026-09-18/19 counted those as hits; 28% of "hits" in one
+      boot were below 0.6. The relative comparisons between configurations hold,
+      the absolute miss rates understate.
 - [ ] **Muse Glimmer is benchmarked, not evaluated.** Output quality against the
       Qwen3.8 Q8XL daily driver is untested. Only `--spec-draft-n-max 15` was
       run, and decode was measured on raw llama-server at ctx 98304 rather than
@@ -130,11 +141,43 @@ disabled.
       paired: 88.80% against the Q8XL daily driver's 88.00%, p = 0.618
       [runs/2026-09-15-radiance-gsm8k-q8xl.md]. That rules out gross damage from
       the 4-bit weights, not a 2–3 point loss. Prose, code and multi-turn tool
-      use are still unchecked.
-- [ ] **DFlash2 drafter vs KV-cache group padding — documented, not yet
-      triggered.** The current MTP head is already optimal; the trap only fires
-      if a multi-layer drafter is swapped in. See
-      [explanation/vllm-kv-cache-padding.md].
+      use are still unchecked. The same limit applies to the fp8-KV question at
+      depth, now also settled only on arithmetic: 91.60% fp8 against 90.40% bf16
+      at 150K, p = 0.3075, with acceptance flat at 6.08 vs 6.04
+      [runs/2026-09-19-radiance-depth-and-fp8-kv-quality.md].
+- [x] **radiance holds its flat slope to real operating depth.** The 09-15 series
+      stopped at 69,751; extended to 169,251 it does not inflect but flattens —
+      0.053 ms/1K to 70K, then 0.035 — and still decodes 146 tok/s at 170K
+      [runs/2026-09-19-radiance-depth-and-fp8-kv-quality.md]. What bf16 KV would
+      cost radiance in decode is still unmeasured; only its pool cost is known.
+- [x] **fp8 KV costs 9x the depth slope on the shipped `TRITON_ATTN`, and that
+      is the backend's fault, not the dtype's.** It halves KV density exactly and
+      admits 262,144, so the 09-18 "context rules vLLM out" verdict does not
+      stand [runs/2026-09-19-vllm-fp8-kv-dtype-depth.md]; but on `TRITON_ATTN` it
+      costs 7.795 ms/1K against 0.868. `ROCM_AITER_UNIFIED_ATTN` runs the same
+      fp8 KV at **0.8013**, better than `TRITON_ATTN` does at bf16, and overtakes
+      it between 69,751 and 149,739 tokens — past which this box operates
+      [runs/2026-09-19-vllm-fp8-kv-attention-backend.md].
+- [ ] **AITER + fp8 KV is the first measured improvement on the shipped vLLM
+      launcher at operating depth, and it is not adoptable yet.** 1.86x the KV
+      pool and 2.7% cheaper per pass at 169,251 tokens, from the same memory. It
+      cannot run bf16 on gfx1201 at all (Triton kernel wants 65,792 B of LDS
+      against 65,536). Before it could ship: **output quality under fp8 KV on
+      that backend is entirely unmeasured** — the fp8/bf16 quality pair was run
+      on radiance's R4D, not this — plus concurrency, tool calling, and any
+      repeat or soak. One run per arm
+      [runs/2026-09-19-vllm-fp8-kv-attention-backend.md]. Below ~133K the shipped
+      configuration is still better, so adopting it would be a depth-dependent
+      trade, not a straight win.
+- [x] **DFlash2 drafter vs KV-cache group padding — triggered on radiance, and
+      mitigated there.** Not on the shipped vLLM, whose 1-layer MTP head keeps
+      the buckets at 48/17 and the waste at 6.25%. radiance runs a multi-layer
+      DFlash2 drafter, logs 60.00% from the same three padding layers, and ships
+      the least-wasteful-group-size patch this repo had only heard about:
+      `kv cache groups: size 8, 9 groups (upstream would pick size 5)`
+      [runs/2026-09-19-radiance-depth-and-fp8-kv-quality.md]. See
+      [explanation/vllm-kv-cache-padding.md], which also now covers why fp8 KV
+      does not double a hybrid model's pool.
 - [x] Cheap side-lead on the ~15 ms:
       [ROCm#6347](https://github.com/ROCm/ROCm/issues/6347). Ruled out — six
       fresh spawns all clustered at 24.50–24.53 tok/s, one band.

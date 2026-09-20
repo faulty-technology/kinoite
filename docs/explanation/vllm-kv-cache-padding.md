@@ -66,12 +66,58 @@ drafter whose layer count divides evenly into 48 **and** 16 (i.e., 4 or 8
 layers) costs nothing. A 5- or 7-layer drafter shrinks the usable pool even
 before counting per-request round-ups.
 
-An upstream patch that searches for the least-wasteful group size instead of
-`min` (their buckets → size 8, 9 groups, 72 slots) reportedly reclaimed ~21% of
-KV on a DFlash2-like pairing (evaluated against this repo 2026-08-27; the pads
-sat in expensive full-attention slots, which is why it outperforms the naive
-4.2% block-count estimate). None of it applies here — the current 1-layer MTP
-head is the reason this box stays in the good case.
+## The trap is triggered — on radiance, not on the shipped vLLM
+
+The patch that searches for the least-wasteful group size instead of `min` is no
+longer hypothetical on this box. radiance ships it, and says so in its own
+startup log
+([runs/2026-09-19-radiance-depth-and-fp8-kv-quality](../runs/2026-09-19-radiance-depth-and-fp8-kv-quality.md)):
+
+    [radiance] kv cache groups: size 8, 9 groups, 700 blocks/request (upstream would pick size 5)
+
+Size 5 is exactly what the section above predicts upstream would choose for a
+DFlash2 pairing, and size 8 is the least-wasteful alternative. So the trap fires
+whenever radiance runs — it uses a multi-layer DFlash2 drafter — and radiance
+carries its own mitigation for it. The shipped vLLM stays in the good case for
+the reason given above: its 1-layer MTP head keeps the buckets at 48/17.
+
+The two stacks report different waste from the same padding-layer count:
+
+    shipped vLLM (MTP)   Add 3 padding layers, may waste at most  6.25%
+    radiance (DFlash2)   Add 3 padding layers, may waste at most 60.00%
+
+Three pads cost ten times as much on radiance because they land in expensive
+slots, which is the same effect that made the patch outperform a naive
+block-count estimate. Note that 60% is an upper bound on a specific accounting,
+not a measured loss: radiance's pool is 943,581 tokens at fp8 KV, the largest on
+this box. What the number establishes is that the padding mechanism is load-bearing
+there and worth recording alongside any radiance pool figure — not that 60% of
+radiance's cache is gone.
+
+## A second mechanism: attention block size follows the mamba page
+
+A different line in the same startup sequence sets the attention block size, and
+it is the reason `--kv-cache-dtype fp8` does not exactly double the pool on a
+hybrid model:
+
+    radiance, bf16 KV   attention block size   832 tokens; mamba page padded 1.71%
+    radiance, fp8  KV   attention block size  1648 tokens; mamba page padded 0.73%
+    shipped vLLM, fp8   attention block size  1616 tokens; mamba page padded 0.62%
+
+    "Setting attention block size to N tokens to ensure that attention page size
+     is >= mamba page size."
+
+The mamba page size is fixed — the 48 gated-delta-net layers hold constant state
+and no KV — so halving the attention page size with fp8 forces the block size up
+to stay matched. The constant-state share of the pool is therefore untouched by
+the KV dtype, and the pool grows by less than 2x. Measured on radiance at a fixed
+17.29 GiB pin: 943,581 tokens at fp8 against 509,682 at bf16, a ratio of 1.851,
+from which the dtype-independent share works out at about 8% of per-token cost.
+The same decomposition on the shipped vLLM at `max_model_len` 131,072 gives about
+11%. Both are consistent with the logged mechanism; neither was measured directly.
+
+The practical consequence: **do not predict a KV pool by scaling for the dtype
+alone.** Read it from `GPU KV cache size` at the startup you are describing.
 
 ## If you ever benchmark a DFlash2 drafter
 
