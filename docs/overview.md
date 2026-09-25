@@ -30,7 +30,7 @@ wants most of both cards.
     vLLM        :8000    + Open WebUI :3000, the OpenAI surface
     LLaMA-Factory :7860  + Jupyter :8889, the only one that trains
     R9V         :8004    Qwen3.8 Flash Next 177B MoE on patched vLLM, one request at a time
-    radiance    :8005    Qwen3.8-27B MXFP4 + DFlash2 on patched vLLM, 8 sequences, 262K context
+    radiance    :8005    Qwen3.8-27B MXFP4 + DFlash2 on patched vLLM, 8 sequences, 131K context, 0.57 of VRAM
 
 lemonade ships Q6_K seeds with MTP and `-sm tensor` on the seven Qwen3.8-27B
 recipes (four stock Unsloth, three DavidAU `-Turbo` uncensored fine-tune), plus
@@ -49,9 +49,20 @@ two, and four covers two concurrent light sessions instead. Same count, and the
 handover headroom argument is unchanged; the third-conversation half of it no
 longer applies. It was 4, then 2, then 3 over 2026-09-18/19
 [decisions/2026-09-18-three-slots-on-q8xl.md].
-The client caps simultaneous subagents at 1, which is what made the slot count
-safe to raise; the two settings are one decision and move together.
+That decision paired four slots with a client cap of 1 simultaneous subagent.
+The client now points at radiance and caps at 2, so pointing it back at
+lemonade needs the cap back at 1.
 vLLM ships FP8, MTP k=4, prefix caching on, strict tool calling off.
+
+radiance ships at a 0.57 memory ceiling and a 131,072-token context, leaving
+about 13.8 GiB free per card for a second model. 0.55 fails a cold-compile
+start. Its pool holds 165,906 tokens, about one deep conversation
+[runs/2026-09-25-radiance-dfdfa38-and-cold-start-floor.md], and decode does not
+depend on pool size [runs/2026-09-15-radiance-quadlet-floor.md]. So the client
+is paired to it: a 131072 context
+window and two simultaneous subagents
+[decisions/2026-09-25-radiance-at-057-and-131k.md]. It is pinned to
+radiance-vllm-mxfp4 `dfdfa38`, which carries upstream's DFlash2 draft-head fix.
 
 GPU tuning is `kinoite-gpu-tune.service`: a 250 W cap per card at boot, with
 `VOLTAGE_OFFSET_MV` and `FAN_CURVE` knobs shipped unset because the OverDrive
@@ -119,8 +130,9 @@ disabled.
       sized to clear this box's p90 prompt depth with the VRAM left over, not to
       a measured knee. The pool still cannot hold the observed 565K peak of
       concurrent demand, and two ~170K sessions collide at any slot count.
-- [ ] **The server is tuned against one client's settings.** `--parallel 4`
-      assumes `subagent` runs one at a time. That, and advisor-M's default, live
+- [ ] **The servers are tuned against one client's settings.** lemonade's
+      `--parallel 4` assumes `subagent` runs one at a time; radiance's 0.57 pool
+      assumes two at a time and a 131072 client window. Those, and advisor-M's default, live
       in `~/.pi/agent/extensions/` on the laptop — off-repo, so nothing here
       notices if they change. They are not unversioned: `~/.pi/agent` is its own
       git repo, and `models.json` (base URLs, model ids, sampling, thinking
@@ -168,10 +180,11 @@ disabled.
       [runs/2026-09-20-radiance-concurrency-at-depth.md]. The work is
       prefill-bound and prefill is compute-bound, so one stream already saturates
       the cards; the 09-15 short-prompt figure (778 tok/s aggregate) is decode
-      batching, a different regime. **The client's `MAX_CONCURRENCY = 1` was
-      sized for lemonade's eviction-and-reprocess and does not transfer** —
-      raising it against radiance is safe, but buys latency shape and shallow
-      tasks, not faster deep fan-out. Mixed depths and prefix sharing between
+      batching, a different regime. So a client cap sized for lemonade's
+      eviction-and-reprocess does not transfer; against radiance a higher cap
+      buys latency shape and shallow tasks, not faster deep fan-out. It is 2,
+      against the 0.57 pool
+      [decisions/2026-09-25-radiance-at-057-and-131k.md]. Mixed depths and prefix sharing between
       subagents are the two cases that sweep could not see.
 - [x] **fp8 KV costs 9x the depth slope on the shipped `TRITON_ATTN`, and that
       is the backend's fault, not the dtype's.** It halves KV density exactly and

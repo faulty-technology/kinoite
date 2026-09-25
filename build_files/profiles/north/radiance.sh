@@ -5,7 +5,8 @@ set -ouex pipefail
 # patched vLLM. A hand-started LLM stack beside lemonade, vLLM, LLaMA-Factory and R9V, on :8005.
 # The weights are AMD's post-training quant (Quark with AWQ), not a 4-bit-trained model, and are
 # served as MXFP4 rather than upcast.
-# Measured speed, concurrency and memory: docs/runs/2026-09-15-radiance-mxfp4-dflash.md.
+# Measured speed and concurrency: docs/runs/2026-09-15-radiance-mxfp4-dflash.md. Memory at the
+# shipped ceiling: docs/runs/2026-09-25-radiance-dfdfa38-and-cold-start-floor.md.
 for bin in podman git; do
     command -v "$bin" >/dev/null || { echo "radiance.sh: missing $bin" >&2; exit 1; }
 done
@@ -33,7 +34,7 @@ for p in patch_quark_mxfp4 patch_nvfp4_mxfp4 patch_tp3_pad patch_ar_maxbytes pat
          patch_dflash_calib patch_dflash_mxfp4_kv patch_rmsquant_fusion patch_verify_head \
          patch_kv_group_size patch_topk_composite patch_gdn_shared_build patch_dflash_selector_topk \
          patch_gdn_merge_inproj patch_dynwidth patch_async_dynwidth patch_step_trace \
-         patch_ar_geometry patch_ar_3rank patch_gdn_glue; do
+         patch_ar_geometry patch_ar_qbits patch_ar_3rank patch_gdn_glue; do
     python3 "$p.py"
 done
 # Optional upstream too: without it, thinking-off requests come back with empty content.
@@ -41,7 +42,7 @@ python3 patch_qwen3_thinkoff.py \
     || echo "radiance-start: WARNING: thinkoff patch did not apply; thinking-off requests return empty content" >&2
 cp mxfp4-configs/*.json "$SP"/aiter/ops/triton/configs/gemm/
 cp radiance_preamble.py /opt/radiance_preamble.py
-cp radiance_nvfp4.py radiance_mxfp4.py radiance_gdn.py radiance_rmsquant.py radiance_drafthead.py \
+cp radiance_nvfp4.py radiance_mxfp4.py radiance_gdn.py radiance_gdn_lazy.py radiance_rmsquant.py radiance_drafthead.py \
    radiance_verifyhead.py radiance_gdnmerge.py radiance_aroverlap.py radiance_topk.py \
    radiance_arnq.py radiance_tp3pad.py "$SP"/
 hipcc -O3 -w -std=c++17 -fPIC -shared --offload-arch=gfx1201 $(python3 -m pybind11 --includes) \
@@ -77,6 +78,7 @@ RADIANCE_USE_R4D_AR=1
 RADIANCE_USE_R4D_AR_QUANT=1
 RADIANCE_R4D_REPORT=1
 RADIANCE_AR_MAX_KB=86016
+RADIANCE_AR_QBITS=6
 RADIANCE_PRESHUFFLE=1
 RADIANCE_FUSE_RMS_QUANT=1
 RADIANCE_MXFP4=1
@@ -104,12 +106,16 @@ RADIANCE_TP_PAD_INTERMEDIATE=
 RADIANCE_TP_PAD_DRAFTER=1
 RADIANCE_TP_PAD_STRICT=1
 RADIANCE_GDN_MERGE_INPROJ=1
+RADIANCE_FP8_STREAM_TP1=1
 RADIANCE_GDN_NORM_QUANT=1
 RADIANCE_GDN_STRIDED_GATES=0
 RADIANCE_GDN_EMPTY_OUT=0
 R4D_ATTN_FP8=3
 RADIANCE_AR_OVERLAP=0
 RADIANCE_GDN_FUSED_UPDATE=1
+RADIANCE_GDN_FUSED_MAX_ITEMS=32
+RADIANCE_GDN_TRACE_SIDX=0
+RADIANCE_GDN_LAZY=0
 RADIANCE_DYNAMIC_WIDTH=1
 RADIANCE_DYNW_ALPHA=0.35
 RADIANCE_DYNW_MARGIN=2
@@ -170,7 +176,7 @@ state=${1:?$usage}
 models=${2:?$usage}
 gpus_env=${3:?$usage}
 
-commit=9735329348ae1c9319f01cbe5f7004ec5f4dba63
+commit=dfdfa3832922c9a4253133f09c1f5c0d39748fc7
 image=docker.io/stilldeadcode/vllm-radiance@sha256:45694209177a55a1ab3ba6702fe6e978b1b66a6e66ae3fc066f8d579f7bc4c25
 src=$state/src
 
@@ -202,8 +208,9 @@ else
     complete || { echo "kinoite-radiance-prepare: still incomplete after setup-mxfp4.sh" >&2; exit 1; }
 fi
 
-# The checkout's gpu-detect.sh picks the cards from sysfs by VRAM, which leaves out the iGPU; upstream
-# serves with its list as both ROCR_ and HIP_VISIBLE_DEVICES. It is not written for set -eu.
+# The checkout's gpu-detect.sh picks the cards from sysfs by VRAM, which leaves out the iGPU. As
+# upstream does, ROCR_VISIBLE_DEVICES takes its absolute ids and HIP_VISIBLE_DEVICES indexes into that
+# filtered list, so it is 0..n-1. It is not written for set -eu.
 set +eu
 # shellcheck source=/dev/null
 . "$src/gpu-detect.sh"
@@ -212,7 +219,8 @@ if [ "${RAD_TP:-0}" != 2 ] || [ -z "${RAD_GPU_INDICES:-}" ]; then
     echo "kinoite-radiance-prepare: expected two usable R9700s, found ${RAD_GPU_COUNT:-0}" >&2
     exit 1
 fi
-printf 'ROCR_VISIBLE_DEVICES=%s\nHIP_VISIBLE_DEVICES=%s\n' "$RAD_GPU_INDICES" "$RAD_GPU_INDICES" > "$gpus_env"
+hip_ids=$(seq -s, 0 $((RAD_TP - 1)))
+printf 'ROCR_VISIBLE_DEVICES=%s\nHIP_VISIBLE_DEVICES=%s\n' "$RAD_GPU_INDICES" "$hip_ids" > "$gpus_env"
 echo "kinoite-radiance-prepare: GPUs $RAD_GPU_INDICES"
 PREPAREEOF
 bash -n /usr/libexec/kinoite-radiance-prepare
@@ -263,14 +271,16 @@ EnvironmentFile=/usr/share/kinoite/radiance/radiance.env
 # Written per start by kinoite-radiance-prepare. Keep %t bare; lemonade.sh explains why ./%t breaks.
 EnvironmentFile=%t/kinoite-radiance/gpus.env
 
-# serve-mxfp4.sh's vllm serve arguments at the pinned commit with its default batch shape, whose
-# --kv-cache-memory is upstream's measured value for this hardware.
+# serve-mxfp4.sh's vllm serve arguments at the pinned commit, except the memory ceiling: a lower
+# --gpu-memory-utilization with vLLM profiling the KV cache (no --kv-cache-memory pin) and a 131072
+# context, so a second model fits beside it. The ceiling must still hold one 131072 request on a
+# start that compiles from an empty cache. See docs/decisions/2026-09-25-radiance-at-057-and-131k.md.
 Entrypoint=/bin/bash
 Exec=-l /opt/kinoite/radiance-start.sh /models/Qwen3.8-27B-MXFP4-mtpfp8 \
     --served-model-name Qwen3.8 Qwen3.6 Qwen3.8-MXFP4 --host 0.0.0.0 --port 8005 \
     --kv-cache-dtype fp8 --tensor-parallel-size 2 \
-    --gpu-memory-utilization 0.98 --kv-cache-memory 18563072000 \
-    --max-model-len 262144 --max-num-seqs 8 --max-num-batched-tokens 8192 \
+    --gpu-memory-utilization 0.57 \
+    --max-model-len 131072 --max-num-seqs 8 --max-num-batched-tokens 8192 \
     --attention-backend R4D \
     --speculative-config '{"method":"dflash","model":"/models/Qwen3.8-27B-DFlash2-FP8","num_speculative_tokens":7,"attention_backend":"TRITON_ATTN","disable_padded_drafter_batch":true,"draft_sample_method":"greedy"}' \
     --no-async-scheduling \
