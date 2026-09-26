@@ -5,7 +5,7 @@
 > `radiance.md`) are here in `/usr/share/kinoite/`.
 
 Qwen3.8-27B at MXFP4 with the DFlash2 FP8 drafter, served by radiance-vllm-mxfp4's
-patched vLLM: TP=2, up to 8 sequences, 131,072-token context, half the cards' memory. The weights are AMD's
+patched vLLM: TP=2, up to 8 sequences, 262,144-token context. The weights are AMD's
 post-training quantization of the released model (`amd/Qwen3.8-27B-Quark-AWQ-MXFP4`,
 Quark with AWQ) — not a model trained at 4 bits — served as MXFP4 rather than upcast.
 Ships at /etc/containers/systemd/users/radiance.container, NOT enabled. It cannot
@@ -38,14 +38,9 @@ The unit allows two hours for all of it.
 
 ## While it runs
 
-- **VRAM:** about 18.0 GiB per card, leaving about 13.8 GiB free on each
-  (docs/runs/2026-09-25-radiance-dfdfa38-and-cold-start-floor.md).
-- **KV cache:** 165,906 tokens shared by every running request, so about one full-length
-  conversation, and 155,869 on a start that compiles from an empty cache. Past that, vLLM preempts and recomputes rather than failing;
-  `curl -s http://127.0.0.1:8005/metrics | grep num_preemptions_total` counts it.
-- **Host RAM:** available RAM bottomed at ~40 GiB under 8 concurrent streams at the
-  upstream memory settings (docs/runs/2026-09-15-radiance-mxfp4-dflash.md). Don't start it
-  mid-game.
+- **VRAM:** both cards fill to within about 100 MiB of full.
+- **Host RAM:** available RAM bottomed at ~40 GiB under 8 concurrent streams
+  (docs/runs/2026-09-15-radiance-mxfp4-dflash.md). Don't start it mid-game.
 - **Suspend:** suspend stops it and wake starts it again (kinoite-llm-sleep), so
   expect the start time again.
 
@@ -88,27 +83,28 @@ configured for one needs its base URL and model id changed for the other.
 
 ## Sharing the cards with a smaller model
 
-The ~13.8 GiB free per card is there for a second model. Start it **after** radiance: each takes
-its share at startup and holds it.
-
-Clients must stay inside the 131,072-token context: a longer prompt is rejected with HTTP 400.
-Set the client's context window to 131072 so it compacts first.
-
-## Using the whole cards instead
-
-For the full 262,144-token context and a pool that holds several deep conversations at once,
-shadow the unit with upstream's memory settings. Nothing else can load while it runs:
+At the shipped settings it claims both cards whole — 32.5 of 32.6 GiB each — so nothing else can
+load. To keep room for a side model, shadow the unit and trade cache for headroom:
 
     mkdir -p ~/.config/containers/systemd/users
     cp /etc/containers/systemd/users/radiance.container ~/.config/containers/systemd/users/
-    # in Exec=: set `--gpu-memory-utilization 0.98 --kv-cache-memory 18563072000`
-    #           and `--max-model-len 262144`
+    # in Exec=: drop `--kv-cache-memory 18563072000`, set `--gpu-memory-utilization 0.57`
+    #           and `--max-model-len 131072`
     systemctl --user daemon-reload && systemctl --user restart radiance
 
-That claims 32.5 of 32.6 GiB per card for a 943,581-token pool, with decode unchanged
-(docs/runs/2026-09-15-radiance-quadlet-floor.md). A shadow unit is a full copy, so re-copy it
-after an OS update that changes the baked one. Remove it and restart to return to the shipped
-settings.
+That holds 165,906 tokens of cache and leaves about 13.8 GiB free per card
+(docs/runs/2026-09-25-radiance-dfdfa38-and-cold-start-floor.md). Don't go lower: 0.55 fails to
+start whenever the compile cache is empty.
+
+Set clients to a 131072 context window, or prompts past it fail with HTTP 400.
+
+Decode is unchanged, but sessions slow down. A session's subagents no longer fit in the cache
+together, so they keep re-reading each other's history. In real use, prefix cache hits fell from
+95.6% to 41.9% (docs/runs/2026-09-25-radiance-057-real-use-prefix-cache.md). Use it only while
+the other model is actually loaded.
+
+Start the other model **after** radiance: each takes its share at startup and holds it. A shadow
+unit is a full copy, so re-copy it after an OS update that changes the baked one.
 
 ## Freeing disk
 
@@ -127,5 +123,4 @@ clear the compile cache, and the checkpoint too if the new commit changes it:
     rm -rf ~/.local/share/models/radiance/Qwen3.8-27B-MXFP4-mtpfp8   # only if needed
     systemctl --user start radiance
 
-Measured speed and concurrency: docs/runs/2026-09-15-radiance-mxfp4-dflash.md. Memory at the
-shipped settings: docs/runs/2026-09-25-radiance-dfdfa38-and-cold-start-floor.md.
+Measured speed, concurrency and memory: docs/runs/2026-09-15-radiance-mxfp4-dflash.md.

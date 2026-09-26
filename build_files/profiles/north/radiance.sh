@@ -5,8 +5,7 @@ set -ouex pipefail
 # patched vLLM. A hand-started LLM stack beside lemonade, vLLM, LLaMA-Factory and R9V, on :8005.
 # The weights are AMD's post-training quant (Quark with AWQ), not a 4-bit-trained model, and are
 # served as MXFP4 rather than upcast.
-# Measured speed and concurrency: docs/runs/2026-09-15-radiance-mxfp4-dflash.md. Memory at the
-# shipped ceiling: docs/runs/2026-09-25-radiance-dfdfa38-and-cold-start-floor.md.
+# Measured speed, concurrency and memory: docs/runs/2026-09-15-radiance-mxfp4-dflash.md.
 for bin in podman git; do
     command -v "$bin" >/dev/null || { echo "radiance.sh: missing $bin" >&2; exit 1; }
 done
@@ -271,16 +270,16 @@ EnvironmentFile=/usr/share/kinoite/radiance/radiance.env
 # Written per start by kinoite-radiance-prepare. Keep %t bare; lemonade.sh explains why ./%t breaks.
 EnvironmentFile=%t/kinoite-radiance/gpus.env
 
-# serve-mxfp4.sh's vllm serve arguments at the pinned commit, except the memory ceiling: a lower
-# --gpu-memory-utilization with vLLM profiling the KV cache (no --kv-cache-memory pin) and a 131072
-# context, so a second model fits beside it. The ceiling must still hold one 131072 request on a
-# start that compiles from an empty cache. See docs/decisions/2026-09-25-radiance-at-057-and-131k.md.
+# serve-mxfp4.sh's vllm serve arguments at the pinned commit with its default batch shape, whose
+# --kv-cache-memory is upstream's measured value for this hardware. The pool it sizes is what keeps a
+# session's conversations in the prefix cache between turns; see
+# docs/decisions/2026-09-25-radiance-back-to-full-cards.md.
 Entrypoint=/bin/bash
 Exec=-l /opt/kinoite/radiance-start.sh /models/Qwen3.8-27B-MXFP4-mtpfp8 \
     --served-model-name Qwen3.8 Qwen3.6 Qwen3.8-MXFP4 --host 0.0.0.0 --port 8005 \
     --kv-cache-dtype fp8 --tensor-parallel-size 2 \
-    --gpu-memory-utilization 0.57 \
-    --max-model-len 131072 --max-num-seqs 8 --max-num-batched-tokens 8192 \
+    --gpu-memory-utilization 0.98 --kv-cache-memory 18563072000 \
+    --max-model-len 262144 --max-num-seqs 8 --max-num-batched-tokens 8192 \
     --attention-backend R4D \
     --speculative-config '{"method":"dflash","model":"/models/Qwen3.8-27B-DFlash2-FP8","num_speculative_tokens":7,"attention_backend":"TRITON_ATTN","disable_padded_drafter_batch":true,"draft_sample_method":"greedy"}' \
     --no-async-scheduling \
