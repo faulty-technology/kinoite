@@ -13,7 +13,7 @@
 set -euo pipefail
 
 SRC_COMMIT=81ba47e   # armiaab/libfprint tip; carries fix 78b0cff (timeout/suspend/UAF/assertion/heap fixes)
-DEPS="gcc-c++ make meson rpm-build pkgconf-pkg-config git tar glib2-devel gusb-devel systemd-devel bzip2-devel zlib-devel openssl-devel cairo-devel pixman-devel"
+DEPS="gcc-c++ make meson rpm-build pkgconf-pkg-config git tar glib2-devel libgusb-devel systemd-devel bzip2-devel zlib-devel openssl-devel cairo-devel pixman-devel binutils"
 
 # --- toolchain gate: ostree hosts build in a throwaway container ---
 if [ "${1:-}" != "--in-container" ]; then
@@ -63,7 +63,7 @@ Summary:        Drop-in libfprint + elanmoc2 driver (04f3:0c99); elan/elanmoc ex
 License:        MIT
 Source0:        libfprint-moc2.tar.gz
 BuildRequires:  gcc-c++, make, meson, pkgconf-pkg-config
-BuildRequires:  glib2-devel, gusb-devel, systemd-devel, bzip2-devel, zlib-devel
+BuildRequires:  glib2-devel, libgusb-devel, systemd-devel, bzip2-devel, zlib-devel
 BuildRequires:  openssl-devel, cairo-devel, pixman-devel
 
 %description
