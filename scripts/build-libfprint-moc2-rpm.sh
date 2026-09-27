@@ -13,7 +13,7 @@
 set -euo pipefail
 
 SRC_COMMIT=81ba47e   # armiaab/libfprint tip; carries fix 78b0cff (timeout/suspend/UAF/assertion/heap fixes)
-DEPS="gcc-c++ make meson rpm-build pkgconf-pkg-config git tar glib2-devel libgusb-devel systemd-devel bzip2-devel zlib-devel openssl-devel cairo-devel pixman-devel binutils"
+DEPS="gcc-c++ make meson rpm-build pkgconf-pkg-config git tar cpio glib2-devel libgusb-devel systemd-devel bzip2-devel zlib-devel openssl-devel cairo-devel pixman-devel binutils"
 
 # --- toolchain gate: ostree hosts build in a throwaway container ---
 if [ "${1:-}" != "--in-container" ]; then
@@ -90,12 +90,15 @@ DESTDIR=%{buildroot} meson install -C builddir
 %files -f /tmp/libfprint-moc2.filelist
 SPEC
 rpmbuild -ba --define "_topdir $HOME/rpmbuild" "$WORK/spec"
-RPM=$(ls ~/rpmbuild/RPMS/*/libfprint-*.rpm | head -1)
+RPM=$(ls ~/rpmbuild/RPMS/*/libfprint-*.rpm | grep -v -- '-debug' | head -1)
 if [ -d /out ]; then install -m 644 "$RPM" /out/; fi
 
 echo "==> verify built .so driver registration"
-SO=$(find ~/rpmbuild/BUILD -name 'libfprint-2.so*' | head -1)
-test -n "$SO"
+# the rpmbuild rmbuild phase deletes the build tree, so verify by extracting the RPM
+VDIR=$(mktemp -d)
+rpm2cpio "$RPM" | cpio -idm --quiet -D "$VDIR"
+SO="$VDIR/usr/lib64/libfprint-2.so.2.0.0"
+test -s "$SO"
 test "$(strings "$SO" | grep -c 'ELAN Match-on-Chip 2')" -ge 1
 test "$(strings "$SO" | grep -c 'Elan MOC Sensors')" -eq 0
 test "$(strings "$SO" | grep -c 'ElanTech Fingerprint Sensor')" -eq 0
