@@ -58,7 +58,7 @@ tar czf ~/rpmbuild/SOURCES/libfprint-moc2.tar.gz -C "$WORK" src
 cat > "$WORK/spec" <<'SPEC'
 Name:           libfprint
 Version:        1.94.100
-Release:        99.moc2.fc44%{?dist}
+Release:        99.moc2.fc44
 Summary:        Drop-in libfprint + elanmoc2 driver (04f3:0c99); elan/elanmoc excluded
 License:        MIT
 Source0:        libfprint-moc2.tar.gz
@@ -67,24 +67,25 @@ BuildRequires:  glib2-devel, gusb-devel, systemd-devel, bzip2-devel, zlib-devel
 BuildRequires:  openssl-devel, cairo-devel, pixman-devel
 
 %description
-Upstream libfprint 1.94.x plus the Depau elanmoc2 match-on-chip driver with an
-added 04f3:0c99 id-table entry. Built without the 'elan' and 'elanmoc'
-drivers so 0c99 binds exclusively to elanmoc2. Test package for the kinoite
-fingerprint fix phase; displaces the stock libfprint (same Name, higher Release).
+Upstream libfprint 1.94.x (fork tip tracks ~1.94.9) plus the Depau elanmoc2
+match-on-chip driver with an added 04f3:0c99 id-table entry. Built without
+the 'elan' and 'elanmoc' drivers so 0c99 binds exclusively to elanmoc2.
+Test package for the kinoite fingerprint fix phase; displaces the stock
+libfprint (same Name, higher Release).
 
 %prep
 %setup -q -n src
 
 %build
 DRIVERS="upektc_img,vfs5011,vfs7552,aes3500,aes4000,aes1610,aes1660,aes2660,aes2501,aes2550,vfs101,vfs301,vfs0050,etes603,egis0570,egismoc,vcom5s,synaptics,elanmoc2,uru4000,upektc,upeksonly,upekts,goodixmoc,nb1010,fpcmoc,realtek,focaltech_moc"
-meson setup builddir -Dprefix=/usr -Ddrivers="$DRIVERS" -Dintrospection=false -Dgtk-examples=false
+meson setup builddir -Dprefix=/usr -Ddrivers="$DRIVERS" -Dintrospection=false -Dgtk-examples=false -Ddoc=false -Dinstalled-tests=false
 meson compile -C builddir
 
 %install
 DESTDIR=%{buildroot} meson install -C builddir
+( cd %{buildroot} && find . \( -type f -o -type l \) | sed 's|^\./|/|' | sort ) > /tmp/libfprint-moc2.filelist
 
-%files
-%(cd %{buildroot} && find . -type f | sed 's|^\./||' | sort)
+%files -f /tmp/libfprint-moc2.filelist
 SPEC
 rpmbuild -ba --define "_topdir $HOME/rpmbuild" "$WORK/spec"
 RPM=$(ls ~/rpmbuild/RPMS/*/libfprint-*.rpm | head -1)

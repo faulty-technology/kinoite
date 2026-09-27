@@ -93,9 +93,10 @@ jobs:
 
       # Builds the patched libfprint RPM (source pinned in scripts/build-libfprint-moc2-rpm.sh)
       # and stages it into build_files so the ctx stage carries it into the image.
-      # Runs once per matrix variant; bumping the fix later means changing the
-      # SRC_COMMIT hash in that script only.
+      # Laptop image only (the north profile never installs it); bumping the fix
+      # later means changing the SRC_COMMIT hash in that script only.
       - name: Build libfprint-moc2 RPM
+        if: matrix.profile == 'base'
         run: |
           mkdir -p build_files/rpms rpm-out
           docker run --rm \
