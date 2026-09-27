@@ -24,7 +24,7 @@ if [ "${1:-}" != "--in-container" ]; then
       OUTDIR=$(mktemp -d /tmp/fprint-moc2-out.XXXXXX)
       echo "==> immutable /usr detected: building in a disposable fedora:44 container"
       exec podman run --rm -v "$(dirname "$SCRIPT")":/host:z -v "$OUTDIR":/out \
-        docker.io/fedora/fedora:44 \
+        quay.io/fedora/fedora:44 \
         bash -c "dnf install -y ${DEPS} && HOST_OSTREE=1 HOST_OUTDIR='$OUTDIR' bash /host/$(basename "$SCRIPT") --in-container"
     fi
     echo "==> install build deps"
