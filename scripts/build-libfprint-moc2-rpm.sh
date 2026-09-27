@@ -77,6 +77,8 @@ libfprint (same Name, higher Release).
 %setup -q -n src
 
 %build
+# F44's systemd-devel ships only libudev.pc; meson looks up the name 'udev'.
+ln -sf /usr/lib64/pkgconfig/libudev.pc /usr/lib64/pkgconfig/udev.pc
 DRIVERS="upektc_img,vfs5011,vfs7552,aes3500,aes4000,aes1610,aes1660,aes2660,aes2501,aes2550,vfs101,vfs301,vfs0050,etes603,egis0570,egismoc,vcom5s,synaptics,elanmoc2,uru4000,upektc,upeksonly,upekts,goodixmoc,nb1010,fpcmoc,realtek,focaltech_moc"
 meson setup builddir -Dprefix=/usr -Ddrivers="$DRIVERS" -Dintrospection=false -Dgtk-examples=false -Ddoc=false -Dinstalled-tests=false
 meson compile -C builddir
