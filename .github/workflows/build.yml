@@ -91,6 +91,21 @@ jobs:
           sep-tags: " "
           sep-annotations: " "
 
+      # Builds the patched libfprint RPM (source pinned in scripts/build-libfprint-moc2-rpm.sh)
+      # and stages it into build_files so the ctx stage carries it into the image.
+      # Runs once per matrix variant; bumping the fix later means changing the
+      # SRC_COMMIT hash in that script only.
+      - name: Build libfprint-moc2 RPM
+        run: |
+          mkdir -p build_files/rpms rpm-out
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}/scripts/build-libfprint-moc2-rpm.sh":/script.sh:ro \
+            -v "${GITHUB_WORKSPACE}/rpm-out":/out \
+            docker.io/fedora/fedora:44 \
+            bash /script.sh
+          cp rpm-out/libfprint-*.rpm build_files/rpms/
+          ls -l build_files/rpms/
+
       - name: Build Image
         id: build_image
         uses: redhat-actions/buildah-build@v3

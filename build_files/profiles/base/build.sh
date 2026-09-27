@@ -15,6 +15,7 @@ SHARED="$(cd "$PROFILE_DIR/../../scripts" && pwd)"
 "$SHARED/1password.sh"
 "$SHARED/google-chrome.sh"
 "$SHARED/tailscale.sh"
+"$SHARED/libfprint-moc2.sh"
 
 # Profile-specific package set
 "$PROFILE_DIR/packages.sh"
