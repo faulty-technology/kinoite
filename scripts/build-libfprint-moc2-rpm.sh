@@ -96,7 +96,7 @@ if [ -d /out ]; then install -m 644 "$RPM" /out/; fi
 echo "==> verify built .so driver registration"
 # the rpmbuild rmbuild phase deletes the build tree, so verify by extracting the RPM
 VDIR=$(mktemp -d)
-rpm2cpio "$RPM" | cpio -idm --quiet -D "$VDIR"
+( cd "$VDIR" && rpm2cpio "$RPM" | cpio -idm --quiet )
 SO="$VDIR/usr/lib64/libfprint-2.so.2.0.0"
 test -s "$SO"
 test "$(strings "$SO" | grep -c 'ELAN Match-on-Chip 2')" -ge 1
