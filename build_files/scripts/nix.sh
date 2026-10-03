@@ -97,3 +97,9 @@ EOF
 cat >> /etc/nix/nix.conf << 'EOF'
 experimental-features = nix-command flakes
 EOF
+
+### Enable: persistent /nix bind mount + multi-user daemon
+systemctl enable var-nix.service
+systemctl enable nix.mount
+systemctl enable nix-selinux.service
+systemctl enable nix-daemon.socket

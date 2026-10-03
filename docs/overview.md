@@ -3,8 +3,11 @@
 Disposable and assumed stale. When this conflicts with a file in `docs/runs/`,
 the run file is right and this one gets fixed.
 
-Two bootc images from one tree: `kinoite` (laptop) and `kinoite-north` (AMD
-9900X, dual Radeon AI PRO R9700 / gfx1201, gaming + local LLM).
+Three bootc images from one tree: `kinoite` (laptop), `kinoite-north` (AMD
+9900X, dual Radeon AI PRO R9700 / gfx1201, gaming + local LLM) and
+`kinoite-nuc` (Intel NUC12, headless fedora-bootc running k3s; apps come from a
+separate Flux GitOps repo, see
+[decisions/2026-10-03-nuc-k3s-flux.md]).
 
 ## Map
 
@@ -279,6 +282,19 @@ carried over unchanged — do not re-derive.
       be disabled in 3DMark's settings (SystemInfo is Wine-incompatible regardless
       of Proton version). 32-bit Vulkan is fine and Vulkan picks an R9700, not the
       iGPU.
+
+### NUC server — `profiles/nuc/`
+
+- [ ] **Never booted.** The image builds and passes `bootc container lint`.
+      k3s has not been started from it: a rootless podman smoke test cannot,
+      because the laptop's user manager does not delegate `cpuset`.
+- [ ] **NFS mounts are not baked yet.** `UNRAID_HOST` and the two exports in
+      `nfs.sh` are empty, so no mount units are written.
+- [ ] **The GitOps repo does not exist yet.** Flux bootstrap, the Intel GPU
+      device plugin, apps, SOPS secrets and backups of local-path PVCs all live
+      there.
+- [ ] **I225-V link drops** are a known igc issue on some revisions. Nothing is
+      baked for them; add `pcie_aspm=off` or disable EEE only if drops are seen.
 
 ### Sunshine
 

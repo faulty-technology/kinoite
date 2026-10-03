@@ -8,27 +8,46 @@ AutomaticUpdatePolicy=stage
 CONF
 
 ### 2. Use bootc for actual update fetching/staging (bootc owns the deployment)
-# Override the default timer to check every 4 hours with persistence across sleep.
+# UPDATE_POLICY is exported by the profile orchestrator:
+#   stage (default) — check every 4 hours, stage the update, apply on the next manual reboot.
+#   apply           — check weekly and reboot into the update (headless servers that never
+#                     reboot on their own).
+case "${UPDATE_POLICY:-stage}" in
+    stage)
+        UPDATE_CALENDAR='00/4:00:00'
+        UPDATE_CMD='/usr/bin/bootc upgrade --quiet'
+        ;;
+    apply)
+        UPDATE_CALENDAR='Sun *-*-* 04:00:00'
+        UPDATE_CMD='/usr/bin/bootc upgrade --apply --quiet'
+        ;;
+    *)
+        echo "services.sh: unknown UPDATE_POLICY '${UPDATE_POLICY}'" >&2
+        exit 1
+        ;;
+esac
+
+# Override the default timer; Persistent= catches up on a check missed while powered off.
 mkdir -p /etc/systemd/system/bootc-fetch-apply-updates.timer.d
-cat > /etc/systemd/system/bootc-fetch-apply-updates.timer.d/override.conf <<'EOF'
+cat > /etc/systemd/system/bootc-fetch-apply-updates.timer.d/override.conf <<EOF
 [Timer]
 OnBootSec=
 OnUnitInactiveSec=
-OnCalendar=00/4:00:00
+OnCalendar=${UPDATE_CALENDAR}
 Persistent=true
 EOF
 
-# Override the service: stage only (no --apply auto-reboot), wait for DNS, retry on failure.
+# Override the service: wait for DNS, retry on failure.
 mkdir -p /etc/systemd/system/bootc-fetch-apply-updates.service.d
-cat > /etc/systemd/system/bootc-fetch-apply-updates.service.d/override.conf <<'EOF'
+cat > /etc/systemd/system/bootc-fetch-apply-updates.service.d/override.conf <<EOF
 [Unit]
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 ExecStart=
-ExecStartPre=/bin/bash -c 'for i in $(seq 1 15); do getent hosts ghcr.io >/dev/null 2>&1 && exit 0; sleep 2; done'
-ExecStart=/usr/bin/bootc upgrade --quiet
+ExecStartPre=/bin/bash -c 'for i in \$(seq 1 15); do getent hosts ghcr.io >/dev/null 2>&1 && exit 0; sleep 2; done'
+ExecStart=${UPDATE_CMD}
 Restart=on-failure
 RestartSec=30s
 EOF
@@ -40,13 +59,7 @@ systemctl mask rpm-ostreed-automatic.timer
 systemctl enable bootc-fetch-apply-updates.timer
 systemctl enable podman.socket
 
-### 5. Nix: persistent /nix bind mount + multi-user daemon (units from nix.sh)
-systemctl enable var-nix.service
-systemctl enable nix.mount
-systemctl enable nix-selinux.service
-systemctl enable nix-daemon.socket
-
-### 6. Mask systemd-remount-fs.service — it cannot succeed on a composefs root
+### 5. Mask systemd-remount-fs.service — it cannot succeed on a composefs root
 # systemd-fstab-generator pulls this unit in because /etc/fstab has a `/` entry, but `/` is a
 # composefs overlay and the kernel refuses to reconfigure an overlay mount, so every boot ends:
 #     mount: /: fsconfig() failed: overlay: No changes allowed in reconfigure.

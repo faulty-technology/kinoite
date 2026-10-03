@@ -2,7 +2,8 @@
 # Repo tooling (never ships): builds a drop-in replacement RPM for Fedora's libfprint.
 # Invoked by .github/workflows/build.yml (fedora:44 container) and usable standalone
 # on any F44 host. Content: upstream 1.94.x base + Depau/armiaab elanmoc2 match-on-chip driver
-# + added 04f3:0c99 id-table entry, built WITHOUT the 'elan' and 'elanmoc'
+# + added 04f3:0c99 id-table entry + bounded enroll retry-wait fix
+# (scripts/patches/elanmoc2-bounded-retry-wait.patch), built WITHOUT the 'elan' and 'elanmoc'
 # drivers so 0c99 can only bind to elanmoc2 (first-match-wins selection in
 # fp-context.c would otherwise let stock elanmoc shadow it).
 #
@@ -38,6 +39,17 @@ trap 'echo "workdir kept at $WORK"' EXIT
 echo "==> fetch source @ ${SRC_COMMIT}"
 git clone https://github.com/armiaab/libfprint.git "$WORK/src"
 git -C "$WORK/src" checkout -q "$SRC_COMMIT"
+
+# Bounded retry-wait fix: without it, a flaky sensor response on any enroll
+# stage re-arms the finger wait with a zero (infinite) timeout, so a lifted
+# finger parks the state machine forever and fprintd-enroll hangs silently
+# after "enroll-stage-passed". The patch bounds only the re-armed wait
+# (60s -> clean failure via fpi_device_action_error) and caps retries per
+# stage (3); fresh waits and identify/verify stay unbounded.
+# Context: scripts/patches/elanmoc2-bounded-retry-wait.patch
+PATCH="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/patches/elanmoc2-bounded-retry-wait.patch"
+test -f "$PATCH" || { echo "ERROR: missing $PATCH"; exit 1; }
+git -C "$WORK/src" apply "$PATCH"
 
 echo "==> add 0x0c99 to the elanmoc2 id table"
 python3 - "$WORK/src/libfprint/drivers/elanmoc2/elanmoc2.c" <<'PY'

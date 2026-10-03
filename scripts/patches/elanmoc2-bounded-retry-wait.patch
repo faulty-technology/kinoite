@@ -1,0 +1,163 @@
+diff --git a/libfprint/drivers/elanmoc2/elanmoc2.c b/libfprint/drivers/elanmoc2/elanmoc2.c
+index 5607bf1..65db9c9 100644
+--- a/libfprint/drivers/elanmoc2/elanmoc2.c
++++ b/libfprint/drivers/elanmoc2/elanmoc2.c
+@@ -70,6 +70,11 @@ struct _FpiDeviceElanMoC2
+   // Enroll
+   int      enroll_stage;
+   FpPrint *enroll_print;
++  /* Bounded-retry bookkeeping: how many times the current stage has failed,
++   * and whether the next finger wait is a re-armed retry wait (bounded)
++   * or a fresh one (unbounded). See ENROLL_CHECK_ENROLLED. */
++  unsigned int stage_retries;
++  gboolean     retry_wait;
+ };
+ 
+ G_DEFINE_TYPE (FpiDeviceElanMoC2, fpi_device_elanmoc2, FP_TYPE_DEVICE);
+@@ -273,7 +278,9 @@ elanmoc2_wait_finger_callback (FpiUsbTransfer *transfer,
+  * elanmoc2_resume() can re-enter it after the machine wakes up.
+  */
+ static void
+-elanmoc2_wait_finger (FpDevice *device, const Elanmoc2Cmd *cmd)
++elanmoc2_wait_finger_internal (FpDevice       *device,
++                              const Elanmoc2Cmd *cmd,
++                              guint           timeout_ms)
+ {
+   FpiDeviceElanMoC2 *self = FPI_DEVICE_ELANMOC2 (device);
+   FpiUsbTransfer *transfer = fpi_usb_transfer_new (device);
+@@ -292,12 +299,30 @@ elanmoc2_wait_finger (FpDevice *device, const Elanmoc2Cmd *cmd)
+   fpi_usb_transfer_fill_bulk (transfer, cmd->ep_in, cmd->in_len);
+ 
+   fpi_usb_transfer_submit (transfer,
+-                           ELANMOC2_USB_WAIT_FINGER_TIMEOUT,
++                           timeout_ms,
+                            self->cmd_cancellable,
+                            elanmoc2_wait_finger_callback,
+                            NULL);
+ }
+ 
++static void
++elanmoc2_wait_finger (FpDevice *device, const Elanmoc2Cmd *cmd)
++{
++  /* Unbounded: fresh waits (first touch of a stage, identify/verify) must
++   * keep living while the user takes their time; abort goes through the
++   * driver cancellable. */
++  elanmoc2_wait_finger_internal (device, cmd, ELANMOC2_USB_WAIT_FINGER_TIMEOUT);
++}
++
++static void
++elanmoc2_wait_finger_retry (FpDevice *device, const Elanmoc2Cmd *cmd)
++{
++  /* Bounded: a re-armed wait after a failed stage must fail instead of
++   * parking forever if the user does not re-touch. The callback turns the
++   * timeout into fpi_ssm_mark_failed(), i.e. a clean operation failure. */
++  elanmoc2_wait_finger_internal (device, cmd, ELANMOC2_USB_WAIT_FINGER_RETRY_TIMEOUT);
++}
++
+ static void
+ elanmoc2_cmd_transceive_full (FpDevice          *device,
+                               const Elanmoc2Cmd *cmd,
+@@ -1265,8 +1290,17 @@ elanmoc2_enroll_run_state (FpiSsm *ssm, FpDevice *device)
+       }
+ 
+     case ENROLL_WAIT_FINGER: {
+-        /* Blocks with no timeout until the user touches the sensor. */
+-        elanmoc2_wait_finger (device, &cmd_enroll);
++        if (self->retry_wait)
++          {
++            /* Re-armed after a failed stage: bounded, so a lifted finger
++             * fails the enroll instead of parking the machine forever. */
++            elanmoc2_wait_finger_retry (device, &cmd_enroll);
++          }
++        else
++          {
++            /* Blocks with no timeout until the user touches the sensor. */
++            elanmoc2_wait_finger (device, &cmd_enroll);
++          }
+         return;
+       }
+ 
+@@ -1281,6 +1315,8 @@ elanmoc2_enroll_run_state (FpiSsm *ssm, FpDevice *device)
+             /* Stage okay */
+             fp_info ("Enroll stage succeeded");
+             self->enroll_stage++;
++            self->stage_retries = 0;
++            self->retry_wait = FALSE;
+             fpi_device_enroll_progress (device, self->enroll_stage,
+                                         self->enroll_print, NULL);
+             if (self->enroll_stage >= ELANMOC2_ENROLL_TIMES)
+@@ -1295,6 +1331,25 @@ elanmoc2_enroll_run_state (FpiSsm *ssm, FpDevice *device)
+             /* Detection error */
+             gboolean can_retry = FALSE;
+             error = elanmoc2_get_finger_error (buffer_in, &can_retry);
++            self->stage_retries++;
++            if (self->stage_retries > ELANMOC2_MAX_STAGE_RETRIES)
++              {
++                /* Bounded retry: complete with an error instead of
++                 * re-arming the finger wait again, which would park the
++                 * state machine in an unbounded wait if the user does not
++                 * re-touch. A fresh message: after N identical stage
++                 * failures, repeating the first one as the terminal error
++                 * reads like a single glitch. */
++                fp_info ("Giving up on stage %d after %u failed attempts",
++                         self->enroll_stage, self->stage_retries);
++                g_clear_error (&error);
++                fpi_device_enroll_complete (device, NULL,
++                    fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
++                                              "Enroll stage failed "
++                                              "repeatedly"));
++                fpi_ssm_mark_completed (g_steal_pointer (&self->ssm));
++                return;
++              }
+             if (error != NULL)
+               {
+                 fp_info ("Enroll stage failed: %s", error->message);
+@@ -1312,6 +1367,9 @@ elanmoc2_enroll_run_state (FpiSsm *ssm, FpDevice *device)
+                   {
+                     fpi_device_enroll_progress (device, self->enroll_stage,
+                                                 NULL, g_steal_pointer (&error));
++                    /* The re-armed wait must be bounded: if the user does
++                     * not re-touch, it has to fail, not park forever. */
++                    self->retry_wait = TRUE;
+                   }
+                 else
+                   {
+@@ -1325,6 +1383,7 @@ elanmoc2_enroll_run_state (FpiSsm *ssm, FpDevice *device)
+             else
+               {
+                 fp_info ("Enroll stage failed for unknown reasons");
++                self->retry_wait = TRUE;
+               }
+           }
+         fp_info ("Performing another enroll");
+@@ -1431,6 +1490,8 @@ elanmoc2_enroll (FpDevice *device)
+   fp_info ("[elanmoc2] New enroll operation");
+ 
+   self->enroll_stage = 0;
++  self->stage_retries = 0;
++  self->retry_wait = FALSE;
+   fpi_device_get_enroll_data (device, &self->enroll_print);
+ 
+   self->ssm = fpi_ssm_new (device, elanmoc2_enroll_run_state,
+diff --git a/libfprint/drivers/elanmoc2/elanmoc2.h b/libfprint/drivers/elanmoc2/elanmoc2.h
+index 9b1b296..7975373 100644
+--- a/libfprint/drivers/elanmoc2/elanmoc2.h
++++ b/libfprint/drivers/elanmoc2/elanmoc2.h
+@@ -51,6 +51,17 @@
+ /* Commands that block until the user touches the sensor must never time out;
+  * they are aborted through the driver cancellable instead. */
+ #define ELANMOC2_USB_WAIT_FINGER_TIMEOUT 0
++/* A re-armed finger wait after a FAILED enroll stage must not park the state
++ * machine forever: if the user lifts their finger after seeing "stage
++ * passed", an unbounded wait hangs fprintd-enroll indefinitely. 60s is long
++ * enough for a deliberate re-touch, short enough that a missed touch fails
++ * the operation instead of hanging. Fresh (non-retry) waits and the
++ * identify/verify waits stay unbounded so login prompts keep living while the
++ * user takes their time. */
++#define ELANMOC2_USB_WAIT_FINGER_RETRY_TIMEOUT 60000
++/* Max failed attempts per enroll stage before the operation completes with an
++ * error instead of re-arming the finger wait again. */
++#define ELANMOC2_MAX_STAGE_RETRIES 3
+ /* The sensor answers commands in well under 100ms, and only answers the abort
+  * command when it actually had something to abort, so draining must give up
+  * quickly instead of stalling every cancel and close. */

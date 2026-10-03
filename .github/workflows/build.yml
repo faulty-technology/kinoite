@@ -33,6 +33,9 @@ jobs:
           - image: kinoite-north
             containerfile: Containerfile.north
             profile: north
+          - image: kinoite-nuc
+            containerfile: Containerfile.nuc
+            profile: nuc
 
     # Per-image concurrency so a re-push cancels only that variant's in-flight
     # build, not its sibling.
@@ -335,7 +338,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [kinoite, kinoite-north]
+        image: [kinoite, kinoite-north, kinoite-nuc]
 
     steps:
       - name: Delete old tagged versions

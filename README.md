@@ -1,21 +1,22 @@
 # kinoite
 
-Custom [bootc](https://github.com/bootc-dev/bootc) images based on [Fedora Kinoite](https://fedoraproject.org/kinoite/) 44, built using [ublue-os/image-template](https://github.com/ublue-os/image-template).
+Custom [bootc](https://github.com/bootc-dev/bootc) images based on [Fedora Kinoite](https://fedoraproject.org/kinoite/) 44 (and one headless [fedora-bootc](https://docs.fedoraproject.org/en-US/bootc/) 44 server), built using [ublue-os/image-template](https://github.com/ublue-os/image-template).
 
-This repo builds **two images** from one shared codebase:
+This repo builds **three images** from one shared codebase:
 
 | Image                                     | Target machine                                          | Role               |
 | ----------------------------------------- | ------------------------------------------------------- | ------------------ |
 | `ghcr.io/faulty-technology/kinoite`       | laptop                                                  | dev / daily driver |
 | `ghcr.io/faulty-technology/kinoite-north` | AMD 9900X + dual Radeon AI PRO R9700 (Fractal North XL) | gaming + local LLM |
+| `ghcr.io/faulty-technology/kinoite-nuc`   | Intel NUC12WSKi7 (i7-1260P, 64 GB)                      | headless k3s home server |
 
-Both share the same baseline (1Password, Chrome, Tailscale, Nix, font fixes, signed bootc auto-updates); `kinoite-north` layers on AMD/RDNA4 enablement, a lean gaming core, and Sunshine streaming. Both are rebuilt automatically on push via GitHub Actions.
+The two desktop images share the same baseline (1Password, Chrome, Tailscale, Nix, font fixes, signed bootc auto-updates); `kinoite-north` layers on AMD/RDNA4 enablement, a lean gaming core, and Sunshine streaming. `kinoite-nuc` is built on headless `fedora-bootc` and shares only Tailscale, signing and the bootc update service. All three are rebuilt automatically on push via GitHub Actions.
 
 Documentation lives in [`docs/`](docs/). Start at [`docs/overview.md`](docs/overview.md) — what is where, and what is still open. The three on-box runbooks (`docs/how-to/{vllm,lemonade,llamafactory}.md`) are installed to `/usr/share/kinoite/` so they are readable on the machine with no repo checked out. [`AGENTS.md`](AGENTS.md) records which documents may be rewritten and which are append-only.
 
 ## What's included
 
-### Shared baseline (both images)
+### Shared baseline (desktop images)
 
 **Packages**
 
@@ -105,6 +106,48 @@ Third-party repo files are removed after install — updates come from CI image 
 > outside Steam. **3DMark** needs hardware monitoring turned off in its settings or
 > it hangs at startup; it then stalls again once the benchmark runs, unresolved.
 
+### Home server image (`kinoite-nuc`) extras
+
+- **Headless `fedora-bootc:44` base.** No desktop, so none of the desktop baseline above: only
+  `tailscale`, signing and the bootc update service are shared.
+- **k3s**, pinned by version and sha256 in `build_files/profiles/nuc/k3s.sh`, installed to
+  `/usr/bin` (with `kubectl`/`crictl`/`ctr` symlinks) plus `k3s-selinux` from Rancher's repo.
+  `k3s.service` is enabled and runs with SELinux on. Baked config lives in
+  `/etc/rancher/k3s/config.yaml.d/10-image.yaml`; machine-local settings go in
+  `/etc/rancher/k3s/config.yaml`.
+- **Only the host is in the image.** Workloads (Plex, the *arr apps, Unmanic, game servers, the Intel
+  GPU device plugin) live in a separate GitOps repo that Flux reconciles, so an app change never
+  needs an image rebuild. App state belongs on the local-path provisioner
+  (`/var/lib/rancher/k3s/storage`), never on NFS.
+- **Unraid NFS mounts** at `/var/mnt/unraid/{media,fast}`. These are written only once `UNRAID_HOST` and
+  the exports are filled in at the top of `build_files/profiles/nuc/nfs.sh`. k3s is ordered after
+  them but does not require them, so the cluster still starts when the NAS is down.
+- **Updates apply themselves**: `bootc upgrade --apply` every Sunday 04:00, which reboots into the new
+  image. The desktop images only stage updates.
+- `igt-gpu-tools` (`intel_gpu_top`), `distrobox`, `lm_sensors`, `smartmontools`; raised inotify limits;
+  all sleep targets masked.
+
+> **Installing `kinoite-nuc`:** fedora-bootc has no installer user setup, so build an ISO with
+> [bootc-image-builder](https://github.com/osbuild/bootc-image-builder) and a `config.toml` holding
+> a wheel user and your SSH key:
+>
+> ```toml
+> [[customizations.user]]
+> name = "you"
+> key = "ssh-ed25519 AAAA..."
+> groups = ["wheel"]
+> ```
+>
+> ```bash
+> sudo podman run --rm -it --privileged --pull=newer --security-opt label=type:unconfined_t \
+>   -v ./config.toml:/config.toml:ro -v ./output:/output -v /var/lib/containers/storage:/var/lib/containers/storage \
+>   quay.io/centos-bootc/bootc-image-builder:latest --type anaconda-iso ghcr.io/faulty-technology/kinoite-nuc:latest
+> ```
+>
+> After installing, switch to the signed origin (see below), then `sudo tailscale up --ssh`. To use
+> `kubectl` from another machine, copy `/etc/rancher/k3s/k3s.yaml` and change its server to
+> `https://nuc:6443`.
+
 ## Rebasing to an image
 
 From a stock Fedora Kinoite system (swap `kinoite` for `kinoite-north` for the battlestation):
@@ -163,11 +206,12 @@ exists from installation, so an entry there would duplicate the argument rather 
 
 ## Building
 
-Images are built, signed, and pushed by GitHub Actions on every push to `main` (a matrix over both images). For a one-off local build:
+Images are built, signed, and pushed by GitHub Actions on every push to `main` (a matrix over all three images). For a one-off local build:
 
 ```bash
 podman build -t kinoite -f Containerfile .
 podman build -t kinoite-north -f Containerfile.north .
+podman build -t kinoite-nuc -f Containerfile.nuc .
 ```
 
 ## Repository layout
@@ -179,11 +223,13 @@ podman build -t kinoite-north -f Containerfile.north .
 | `scripts/`                       | Repo tooling, never shipped (`new-run.sh` scaffolds a run record)    |
 | `Containerfile`                  | Laptop image; runs `build_files/profiles/base/build.sh`              |
 | `Containerfile.north`            | Battlestation image; runs `build_files/profiles/north/build.sh`      |
+| `Containerfile.nuc`              | Home server image (fedora-bootc); runs `build_files/profiles/nuc/build.sh` |
 | `build_files/scripts/`           | Shared, image-agnostic scripts (repos, codecs, Nix, fonts, signing, cleanup) |
 | `build_files/scripts/lib/`       | Sourced helpers: `install_pkgs` (install + SBOM manifest in one call), `add_copr` (pin key, write repo, register cleanup), `check-keys.sh` (verifies vendored + live keys against pins), `update-keys.sh` (re-vendors keys after rotation) |
 | `build_files/keys/`              | Vendored vendor GPG keys (fingerprint-pinned in the calling scripts); the build imports these locally instead of fetching from vendor URLs |
 | `build_files/scripts/signing.sh` | Signature policy, parameterized by `IMAGE_NAME` per image            |
 | `build_files/profiles/base/`     | Laptop-specific package set                                          |
 | `build_files/profiles/north/`    | AMD/RDNA4, gaming, Sunshine, and LLM-enablement scripts              |
-| `.github/workflows/build.yml`    | CI: matrix-builds, pushes, and signs both images by digest           |
-| `cosign.pub`                     | Public key for verifying signed image pushes (shared by both images) |
+| `build_files/profiles/nuc/`      | k3s, Unraid NFS mounts, server host settings                         |
+| `.github/workflows/build.yml`    | CI: matrix-builds, pushes, and signs all three images by digest           |
+| `cosign.pub`                     | Public key for verifying signed image pushes (shared by all images) |

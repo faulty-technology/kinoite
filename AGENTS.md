@@ -1,7 +1,8 @@
 # kinoite
 
-Two bootc images from one tree: `kinoite` (laptop) and `kinoite-north` (AMD
-9900X, dual Radeon AI PRO R9700, gaming + local LLM). Shell scripts and
+Three bootc images from one tree: `kinoite` (laptop), `kinoite-north` (AMD
+9900X, dual Radeon AI PRO R9700, gaming + local LLM) and `kinoite-nuc`
+(headless fedora-bootc k3s home server on an Intel NUC12). Shell scripts and
 Containerfiles; no tests, no package manifest.
 
 ## Docs
