@@ -16,10 +16,13 @@ case "${UPDATE_POLICY:-stage}" in
     stage)
         UPDATE_CALENDAR='00/4:00:00'
         UPDATE_CMD='/usr/bin/bootc upgrade --quiet'
+        UPDATE_JITTER='2h'
         ;;
     apply)
+        # No jitter: the stock 2h random delay would turn the reboot window into 04:00–06:00.
         UPDATE_CALENDAR='Sun *-*-* 04:00:00'
         UPDATE_CMD='/usr/bin/bootc upgrade --apply --quiet'
+        UPDATE_JITTER='0'
         ;;
     *)
         echo "services.sh: unknown UPDATE_POLICY '${UPDATE_POLICY}'" >&2
@@ -34,6 +37,7 @@ cat > /etc/systemd/system/bootc-fetch-apply-updates.timer.d/override.conf <<EOF
 OnBootSec=
 OnUnitInactiveSec=
 OnCalendar=${UPDATE_CALENDAR}
+RandomizedDelaySec=${UPDATE_JITTER}
 Persistent=true
 EOF
 

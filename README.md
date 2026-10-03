@@ -129,14 +129,23 @@ Third-party repo files are removed after install — updates come from CI image 
 
 > **Installing `kinoite-nuc`:** fedora-bootc has no installer user setup, so build an ISO with
 > [bootc-image-builder](https://github.com/osbuild/bootc-image-builder) and a `config.toml` holding
-> a wheel user and your SSH key:
+> a wheel user, a password and your SSH key. **The password is required**: root has none and wheel
+> `sudo` asks for one, so a key-only user can log in but can never become root. Hash it with
+> `openssl passwd -6`; single quotes keep the `$`s literal:
 >
 > ```toml
+> [customizations]
+> hostname = "nuc"
+>
 > [[customizations.user]]
 > name = "you"
+> password = '$6$...'
 > key = "ssh-ed25519 AAAA..."
 > groups = ["wheel"]
 > ```
+>
+> The image must be in root's storage first (`sudo podman pull ghcr.io/faulty-technology/kinoite-nuc:latest`).
+> The ISO installs unattended and wipes the target disk.
 >
 > ```bash
 > sudo podman run --rm -it --privileged --pull=newer --security-opt label=type:unconfined_t \

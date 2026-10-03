@@ -285,9 +285,14 @@ carried over unchanged — do not re-derive.
 
 ### NUC server — `profiles/nuc/`
 
-- [ ] **Never booted.** The image builds and passes `bootc container lint`.
-      k3s has not been started from it: a rootless podman smoke test cannot,
-      because the laptop's user manager does not delegate `cpuset`.
+- [x] **Installed and booted 2026-10-03.** Signed origin confirmed, and the
+      single k3s node `nuc` reports Ready. GuC and HuC load, with HuC
+      authenticated, and `/dev/dri/renderD128` is present. The node is on the
+      tailnet as `nuc`.
+- [ ] **Update window drifts.** The stock timer's `RandomizedDelaySec=2h`
+      pushed the first scheduled run to 05:30 UTC. The `apply` policy now
+      resets it to 0, which lands on the next image build. The box runs in UTC
+      until a timezone is set on it.
 - [ ] **NFS mounts are not baked yet.** `UNRAID_HOST` and the two exports in
       `nfs.sh` are empty, so no mount units are written.
 - [ ] **The GitOps repo does not exist yet.** Flux bootstrap, the Intel GPU

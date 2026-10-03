@@ -103,10 +103,10 @@ jobs:
         run: |
           mkdir -p build_files/rpms rpm-out
           docker run --rm \
-            -v "${GITHUB_WORKSPACE}/scripts/build-libfprint-moc2-rpm.sh":/script.sh:ro \
+            -v "${GITHUB_WORKSPACE}/scripts":/scripts:ro \
             -v "${GITHUB_WORKSPACE}/rpm-out":/out \
             quay.io/fedora/fedora:44 \
-            bash /script.sh
+            bash /scripts/build-libfprint-moc2-rpm.sh
           cp rpm-out/libfprint-*.rpm build_files/rpms/
           ls -l build_files/rpms/
 
