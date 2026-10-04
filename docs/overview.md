@@ -295,11 +295,12 @@ carried over unchanged — do not re-derive.
       until a timezone is set on it.
 - [ ] **NFS mounts are not baked yet.** `UNRAID_HOST` and the two exports in
       `nfs.sh` are empty, so no mount units are written.
-- [x] **Flux bootstrapped.** v2.9.6, reconciling the private repo
-      `faulty-technology/homelab` at `clusters/nuc` with a deploy key requested
-      read-only (not yet confirmed on GitHub)
-      [runs/2026-10-04-nuc-flux-bootstrap.md]. Runbook:
-      [how-to/bootstrap-flux-on-nuc.md].
+- [x] **Flux installed.** v2.9.6, reconciling the private repo
+      `faulty-technology/homelab` at `clusters/nuc`, authenticating as GitHub
+      App `faulty-technology-flux` [runs/2026-10-04-nuc-flux-github-app.md]
+      [decisions/2026-10-04-flux-github-app-over-deploy-key.md]. Runbook:
+      [how-to/bootstrap-flux-on-nuc.md]. To add a private repo, install the App
+      on it.
 - [ ] **Nothing deployed through Flux yet.** Still to come: the Intel GPU
       device plugin, apps, SOPS secrets, and backups of local-path PVCs.
 - [ ] **I225-V link drops** are a known igc issue on some revisions. Nothing is
