@@ -24,7 +24,7 @@ EOF
 # /usr/local is a dangling symlink to ../var/usrlocal during the container
 # build, which makes mkdir -p fail — create the target so it resolves.
 mkdir -p /var/usrlocal
-install_pkgs 1password
+install_pkgs 1password 1password-cli
 
 ### Fix 1Password for immutable image builds
 # Based on ublue-os/BlueBuild approach.
@@ -45,6 +45,7 @@ install_pkgs 1password
 # user groups. Matches the ublue-os convention.
 GID_ONEPASSWORD=1500
 GID_ONEPASSWORD_MCP=1501
+GID_ONEPASSWORD_CLI=1502
 
 # Relocate 1Password from /opt (composefs) to /usr/lib (ostree-managed).
 # This ensures the setgid bit is properly applied at exec time.
@@ -72,16 +73,26 @@ if [ -f /usr/lib/1Password/1password-mcp ]; then
 fi
 rm -rf /var/usrlocal
 
+# CLI: the app trusts `op` for desktop integration (unlock via the app) by the
+# same setgid scheme. Its %post groupadds onepassword-cli with the next free GID,
+# which in the build is 1000 — a real user's GID — so pin the file to a fixed GID
+# and drop the build-time group; sysusers.d recreates it at boot.
+chgrp "${GID_ONEPASSWORD_CLI}" /usr/bin/op
+chmod g+s /usr/bin/op
+groupdel onepassword-cli
+
 # Ensure onepassword groups are created at boot via systemd-sysusers.
 # The groups won't survive the ostree /etc merge, so this is essential.
 cat > /usr/lib/sysusers.d/onepassword.conf << EOF
 g onepassword ${GID_ONEPASSWORD}
 g onepassword-mcp ${GID_ONEPASSWORD_MCP}
+g onepassword-cli ${GID_ONEPASSWORD_CLI}
 EOF
 
 # Remove RPM-generated sysusers.d entries that would conflict with our GIDs.
 rm -f /usr/lib/sysusers.d/30-rpmostree-pkg-group-onepassword.conf \
-    /usr/lib/sysusers.d/30-rpmostree-pkg-group-onepassword-mcp.conf
+    /usr/lib/sysusers.d/30-rpmostree-pkg-group-onepassword-mcp.conf \
+    /usr/lib/sysusers.d/30-rpmostree-pkg-group-onepassword-cli.conf
 
 # Polkit rule: allow any active local user to authenticate for 1Password actions.
 cat > /etc/polkit-1/rules.d/10-1password.rules << 'EOF'
