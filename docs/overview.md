@@ -295,9 +295,13 @@ carried over unchanged — do not re-derive.
       until a timezone is set on it.
 - [ ] **NFS mounts are not baked yet.** `UNRAID_HOST` and the two exports in
       `nfs.sh` are empty, so no mount units are written.
-- [ ] **The GitOps repo does not exist yet.** Flux bootstrap, the Intel GPU
-      device plugin, apps, SOPS secrets and backups of local-path PVCs all live
-      there.
+- [x] **Flux bootstrapped.** v2.9.6, reconciling the private repo
+      `faulty-technology/homelab` at `clusters/nuc` with a deploy key requested
+      read-only (not yet confirmed on GitHub)
+      [runs/2026-10-04-nuc-flux-bootstrap.md]. Runbook:
+      [how-to/bootstrap-flux-on-nuc.md].
+- [ ] **Nothing deployed through Flux yet.** Still to come: the Intel GPU
+      device plugin, apps, SOPS secrets, and backups of local-path PVCs.
 - [ ] **I225-V link drops** are a known igc issue on some revisions. Nothing is
       baked for them; add `pcie_aspm=off` or disable EEE only if drops are seen.
 
