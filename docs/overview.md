@@ -301,8 +301,13 @@ carried over unchanged — do not re-derive.
       [decisions/2026-10-04-flux-github-app-over-deploy-key.md]. Runbook:
       [how-to/bootstrap-flux-on-nuc.md]. To add a private repo, install the App
       on it.
-- [ ] **Nothing deployed through Flux yet.** Still to come: the Intel GPU
-      device plugin, apps, SOPS secrets, and backups of local-path PVCs.
+- [x] **SOPS secrets.** One age key; Flux decrypts with `flux-system/sops-age`;
+      `clusters/nuc/sops-canary.yaml` decrypts to its known value
+      [runs/2026-10-04-nuc-sops-age.md]
+      [decisions/2026-10-04-sops-age-for-flux-secrets.md]. Runbook:
+      [how-to/manage-secrets-with-sops-on-nuc.md].
+- [ ] **No apps deployed through Flux yet.** Still to come: the Intel GPU
+      device plugin, apps, and backups of local-path PVCs.
 - [ ] **I225-V link drops** are a known igc issue on some revisions. Nothing is
       baked for them; add `pcie_aspm=off` or disable EEE only if drops are seen.
 
