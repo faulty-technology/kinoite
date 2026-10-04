@@ -24,6 +24,17 @@ REPO
 
 install_pkgs k3s-selinux
 
+### Device plugins under k3s
+# container-selinux lets container_device_plugin_t connect only to kubelet_t;
+# k3s's embedded kubelet runs as container_runtime_t, so plugins (Intel GPU)
+# cannot register on kubelet.sock. Grant exactly that connect.
+# Evidence: docs/runs/2026-10-04-nuc-intel-gpu-plugin.md
+install -D -m 0644 /dev/stdin /usr/share/selinux/packages/kinoite/k3s_device_plugin.cil << 'CIL'
+(allow container_device_plugin_t container_runtime_t (unix_stream_socket (connectto)))
+CIL
+semodule -i /usr/share/selinux/packages/kinoite/k3s_device_plugin.cil
+semodule -l | grep -qx k3s_device_plugin
+
 ### k3s binary
 # sha256 comes from the release's own sha256sum-amd64.txt — bump version and hash
 # together, one minor version at a time (Kubernetes does not support skipping minors).
