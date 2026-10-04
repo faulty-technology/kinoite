@@ -306,8 +306,18 @@ carried over unchanged — do not re-derive.
       [runs/2026-10-04-nuc-sops-age.md]
       [decisions/2026-10-04-sops-age-for-flux-secrets.md]. Runbook:
       [how-to/manage-secrets-with-sops-on-nuc.md].
-- [ ] **No apps deployed through Flux yet.** Still to come: the Intel GPU
-      device plugin, apps, and backups of local-path PVCs.
+- [x] **Intel GPU device plugin.** v0.37.1 via Flux, `-shared-dev-num=4
+      -bypath=none`. It needs the `k3s_device_plugin` SELinux module in the
+      image, because k3s's kubelet is `container_runtime_t`, not `kubelet_t`.
+      A test pod gets `card1` and `renderD128` as `container_t`
+      [runs/2026-10-04-nuc-intel-gpu-plugin.md]. VA-API/QSV inside a pod is
+      still unproven.
+- [x] **One-command rebuild.** `homelab/scripts/bootstrap.sh --reinstall`
+      rebuilt Flux, both secrets (from 1Password), the sync, the SOPS canary
+      and the GPU plugin in 39 s [runs/2026-10-04-nuc-bootstrap-script.md].
+      `--refresh-kubeconfig` and a true first boot are still untested.
+- [ ] **No apps deployed through Flux yet.** Still to come: apps, and backups
+      of local-path PVCs.
 - [ ] **I225-V link drops** are a known igc issue on some revisions. Nothing is
       baked for them; add `pcie_aspm=off` or disable EEE only if drops are seen.
 

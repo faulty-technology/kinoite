@@ -1,169 +1,90 @@
 # Install Flux on the NUC
 
-Installs Flux on the `nuc` k3s cluster and syncs it from the private repo
-`faulty-technology/homelab`, at the path `clusters/nuc`. Flux authenticates as
-the GitHub App **`faulty-technology-flux`**. The same App gives Flux access to
-any other private repo it is installed on.
+Run `scripts/bootstrap.sh` in the homelab repo. It takes the `nuc` k3s cluster
+from "node Ready" to "Flux reconciling `faulty-technology/homelab` at
+`clusters/nuc`". It installs Flux and creates the two hand-placed secrets from
+1Password. Then it applies the sync and checks that everything from git came up:
+the SOPS canary decrypts and the GPU plugin registered.
 
-This does not use `flux bootstrap github`, which has no GitHub App option. The
-manifests live in the repo:
-
-- `clusters/nuc/flux-system/gotk-components.yaml`
-- `clusters/nuc/flux-system/gotk-sync.yaml`
-
-Install means applying those manifests, plus one secret that is never stored in
-git.
-
-Run it from the laptop. Save the output of each step marked **receipt**: those
-outputs go into the run record in `docs/runs/`.
+Every step creates or updates, so re-running it is safe. Each run writes a
+receipts log to `~/.local/state/homelab/bootstrap-<UTC timestamp>.log`.
 
 ## Prerequisites
 
-- `~/.kube/nuc.yaml` works, and `get nodes` shows `nuc Ready`. To recreate it,
-  see [Recreate the kubeconfig](#recreate-the-kubeconfig).
-- The homelab repo is cloned at `~/Source/homelab`.
-- The App's private key is available, from 1Password or from step 2.
+- **The k3s node is Ready.** On a fresh install, that's after the first boot.
+- **homelab is cloned at `~/Source/homelab`.** It must be clean and at
+  `origin/main`, or the script refuses to run.
+- **The 1Password CLI works through the app.** `op` is in the laptop image. In
+  the app, turn on Settings → Developer → *Integrate with 1Password CLI*.
+- **The GitHub App exists and its key is in 1Password.** If not, see
+  [GitHub App (once)](#github-app-once).
 
-## 1. Define the pinned tools
+## Run
 
-The CLIs run from containers pinned by version. Nothing is installed, so this
-works the same after a wipe.
+    cd ~/Source/homelab
+    scripts/bootstrap.sh                       # install or repair
+    scripts/bootstrap.sh --refresh-kubeconfig  # also re-fetch ~/.kube/nuc.yaml (prompts for the NUC sudo password)
+    scripts/bootstrap.sh --reinstall           # flux uninstall first, then rebuild (asks to confirm)
 
-    # flux-cli v2.9.6
-    flux() {
-      podman run --rm -i --network host \
-        --userns=keep-id --user "$(id -u):$(id -g)" \
-        -v "$HOME/.kube/nuc.yaml":/kubeconfig:ro,Z -e KUBECONFIG=/kubeconfig \
-        -v "$HOME/Downloads":/dl:ro,Z \
-        ghcr.io/fluxcd/flux-cli@sha256:b1ac18156f227af9a524b842a96f2c20986c7a779ef721df3ba4e4540f449d76 \
-        "$@"
-    }
-    kubectl() {
-      podman run --rm -i --network host \
-        --userns=keep-id --user "$(id -u):$(id -g)" \
-        -v "$HOME/.kube/nuc.yaml":/kubeconfig:ro,Z -e KUBECONFIG=/kubeconfig \
-        -v "$HOME/Source/homelab":/homelab:ro,Z \
-        registry.k8s.io/kubectl:v1.36.4 "$@"
-    }
+Run it in a real terminal. `--reinstall` and `--refresh-kubeconfig` both
+prompt, and 1Password may ask you to approve the `op read`.
 
-`--user` and `--userns=keep-id` are required: the images run as user 65534,
-which cannot read a `0600` kubeconfig.
+It must end with `== … done` and print the receipts path. On failure it prints
+`FAIL: <reason>` and stops at that step. Fix the cause and run it again.
 
-To bump Flux, change the digest above and regenerate the components file:
+## What it reads
 
-    flux install --export > ~/Source/homelab/clusters/nuc/flux-system/gotk-components.yaml
-
-Then commit the regenerated file to homelab.
-
-## 2. GitHub App (once)
-
-Skip this step if the App already exists and its key is in 1Password.
-
-On GitHub, go to Settings → Developer settings → **GitHub Apps** → New GitHub
-App:
-
-| Field | Value |
+| Input | Where |
 |---|---|
-| Name | `faulty-technology-flux` |
-| Homepage URL | `https://github.com/faulty-technology/homelab` |
-| Webhook | Uncheck **Active** |
-| Repository permissions | **Contents: Read-only** (Metadata: Read-only is added automatically) |
-| Everything else | No access |
-| Where can it be installed | **Only on this account** |
+| GitHub App private key | `op://Private/ogpe3a62c7zkzpzxgj5kmvl7bu/flux-app.pem`, override with `OP_APP_KEY_REF` |
+| SOPS age key | `op://Private/ogpe3a62c7zkzpzxgj5kmvl7bu/keys.txt`, override with `OP_AGE_KEY_REF` |
+| App ID / owner | `5187039` / `faulty-technology`, set in the script |
+| Kubeconfig | `~/.kube/nuc.yaml`, override with `KUBECONFIG_PATH` |
 
-Then:
+Both keys are written to a `0700` directory under `$XDG_RUNTIME_DIR` for the
+few seconds the secrets take to create, and are never printed.
 
-1. Note the **App ID**.
-2. Under Private keys, click Generate a private key. Save the `.pem` file to
-   1Password.
-3. Under Install App, install it on `faulty-technology` with **Only select
-   repositories**: `homelab`, plus any private app repos.
+## GitHub App (once)
 
-## 3. Pre-flight — receipt
+Do this only if the App does not exist yet.
 
-    flux version --client
-    flux check --pre
+1. On GitHub, go to Settings → Developer settings → **GitHub Apps** → New
+   GitHub App:
 
-The check must end with `✔ prerequisites checks passed`.
+   | Field | Value |
+   |---|---|
+   | Name | `faulty-technology-flux` |
+   | Homepage URL | `https://github.com/faulty-technology/homelab` |
+   | Webhook | Uncheck **Active** |
+   | Repository permissions | **Contents: Read-only** (Metadata: Read-only is added automatically) |
+   | Where can it be installed | **Only on this account** |
 
-## 4. Install the controllers
-
-    flux install
-
-It must end with `✔ install finished`.
-
-## 5. Create the App secret
-
-Put the key at `~/Downloads/flux-app.pem`, then run:
-
-    flux create secret githubapp flux-system-github-app \
-      --namespace=flux-system \
-      --app-id=<APP_ID> \
-      --app-installation-owner=faulty-technology \
-      --app-private-key=/dl/flux-app.pem
-    rm ~/Downloads/flux-app.pem
-
-**Receipt**: this prints key names only, never the values.
-
-    kubectl -n flux-system get secret flux-system-github-app -o jsonpath='{.data}' | grep -o '"[a-zA-Z]*":' | tr -d '":'
-
-You should see `githubAppID`, `githubAppInstallationOwner` and `githubAppPrivateKey`.
-
-## 6. Apply the sync
-
-The clone must match `origin/main`. Flux takes over from git as soon as this
-is applied, so anything that is only local gets reverted.
-
-    git -C ~/Source/homelab fetch -q && git -C ~/Source/homelab status -sb | head -1
-    kubectl apply --server-side -f /homelab/clusters/nuc/flux-system/gotk-sync.yaml
-
-Apply only `gotk-sync.yaml`. Step 4 already installed the components under the
-`flux` field manager, so applying the whole directory with `-k` conflicts on
-the controller Deployments and the ResourceQuota. Flux applies the full
-directory itself on its first reconcile.
-
-## 7. Verify — receipt
-
-    flux reconcile kustomization flux-system --with-source
-    flux check
-    flux get sources git -A
-    flux get kustomizations -A
-    kubectl -n flux-system get gitrepository flux-system -o jsonpath='{.spec.url} {.spec.provider} {.spec.secretRef.name}{"\n"}'
-    kubectl -n flux-system get pods
-
-Expect:
-
-- Every controller is `✔` healthy.
-- `GitRepository/flux-system` and `Kustomization/flux-system` are both Ready, at
-  the homelab `main` HEAD.
-- The URL line reads `https://github.com/faulty-technology/homelab github flux-system-github-app`.
+2. Generate a private key. Attach the `.pem` file to the 1Password item above
+   as `flux-app.pem`.
+3. Install the App on `faulty-technology`, with **Only select repositories**:
+   `homelab` and any private app repos.
+4. If the App ID changes, update `GITHUB_APP_ID` in the script.
 
 ## Add another private repo
 
-1. Install the App on the repo (GitHub → the App → Install App → configure).
+1. Install the App on that repo.
 2. In homelab, add a `GitRepository` with `provider: github` and
    `secretRef: { name: flux-system-github-app }`.
 
-## Roll back / remove
+## Upgrade Flux
+
+1. In `scripts/bootstrap.sh`, update the `FLUX_IMAGE` digest.
+2. Regenerate the components file:
+
+       podman run --rm <new FLUX_IMAGE> install --export > clusters/nuc/flux-system/gotk-components.yaml
+
+3. Commit and push. Flux applies the new components to itself.
+
+Don't use `flux bootstrap github`. It has no GitHub App option.
+
+## Remove
 
     flux uninstall --namespace=flux-system
 
-This removes the controllers, the CRDs, and the secret along with the
-namespace. Workloads Flux deployed keep running until you delete them.
-
-## Recreate the kubeconfig
-
-On the NUC:
-
-    sudo install -m 600 -o "$USER" /etc/rancher/k3s/k3s.yaml ~/k3s.yaml
-
-On the laptop:
-
-    scp faultytechnology-nuc@nuc:k3s.yaml ~/.kube/nuc.yaml && chmod 600 ~/.kube/nuc.yaml
-    sed -i -e 's#https://127.0.0.1:6443#https://nuc:6443#' \
-           -e 's/^\(\s*\)name: default$/\1name: nuc/' \
-           -e 's/^- name: default$/- name: nuc/' \
-           -e 's/^\(\s*\)cluster: default$/\1cluster: nuc/' \
-           -e 's/^\(\s*\)user: default$/\1user: nuc/' \
-           -e 's/^current-context: default$/current-context: nuc/' ~/.kube/nuc.yaml
-    ssh faultytechnology-nuc@nuc 'rm -f ~/k3s.yaml'
+This removes the controllers, the CRDs and both secrets. Workloads Flux
+deployed keep running.

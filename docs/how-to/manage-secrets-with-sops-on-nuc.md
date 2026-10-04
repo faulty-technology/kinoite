@@ -16,7 +16,7 @@ Steps marked **receipt** feed the run record in `docs/runs/`.
 
 ## Tools
 
-Both run from pinned containers. Nothing is installed.
+All run from pinned containers. Nothing is installed.
 
     # sops v3.13.3. Run from inside ~/Source/homelab.
     sops() {
@@ -27,8 +27,17 @@ Both run from pinned containers. Nothing is installed.
         "$@"
     }
 
-Use the `flux` and `kubectl` functions from
-[bootstrap-flux-on-nuc](bootstrap-flux-on-nuc.md#1-define-the-pinned-tools).
+    # flux-cli v2.9.6 and kubectl v1.36.4, for the one-time setup checks below
+    flux() {
+      podman run --rm -i --network host --userns=keep-id --user "$(id -u):$(id -g)" \
+        -v "$HOME/.kube/nuc.yaml":/kubeconfig:ro,z -e KUBECONFIG=/kubeconfig \
+        ghcr.io/fluxcd/flux-cli@sha256:b1ac18156f227af9a524b842a96f2c20986c7a779ef721df3ba4e4540f449d76 "$@"
+    }
+    kubectl() {
+      podman run --rm -i --network host --userns=keep-id --user "$(id -u):$(id -g)" \
+        -v "$HOME/.kube/nuc.yaml":/kubeconfig:ro,z -e KUBECONFIG=/kubeconfig \
+        registry.k8s.io/kubectl@sha256:484eff4657707d5ba697035d45b38fd00883c60c1b764f618af708db95cd3a2d "$@"
+    }
 
 ## Encrypt a new secret
 
@@ -65,16 +74,11 @@ It prints `Public key: age1…`.
 Save the file `~/.config/sops/age/keys.txt` to 1Password. To restore after a
 wipe, put it back at that path with mode `0600`.
 
-### 2. Give the key to Flux — receipt
+### 2. Give the key to Flux
 
-    podman run --rm -i --network host --userns=keep-id --user "$(id -u):$(id -g)" \
-      -v "$HOME/.kube/nuc.yaml":/kubeconfig:ro,Z -e KUBECONFIG=/kubeconfig \
-      -v "$HOME/.config/sops/age/keys.txt":/keys.txt:ro,Z \
-      registry.k8s.io/kubectl:v1.36.4 \
-      -n flux-system create secret generic sops-age --from-file=age.agekey=/keys.txt
-    kubectl -n flux-system get secret sops-age -o jsonpath='{.data}' | grep -o '"[a-zA-Z.]*":' | tr -d '":'
-
-Expect `age.agekey`.
+Attach `keys.txt` to the 1Password item that `scripts/bootstrap.sh` reads
+(`OP_AGE_KEY_REF`), then run the script. It creates `flux-system/sops-age`
+from it ([bootstrap-flux-on-nuc](bootstrap-flux-on-nuc.md)).
 
 ### 3. Tell sops and Flux — receipt
 
