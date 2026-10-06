@@ -47,3 +47,47 @@ UNIT
 
 write_mount "$MEDIA_EXPORT" /var/mnt/unraid/media
 write_mount "$FAST_EXPORT"  /var/mnt/unraid/fast
+
+### Retry failed mounts
+# A mount that times out at boot (NAS unreachable) stays failed; nothing in
+# systemd retries it. Every 5 minutes, start any of these units that is in the
+# failed state. Units stopped on purpose are inactive, not failed, and are left
+# alone; starting an active unit is a no-op anyway.
+# Evidence: docs/runs/2026-10-06-nuc-boot-with-nfs-down.md
+install -D -m 0755 /dev/stdin /usr/libexec/kinoite-nfs-retry << 'SCRIPT'
+#!/bin/bash
+set -uo pipefail
+while read -r unit; do
+    [ -n "$unit" ] || continue
+    if systemctl is-failed --quiet "$unit"; then
+        echo "retrying $unit"
+        systemctl start "$unit" || echo "$unit still failing"
+    fi
+done < /usr/share/kinoite/nfs-units
+exit 0
+SCRIPT
+bash -n /usr/libexec/kinoite-nfs-retry
+
+cat > /usr/lib/systemd/system/kinoite-nfs-retry.service << 'UNIT'
+[Unit]
+Description=Retry failed Unraid NFS mounts
+After=tailscale-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/kinoite-nfs-retry
+UNIT
+
+cat > /usr/lib/systemd/system/kinoite-nfs-retry.timer << 'UNIT'
+[Unit]
+Description=Retry failed Unraid NFS mounts every 5 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+systemctl enable kinoite-nfs-retry.timer
