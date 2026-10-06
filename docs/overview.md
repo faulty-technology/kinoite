@@ -293,8 +293,12 @@ carried over unchanged — do not re-derive.
       pushed the first scheduled run to 05:30 UTC. The `apply` policy now
       resets it to 0, which lands on the next image build. The box runs in UTC
       until a timezone is set on it.
-- [ ] **NFS mounts are not baked yet.** `UNRAID_HOST` and the two exports in
-      `nfs.sh` are empty, so no mount units are written.
+- [x] **NFS mounts.** Unraid `arrdata` mounts at `/var/mnt/unraid/media`
+      and `appdata` at `/var/mnt/unraid/fast`, over the tailnet
+      (`100.77.22.80`), NFSv4.2, ordered after `tailscale-online.target`
+      [runs/2026-10-06-nuc-nfs-over-tailnet.md]
+      [decisions/2026-10-06-nfs-over-tailnet.md]. Untested: k3s starting with
+      Unraid down, and Unraid's NFS on the tailnet after an Unraid reboot.
 - [x] **Flux installed.** v2.9.6, reconciling the private repo
       `faulty-technology/homelab` at `clusters/nuc`, authenticating as GitHub
       App `faulty-technology-flux` [runs/2026-10-04-nuc-flux-github-app.md]
