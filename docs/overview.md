@@ -301,10 +301,10 @@ carried over unchanged — do not re-derive.
       comes up (+~30 s boot, +~30 s shutdown)
       [runs/2026-10-06-nuc-boot-with-nfs-down.md]. Still untested: Unraid's
       NFS on the tailnet after an Unraid reboot.
-- [ ] **NFS mounts are not retried after a failed boot mount.** They stay
-      failed until `systemctl start var-mnt-unraid-{media,fast}.mount` or a
-      reboot [runs/2026-10-06-nuc-boot-with-nfs-down.md]. Decide whether a
-      retry timer is worth it before media apps depend on them.
+- [x] **Failed NFS mounts retry themselves.** `kinoite-nfs-retry.timer`
+      starts any failed mount every 5 min. After an outage spanning a boot,
+      the media paths came back with no operator action
+      [runs/2026-10-06-nuc-nfs-retry-timer.md].
 - [x] **Flux installed.** v2.9.6, reconciling the private repo
       `faulty-technology/homelab` at `clusters/nuc`, authenticating as GitHub
       App `faulty-technology-flux` [runs/2026-10-04-nuc-flux-github-app.md]
