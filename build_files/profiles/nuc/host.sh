@@ -14,6 +14,10 @@ EOF2
 # logind/key event must not take the cluster down either.
 systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
 
+### Timezone
+# The bootc update timer's OnCalendar (Sun 04:00) is local time.
+ln -sf ../usr/share/zoneinfo/America/New_York /etc/localtime
+
 ### Install-time root filesystem
 # fedora-bootc declares no default, so bootc-image-builder and `bootc install`
 # refuse to run without one. xfs: Fedora Server's default, and no rootflags=

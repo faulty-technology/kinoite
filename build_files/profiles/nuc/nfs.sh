@@ -3,15 +3,18 @@ set -ouex pipefail
 
 # Unraid NFS mounts for media (array share) and fast storage (SSD-pool share).
 #
-# Fill these in to ship the mounts. While UNRAID_HOST is empty no units are written,
-# so the image builds and boots without them. Use the LAN address, not the tailnet
-# one: media traffic does not need to pay WireGuard overhead on the same L2.
-UNRAID_HOST=""
-MEDIA_EXPORT=""     # e.g. /mnt/user/media
-FAST_EXPORT=""      # e.g. /mnt/user/fast
+# Mounted over the tailnet. UNRAID_HOST is Unraid's Tailscale IP (100.x), not its
+# MagicDNS name, so a mount never waits on DNS at boot. Tailscale ACLs must allow
+# this node to reach it on tcp:2049; NFSv4 needs no other port.
+#
+# Fill these in to ship the mounts. Until all three are set no units are written,
+# so the image builds and boots without them.
+UNRAID_HOST="100.77.22.80"   # Unraid server "NUCi7" (LAN 192.168.200.46)
+MEDIA_EXPORT="/mnt/user/arrdata"   # media array share
+FAST_EXPORT="/mnt/user/appdata"    # SSD-pool share
 
-if [ -z "$UNRAID_HOST" ]; then
-    echo "nfs.sh: UNRAID_HOST unset; no NFS mounts baked"
+if [ -z "$UNRAID_HOST" ] || [ -z "$MEDIA_EXPORT" ] || [ -z "$FAST_EXPORT" ]; then
+    echo "nfs.sh: UNRAID_HOST/MEDIA_EXPORT/FAST_EXPORT not all set; no NFS mounts baked"
     exit 0
 fi
 
@@ -24,8 +27,10 @@ write_mount() {
     cat > "/usr/lib/systemd/system/${unit}" << UNIT
 [Unit]
 Description=Unraid NFS ${where}
-Wants=network-online.target
-After=network-online.target
+# tailscale-online.target (shipped by the tailscale package) runs 'tailscale wait':
+# tailscaled.service alone reports ready before the interface has its IP.
+Wants=network-online.target tailscale-online.target
+After=network-online.target tailscale-online.target
 
 [Mount]
 What=${UNRAID_HOST}:${what}
