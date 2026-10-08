@@ -153,6 +153,13 @@ Third-party repo files are removed after install — updates come from CI image 
 >   quay.io/centos-bootc/bootc-image-builder:latest --type anaconda-iso ghcr.io/faulty-technology/kinoite-nuc:latest
 > ```
 >
+> The installer gives the root filesystem only 70 GiB of the disk. Grow it after the first boot.
+> It's online and XFS only grows, so nothing needs unmounting:
+>
+> ```bash
+> sudo growpart /dev/nvme0n1 3 && sudo xfs_growfs /var
+> ```
+>
 > After installing, switch to the signed origin (see below), then `sudo tailscale up --ssh`. To use
 > `kubectl` from another machine, copy `/etc/rancher/k3s/k3s.yaml` and change its server to
 > `https://nuc:6443`.

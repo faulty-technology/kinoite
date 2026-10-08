@@ -326,8 +326,25 @@ carried over unchanged — do not re-derive.
       rebuilt Flux, both secrets (from 1Password), the sync, the SOPS canary
       and the GPU plugin in 39 s [runs/2026-10-04-nuc-bootstrap-script.md].
       `--refresh-kubeconfig` and a true first boot are still untested.
-- [ ] **No apps deployed through Flux yet.** Still to come: apps, and backups
-      of local-path PVCs.
+- [x] **Backups.** Velero v1.18.4 sends every namespace's volumes (kopia) to
+      B2: daily 02:30 kept 14d, weekly kept 90d. A delete-and-restore drill
+      brought a volume back byte-identical, with SQLite integrity `ok`. It
+      needs `privilegedFsBackup` on this SELinux host
+      [runs/2026-10-07-nuc-velero-restore-drill.md]
+      [decisions/2026-10-07-velero-to-b2.md]. Runbook:
+      [how-to/back-up-and-restore-nuc.md]. Unverified: the first scheduled
+      daily, and a real app's backup.
+- [ ] **k3s local-path leaks volumes on delete under SELinux**
+      ([k3s#14508](https://github.com/k3s-io/k3s/issues/14508)). The fix
+      (#14740) is merged to `main` but not yet backported. When a 1.36.x
+      release includes it, bump `K3S_VERSION` in `profiles/nuc/k3s.sh`, then
+      delete namespace `backup-drill` to prove it. Until then, clean up by
+      hand [how-to/back-up-and-restore-nuc.md].
+- [ ] **Disk size on reinstall.** The ISO install created a 70G root; it was
+      grown to 474G by hand [runs/2026-10-07-nuc-velero-restore-drill.md].
+      The `config.toml` fix for a whole-disk install is untested.
+- [ ] **No apps deployed through Flux yet.** When they land, set each app's
+      own DB backup to daily.
 - [ ] **I225-V link drops** are a known igc issue on some revisions. Nothing is
       baked for them; add `pcie_aspm=off` or disable EEE only if drops are seen.
 
