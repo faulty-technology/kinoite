@@ -64,7 +64,10 @@ All eliminated by measurement on this box. Do not re-chase without new evidence:
 - **CPU saturation** — ~5 of 24 cores, and both GPUs report 100% busy
   throughout, so the CPU is not the gate.
 - **Bumping to a newer stock vLLM** — 0.27.1 tested (kyuz0's own `dev` tag):
-  baseline unchanged at 24.34, MTP *worse*, 34.66 vs 40.75.
+  baseline unchanged at 24.34, MTP *worse*, 34.66 vs 40.75. 0.31.0 holds short
+  prompts but more than doubles the per-pass cost at depth: 275.31 against
+  119.50 ms at 69,751 tokens, with a 12% smaller pool
+  ([runs/2026-10-09-vllm-031-depth](../runs/2026-10-09-vllm-031-depth.md)).
 
 That last one covers **stock version bumps only** — not the gfx1201-patched
 builds (stilldeadcode/vllm-radiance, tcclaviger/vllm), which ship hand-written
