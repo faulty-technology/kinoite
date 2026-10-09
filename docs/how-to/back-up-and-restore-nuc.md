@@ -1,6 +1,7 @@
 # Back up and restore the NUC's app data
 
-Velero backs up every namespace except `kube-system` and `velero` to the B2
+Velero backs up every namespace except `kube-system`, `velero` and
+`flux-system` (rebuilt from git) to the B2
 bucket `faulty-technology-nuc-velero` (`us-west-002`), including volume
 contents (kopia). It runs a daily backup at 02:30, kept 14 days, and a Sunday
 03:00 backup, kept 90 days. Times are America/New_York.

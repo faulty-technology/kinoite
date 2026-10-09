@@ -340,8 +340,11 @@ carried over unchanged — do not re-derive.
       needs `privilegedFsBackup` on this SELinux host
       [runs/2026-10-07-nuc-velero-restore-drill.md]
       [decisions/2026-10-07-velero-to-b2.md]. Runbook:
-      [how-to/back-up-and-restore-nuc.md]. Unverified: the first scheduled
-      daily, and a real app's backup.
+      [how-to/back-up-and-restore-nuc.md]. The first scheduled daily ran at
+      02:30 EDT and completed, including the drill volume
+      [runs/2026-10-08-nuc-velero-first-scheduled-daily.md]. Unverified: the
+      weekly schedule, and a real app's backup. `flux-system` is
+      excluded from the schedules (rebuilt from git).
 - [ ] **k3s local-path leaks volumes on delete under SELinux**
       ([k3s#14508](https://github.com/k3s-io/k3s/issues/14508)). The fix
       (#14740) is merged to `main` but not yet backported. When a 1.36.x
