@@ -64,6 +64,14 @@ and reverted the same day: the big pool is what holds a session's conversations
 in the prefix cache, and at 0.57 hits fell from 95.6% to 41.9%
 [runs/2026-09-25-radiance-057-real-use-prefix-cache.md]
 [decisions/2026-09-25-radiance-back-to-full-cards.md].
+StillDeadcode's standalone radiance engine (1.3.0, same weights) was A/B'd
+against it on 2026-10-08:
+- Prefill is 20–33% slower at every depth.
+- Quality is equal: GSM8K at 150K was 479 vs 480 of 500.
+- The pool is 34% larger, and the engine starts in about 1 minute.
+- Its default 8 checkpoint slots drop DFlash2 drafting on follow-up turns,
+  down to 50–78 tok/s; `--checkpoint-slots 64` fixes that.
+[runs/2026-10-08-radiance-engine-v1-vs-vllm-radiance.md]
 
 GPU tuning is `kinoite-gpu-tune.service`: a 250 W cap per card at boot, with
 `VOLTAGE_OFFSET_MV` and `FAN_CURVE` knobs shipped unset because the OverDrive
