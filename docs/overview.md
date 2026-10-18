@@ -33,7 +33,7 @@ wants most of both cards.
     vLLM        :8000    + Open WebUI :3000, the OpenAI surface
     LLaMA-Factory :7860  + Jupyter :8889, the only one that trains
     R9V         :8004    Qwen3.8 Flash Next 177B MoE on patched vLLM, one request at a time
-    radiance    :8005    Qwen3.8-27B MXFP4 + DFlash2 on patched vLLM, 8 sequences, 262K context
+    radiance    :8005    Qwen3.8-27B MXFP4 + DFlash2 on the radiance engine, 8 sequences, 262K context
 
 lemonade ships Q6_K seeds with MTP and `-sm tensor` on the seven Qwen3.8-27B
 recipes (four stock Unsloth, three DavidAU `-Turbo` uncensored fine-tune), plus
@@ -57,21 +57,22 @@ The client now points at radiance and caps at 4, so pointing it back at
 lemonade needs the cap back at 1.
 vLLM ships FP8, MTP k=4, prefix caching on, strict tool calling off.
 
-radiance ships upstream's full-card settings, 0.98 with the measured KV pin, at
-262,144 tokens, pinned to radiance-vllm-mxfp4 `dfdfa38` for its DFlash2
-draft-head fix. A 0.57 / 131K footprint that freed ~13.8 GiB per card was tried
-and reverted the same day: the big pool is what holds a session's conversations
-in the prefix cache, and at 0.57 hits fell from 95.6% to 41.9%
-[runs/2026-09-25-radiance-057-real-use-prefix-cache.md]
-[decisions/2026-09-25-radiance-back-to-full-cards.md].
-StillDeadcode's standalone radiance engine (1.3.0, same weights) was A/B'd
-against it on 2026-10-08:
-- Prefill is 20–33% slower at every depth.
-- Quality is equal: GSM8K at 150K was 479 vs 480 of 500.
-- The pool is 34% larger, and the engine starts in about 1 minute.
-- Its default 8 checkpoint slots drop DFlash2 drafting on follow-up turns,
-  down to 50–78 tok/s; `--checkpoint-slots 64` fixes that.
-[runs/2026-10-08-radiance-engine-v1-vs-vllm-radiance.md]
+radiance ships StillDeadcode's standalone radiance engine 1.8.1, on trial since
+2026-10-18 [decisions/2026-10-18-radiance-engine-over-vllm-radiance.md]. It
+serves the same AMD Quark MXFP4 weights as the patched-vLLM stack it replaced
+(vllm-radiance `dfdfa38`), at TP2, 262,144 tokens, 8 sequences, fp8 KV, with
+`--checkpoint-slots auto` and an 8 GiB host prefix-cache tier. Against the old
+stack in one window [runs/2026-10-18-radiance-engine-181.md]:
+- Cold prefill is 17–24% slower at every depth, the same as on 1.3.0.
+- Decode after a prefix hit is 4–23% faster.
+- Follow-up turns keep DFlash2 drafting with stock settings, at 104–249 tok/s.
+  1.3.0's 8-slot default dropped them to 50–78
+  [runs/2026-10-08-radiance-engine-v1-vs-vllm-radiance.md].
+- Quality is equal: GSM8K at 150K was 478 against 480 of 500.
+- It starts in about 20 s.
+
+The pool still has to stay big: it is the prefix cache that holds a session's
+conversations [decisions/2026-09-25-radiance-back-to-full-cards.md].
 
 GPU tuning is `kinoite-gpu-tune.service`: a 250 W cap per card at boot, with
 `VOLTAGE_OFFSET_MV` and `FAN_CURVE` knobs shipped unset because the OverDrive
@@ -159,6 +160,25 @@ disabled.
       run, and decode was measured on raw llama-server at ctx 98304 rather than
       through lemonade at the shipped 131072.
       [runs/2026-09-14-muse-glimmer-q8xl-load.md]
+
+### radiance — `radiance.sh`
+
+- [ ] **The engine switch is a trial, judged by real use.** No real-use
+      measurement backs it yet. The bench opens every section with a cold
+      prompt, which favours the old stack, and real use is mostly prefix hits
+      [runs/2026-10-18-radiance-engine-181.md]. Check the engine's own
+      `/metrics` after a few sessions: the prefix hit rate,
+      `radiance:prefix_hit_cut_tokens_total`, and checkpoint
+      `store_full` evictions. `auto` holds the snapshot store to 50 slots on
+      this box's 59 GiB, below the 64 that fixed turns on 10-08. Revert the
+      commit if it feels worse.
+- [ ] **The old stack's files are still on north**: ~/.local/share/radiance,
+      ~/.local/share/models/radiance, AMD's HF release and
+      `vllm-radiance:0.9.3`. Delete them once the trial is settled; the
+      commands are in [how-to/radiance.md].
+- [ ] **The shadow unit at `~/.config/containers/systemd/users/radiance.container`
+      on north overrides the baked one.** Remove it after booting the image with
+      the engine switch, or the old stack keeps starting.
 
 ### vLLM — `vllm.sh`
 
@@ -297,10 +317,11 @@ carried over unchanged — do not re-derive.
       single k3s node `nuc` reports Ready. GuC and HuC load, with HuC
       authenticated, and `/dev/dri/renderD128` is present. The node is on the
       tailnet as `nuc`.
-- [ ] **Update window drifts.** The stock timer's `RandomizedDelaySec=2h`
-      pushed the first scheduled run to 05:30 UTC. The `apply` policy now
-      resets it to 0, which lands on the next image build. The box runs in UTC
-      until a timezone is set on it.
+- [x] **Weekly auto-update works.** Sunday 04:00 EDT with no jitter. The NUC
+      pulled the new signed image, rebooted, and everything (mounts, k3s, Flux,
+      the GPU plugin, Velero) came back on its own. The update unit shows
+      "Failed (signal)" every week because `--apply` reboots it mid-run;
+      that's cosmetic [runs/2026-10-11-nuc-first-auto-update-and-weekly.md].
 - [x] **NFS mounts.** Unraid `arrdata` mounts at `/var/mnt/unraid/media`
       and `appdata` at `/var/mnt/unraid/fast`, over the tailnet
       (`100.77.22.80`), NFSv4.2, ordered after `tailscale-online.target`
@@ -340,10 +361,11 @@ carried over unchanged — do not re-derive.
       needs `privilegedFsBackup` on this SELinux host
       [runs/2026-10-07-nuc-velero-restore-drill.md]
       [decisions/2026-10-07-velero-to-b2.md]. Runbook:
-      [how-to/back-up-and-restore-nuc.md]. The first scheduled daily ran at
-      02:30 EDT and completed, including the drill volume
-      [runs/2026-10-08-nuc-velero-first-scheduled-daily.md]. Unverified: the
-      weekly schedule, and a real app's backup. `flux-system` is
+      [how-to/back-up-and-restore-nuc.md]. Daily (02:30) and weekly (Sun 03:00) EDT
+      backups both run and complete
+      [runs/2026-10-08-nuc-velero-first-scheduled-daily.md]
+      [runs/2026-10-11-nuc-first-auto-update-and-weekly.md]. Unverified: a
+      real app's backup. `flux-system` is
       excluded from the schedules (rebuilt from git).
 - [ ] **k3s local-path leaks volumes on delete under SELinux**
       ([k3s#14508](https://github.com/k3s-io/k3s/issues/14508)). The fix
