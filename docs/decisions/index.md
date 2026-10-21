@@ -16,3 +16,4 @@
 - [2026-10-18-radiance-engine-over-vllm-radiance](2026-10-18-radiance-engine-over-vllm-radiance.md)
 - [2026-10-20-okf-pointer-bundle](2026-10-20-okf-pointer-bundle.md)
 - [2026-10-21-docs-is-the-bundle](2026-10-21-docs-is-the-bundle.md)
+- [2026-10-21-drop-libfprint-moc2-custom-build](2026-10-21-drop-libfprint-moc2-custom-build.md)

@@ -14,3 +14,6 @@ doc gets its family `index.md` line and a bullet here (see
 - **Cutover complete**: `okf/` pointer layer removed; `okf-base.yaml` roots repointed to
   `./docs`; `okflint validate --manifest okf-base.yaml` conformant. The five shipped
   runbooks' `install -D` lines are untouched (frontmatter is inert to their readers).
+- **New decision**: [decisions/2026-10-21-drop-libfprint-moc2-custom-build](decisions/2026-10-21-drop-libfprint-moc2-custom-build.md) —
+  the custom libfprint-moc2 build chain is removed from the base image; stock floating
+  `libfprint` returns.
