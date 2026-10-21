@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-08-31
 subject: lemonade vs vLLM on a multi-turn agentic conversation, prefix caching on and off
 harness: ~/bench/agentic.py, driven by ~/bench/pc-compare.sh (off-repo, on the box)

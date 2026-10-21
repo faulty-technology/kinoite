@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-08-30
 subject: single-stream decode versus prompt depth, vLLM FP8 against llama.cpp -sm layer and -sm tensor
 harness: ~/bench/depth.py and ~/bench/lemctl.py (off-repo, on the box)

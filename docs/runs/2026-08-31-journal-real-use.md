@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-08-31
 subject: prompt:generated ratio from server counters on real traffic, lemonade vs vLLM
 harness: llamacpp Prometheus counters and vLLM journal windows — no benchmark

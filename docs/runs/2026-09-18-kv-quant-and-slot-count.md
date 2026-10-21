@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-09-18
 subject: "q8_0 KV cache and slot count on the Q8XL daily driver: prefix-cache eviction, VRAM, decode at depth"
 harness: journal mining of `journalctl --user -u lemonade` for slot selection, timings and VRAM; ~/bench/kvquant-deep.py (183K log-filler prompt with a planted retrieval fact, single stream) and ~/bench/kvquant-short.py (25-token control), both off-repo on the box; peak VRAM sampled from /sys/class/drm/card*/device/mem_info_vram_used at 3 s during each load

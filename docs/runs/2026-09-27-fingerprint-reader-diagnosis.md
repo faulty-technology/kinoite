@@ -1,7 +1,8 @@
 ---
+type: Run
 date: 2026-09-27
 subject: fingerprint reader non-functional on the kinoite laptop image — upstream driver gap, pipeline exonerated
-harness: none (diagnosis, not a benchmark) — commands run by hand on the box: fprintdctl status, lsusb, modinfo goodix_fp, journalctl -b -k, /sys/bus/i2c/devices, /dev/hidraw*
+harness: "none (diagnosis, not a benchmark) — commands run by hand on the box: fprintdctl status, lsusb, modinfo goodix_fp, journalctl -b -k, /sys/bus/i2c/devices, /dev/hidraw*"
 box: kinoite (laptop)
 ---
 

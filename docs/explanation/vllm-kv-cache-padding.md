@@ -1,3 +1,9 @@
+---
+type: Explanation
+title: "vLLM KV-cache group padding — why it happens, and the DFlash2 trap"
+description: "Why vLLM pads KV-cache layer groups (uneven buckets get placeholder layers) and why the DFlash2 drafter's 'Add 3 padding layers' warning is already optimal, not a misconfiguration."
+---
+
 # vLLM KV-cache group padding — why it happens, and the DFlash2 trap
 
 The startup log shows a warning that looks like a misconfiguration:

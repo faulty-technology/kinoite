@@ -1,0 +1,3 @@
+- [GPU tuning sysfs](gpu-sysfs.md) — The amdgpu sysfs tuning nodes under gpu_od/, which require amdgpu.ppfeaturemask=0xfff7ffff on /proc/cmdline; includes which knobs survive an idle cycle and why the karg goes via rpm-ostree kargs.
+- [GPU topology](gpu-topology.md) — AMD 9900X, dual Radeon AI PRO R9700 (Navi 48, RDNA4), ASUS ProArt B850-Creator WiFi Neo. Single NUMA node.
+- [Motherboard sensors](sensors.md) — ASUS ProArt B850-Creator WiFi Neo, NCT6701D reported as nct6799 by the kernel (`nct6799-isa-0290`). Fan RPM, voltage rails and most temps work out of the box. `acpi_enforce_resources=lax` is NOT needed — the driver probes without it on Fedora 44, and both the karg and the `modules-load.d` force-load were removed from `motherboard.sh` as verified unnecessary.

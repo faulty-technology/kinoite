@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-08-25
 subject: fan curve control on the R9700 with OverDrive unlocked
 harness: kinoite-gpu-tune, under an unchanged vLLM load

@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-09-15
 subject: GSM8K 500-question paired A/B, radiance MXFP4 against lemonade's Q8_K_XL daily driver, greedy with thinking off
 harness: ~/bench/radiance/quality/quality.sh (orchestration) and gsm8k.py, against lemonade :13305/api/v1 and radiance :8000/v1; raw output ~/bench/radiance/quality/{run.log,q8.jsonl,radiance.jsonl} (off-repo, on the box)

@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-09-03
 subject: test --no-async-scheduling cost at k=4
 harness: /usr/share/kinoite/vllm/bench.py (baked into the image)

@@ -1,3 +1,9 @@
+---
+type: Explanation
+title: "Rootless Quadlets and SELinux confinement"
+description: "The two silently-failing constraints on this box: rootless Quadlets must ship in /etc (podman 5.8.4 ignores the /usr search path), and SELinux confinement of the containers."
+---
+
 # Rootless Quadlets and SELinux confinement
 
 Two constraints that cost a week between them, both of which fail silently.

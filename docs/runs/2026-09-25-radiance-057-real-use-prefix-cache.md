@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-09-25
 subject: "radiance at 0.57 and 131K in real use against 0.98 and 262K: the pool was the prefix cache"
 harness: none; read-only. The radiance unit's journal on north (vLLM's 10-second `Engine 000` log lines) and :8005/metrics, over two windows of the user's own pi sessions; no synthetic load, no restart

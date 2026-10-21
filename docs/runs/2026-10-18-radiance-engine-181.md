@@ -1,7 +1,8 @@
 ---
+type: Run
 date: 2026-10-18
 subject: StillDeadcode's radiance engine 1.8.1 against the shipped vllm-radiance, same window
-harness: ~/bench/radeng/ (off-repo, on the box), the 10-08 harness unchanged. radeng-bench.py, run-client.sh, gsm8k-deep.py. arm18.sh is arm.sh with the 1.8.1 digest; engine181.sh runs the engine arms; efftest.py checks reasoning-effort handling. Raw: bench-A181-prod.jsonl, bench-A181-turns.jsonl, bench-B181-tp2.jsonl, bench-B181span.jsonl, gsm8k-B181-tp2.jsonl, serve-v181-*.log
+harness: "~/bench/radeng/ (off-repo, on the box), the 10-08 harness unchanged. radeng-bench.py, run-client.sh, gsm8k-deep.py. arm18.sh is arm.sh with the 1.8.1 digest; engine181.sh runs the engine arms; efftest.py checks reasoning-effort handling. Raw: bench-A181-prod.jsonl, bench-A181-turns.jsonl, bench-B181-tp2.jsonl, bench-B181span.jsonl, gsm8k-B181-tp2.jsonl, serve-v181-*.log"
 box: kinoite-north
 ---
 

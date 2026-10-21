@@ -1,3 +1,9 @@
+---
+type: Explanation
+title: "Why `-sm tensor`, and what it costs"
+description: "llama.cpp's tensor split is the single largest decode lever on this box: +44.4% on the 27B with the MTP head, and the difference between beating vLLM everywhere and losing to it on short prompts ([runs/2026-08-30-tensor-split](../runs/2026-08-30-tensor-split.md), [runs/2026-08-30-quant-sweep](../runs/2026-08-30-quant-sweep.md))."
+---
+
 # Why `-sm tensor`, and what it costs
 
 llama.cpp's tensor split is the single largest decode lever on this box: +44.4%

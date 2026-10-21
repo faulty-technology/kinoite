@@ -1,3 +1,9 @@
+---
+type: How-To
+title: "kinoite-north: radiance Qwen3.8-27B MXFP4 (rootless Quadlet)"
+description: "Rootless Quadlet serving Qwen3.8-27B at MXFP4 with a merged DFlash2 drafter via StillDeadcode's radiance engine (C++/HIP, no vLLM): TP=2, up to 8 sequences, 262k context; the model is AMD's Quark/AWQ post-training quantization of the released model. Ships at /etc/containers/systemd/users/radiance.container, not enabled."
+---
+
 # kinoite-north: radiance Qwen3.8-27B MXFP4 (rootless Quadlet)
 
 > Paths beginning `docs/` are in the source repo, not on this machine. The

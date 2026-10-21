@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-08-30
 subject: IQ4_XS, Q6_K_XL and Q8_K_XL on Qwen3.8-27B, decode versus depth and concurrency
 harness: ~/bench/q6-suite.sh, raw output ~/bench/q6-results.txt (off-repo, on the box)

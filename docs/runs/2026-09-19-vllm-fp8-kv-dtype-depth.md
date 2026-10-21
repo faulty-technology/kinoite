@@ -1,7 +1,8 @@
 ---
+type: Run
 date: 2026-09-19
 subject: "vLLM FP8 27B: what --kv-cache-dtype fp8 buys in context and costs in depth"
-harness: ~/bench/vllm-kvarm/prodab-kv.sh (off-repo, on the box), a derivative of ~/bench/prodab/prodab.sh driving ~/bench/depth.py with the same invocation as the 09-18 record, `depth.py - 512 3 8000`; pool figures parsed by ~/bench/kvdepth/kvparse.py; orchestrated by ~/bench/kvdepth/all.sh. Raw output on the box: ~/bench/kvdepth/{arm,serve,sampler}-{a1-profile,a1-pinned,a2}.log and kv-*.txt
+harness: "~/bench/vllm-kvarm/prodab-kv.sh (off-repo, on the box), a derivative of ~/bench/prodab/prodab.sh driving ~/bench/depth.py with the same invocation as the 09-18 record, `depth.py - 512 3 8000`; pool figures parsed by ~/bench/kvdepth/kvparse.py; orchestrated by ~/bench/kvdepth/all.sh. Raw output on the box: ~/bench/kvdepth/{arm,serve,sampler}-{a1-profile,a1-pinned,a2}.log and kv-*.txt"
 box: kinoite-north
 ---
 

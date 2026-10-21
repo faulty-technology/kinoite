@@ -1,4 +1,5 @@
 ---
+type: Decision
 date: 2026-09-18
 subject: Q8XL gets three slots, because slot count follows live conversations rather than concurrent requests
 ---

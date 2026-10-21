@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-10-04
 subject: Flux v2.9.6 bootstrapped on the nuc k3s cluster from faulty-technology/homelab
 harness: none — the commands in how-to/bootstrap-flux-on-nuc.md, run by hand from the laptop. flux-cli ghcr.io/fluxcd/flux-cli@sha256:b1ac18156f227af9a524b842a96f2c20986c7a779ef721df3ba4e4540f449d76 (v2.9.6); kubectl registry.k8s.io/kubectl:v1.36.4

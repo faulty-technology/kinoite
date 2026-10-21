@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-08-30
 subject: peer-to-peer bandwidth between the two R9700s and the iGPU
 harness: rocm-bandwidth-test 2.6.0, via the startup sweep in stilldeadcode/vllm-radiance:0.9.3

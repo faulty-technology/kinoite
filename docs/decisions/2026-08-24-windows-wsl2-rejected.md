@@ -1,4 +1,5 @@
 ---
+type: Decision
 date: 2026-08-24
 subject: stay on native Linux dual-card rather than moving the LLM stack to Windows/WSL2
 ---

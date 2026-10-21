@@ -1,4 +1,5 @@
 ---
+type: Decision
 date: 2026-10-04
 subject: Flux on nuc authenticates to GitHub as a GitHub App, not with per-repo SSH deploy keys; installed without flux bootstrap
 ---

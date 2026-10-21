@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-10-11
 subject: First automatic bootc update (Sun 04:00 EDT) and first weekly Velero backup on nuc
 harness: none. journalctl, rpm-ostree status and findmnt over SSH, plus velero CLI v1.18.4 and kubectl v1.36.4 from pinned containers on the laptop. All read-only, at 12:48 EDT.

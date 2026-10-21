@@ -1,4 +1,5 @@
 ---
+type: Decision
 date: 2026-08-31
 subject: vLLM ships with prefix caching on by default
 ---

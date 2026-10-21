@@ -1,4 +1,5 @@
 ---
+type: Decision
 date: 2026-10-20
 subject: the repo gets an OKF v0.2 pointer bundle at okf/, one thin concept per canonical doc, validated by okflint via a committed manifest
 ---

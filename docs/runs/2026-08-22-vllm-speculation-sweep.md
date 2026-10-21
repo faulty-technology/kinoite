@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-08-22
 subject: vLLM MTP speculation — drafter-batch flag, k sweep, and behaviour at batch >1
 harness: /usr/share/kinoite/vllm/ksweep.py and bench.py (baked into the image)

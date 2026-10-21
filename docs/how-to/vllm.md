@@ -1,3 +1,9 @@
+---
+type: How-To
+title: "kinoite-north: vLLM + Open WebUI (rootless Quadlet pod)"
+description: "A second, independent local-LLM stack next to lemonade: vLLM does batched tensor-parallel serving on both R9700s with Open WebUI as its frontend; they share one pod and start/stop together. Endpoints loopback-only and unauthenticated (Open WebUI 127.0.0.1:3000). Not enabled — hand-started."
+---
+
 # kinoite-north: vLLM + Open WebUI (rootless Quadlet pod)
 
 > Paths beginning `docs/` are in the source repo, not on this machine. The

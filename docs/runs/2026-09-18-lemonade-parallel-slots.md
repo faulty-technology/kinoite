@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-09-18
 subject: "lemonade Q8XL with --parallel 4 --kv-unified: slot semantics, concurrency A/B at short and 40K depth, and the shared-pool failure mode"
 harness: ~/bench/conc-lemonade.py (off-repo, on the box), N streams released from a threading.Barrier against lemonade's /api/v1, distinct prompt per stream, temperature 0, max_tokens 384; journal mining of `journalctl --user -u lemonade` for slot config and per-request timings

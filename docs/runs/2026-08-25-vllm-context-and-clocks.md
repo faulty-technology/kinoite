@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-08-25
 subject: vLLM decode cost versus context depth, and a controlled A/B on GPU clocks and thermals
 harness: in-situ fit against a live agentic workload, reading metrics.py:116

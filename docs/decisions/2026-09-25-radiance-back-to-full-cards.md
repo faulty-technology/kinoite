@@ -1,4 +1,5 @@
 ---
+type: Decision
 date: 2026-09-25
 subject: radiance goes back to upstream's full-card memory settings on the dfdfa38 pin; the client back to a 262K window and four subagents
 ---

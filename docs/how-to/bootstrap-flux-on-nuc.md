@@ -1,3 +1,9 @@
+---
+type: How-To
+title: "Install Flux on the NUC"
+description: "Run `scripts/bootstrap.sh` in the homelab repo. It takes the `nuc` k3s cluster from \"node Ready\" to \"Flux reconciling `faulty-technology/homelab` at `clusters/nuc`\". It installs Flux and creates the two hand-placed secrets from 1Password. Then it applies the sync and checks that everything from git came up: the SOPS canary decrypts and the GPU plugin registered."
+---
+
 # Install Flux on the NUC
 
 Run `scripts/bootstrap.sh` in the homelab repo. It takes the `nuc` k3s cluster

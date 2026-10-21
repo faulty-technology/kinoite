@@ -1,3 +1,9 @@
+---
+type: How-To
+title: "When a build fails on a GPG mismatch"
+description: "Fixing a build that fails on a GPG fingerprint mismatch after a vendor key rotation: diff pins with check-keys.sh, then refresh the vendored blob and pin together with update-keys.sh."
+---
+
 # When a build fails on a GPG mismatch
 
 Vendor keys are fingerprint-pinned in the calling scripts and vendored under

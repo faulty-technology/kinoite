@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-10-08
 subject: First scheduled velero-daily on nuc. 02:30 EDT, Completed, drill volume included
 harness: none. velero CLI v1.18.4 and kubectl v1.36.4 from pinned containers on the laptop, read-only.

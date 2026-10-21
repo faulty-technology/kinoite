@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-10-04
 subject: SOPS with one age key on nuc. Flux decrypts, canary verified
 harness: none. Commands are the one-time setup in how-to/manage-secrets-with-sops-on-nuc.md, run by hand from the laptop. Tools — sops ghcr.io/getsops/sops@sha256:0d10ea06e9c02d88ff017c4d9b3edb1c46bed8d8a6ade6b576c26bebe5fb3a2b (v3.13.3), age 1.3.1-4.fc44 in quay.io/fedora/fedora:44, flux-cli v2.9.6 and kubectl v1.36.4 as in runs/2026-10-04-nuc-flux-github-app

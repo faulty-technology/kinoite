@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-09-13
 subject: R9V Qwen3.8 Flash Next (177B MoE IQ4_XS, patched vLLM TP2 MTP2) against lemonade's Qwen3.8-27B Q8_K_XL, decode versus depth and agentic replay
 harness: ~/bench/r9v/armA.sh, armb.sh, agentic.sh driving ~/bench/depth.py, ~/bench/agentic.py, /usr/share/kinoite/vllm/bench.py and ~/bench/r9v/warmup.py; raw output ~/bench/r9v/{armA,armb,agentic,sampler}.log and serve.log.gz (off-repo, on the box)

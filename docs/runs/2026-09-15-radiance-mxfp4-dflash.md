@@ -1,6 +1,7 @@
 ---
+type: Run
 date: 2026-09-15
-subject: radiance-vllm-mxfp4 (Qwen3.8-27B MXFP4 + DFlash2, R4D, TP2) against same-day lemonade Q8XL and production vLLM FP8: decode versus depth, agentic replay, 8-way concurrency
+subject: "radiance-vllm-mxfp4 (Qwen3.8-27B MXFP4 + DFlash2, R4D, TP2) against same-day lemonade Q8XL and production vLLM FP8: decode versus depth, agentic replay, 8-way concurrency"
 harness: ~/bench/radiance/all.sh (orchestration), arm.sh (one radiance arm), conc8.py, toolcheck-openai.py and prep.sh; ~/bench/prodab/prodab.sh (production arm) and ~/bench/depth.sh (Q8XL arm); all driving ~/bench/depth.py and ~/bench/agentic.py; raw output ~/bench/radiance/{all,prep}.log, serve-*-0915.log, sampler-*-0915.log, sanity-*-0915.txt, dryrun.txt, ~/bench/prodab/*-prod-0915.* and ~/bench/depth-q8-tensor-mtp-0915.log (off-repo, on the box)
 box: kinoite-north
 ---

@@ -1,3 +1,9 @@
+---
+type: Reference
+title: "Motherboard sensors"
+description: "ASUS ProArt B850-Creator WiFi Neo, NCT6701D reported as nct6799 by the kernel (`nct6799-isa-0290`). Fan RPM, voltage rails and most temps work out of the box. `acpi_enforce_resources=lax` is NOT needed — the driver probes without it on Fedora 44, and both the karg and the `modules-load.d` force-load were removed from `motherboard.sh` as verified unnecessary."
+---
+
 # Motherboard sensors
 
 ASUS ProArt B850-Creator WiFi Neo, NCT6701D reported as nct6799 by the kernel

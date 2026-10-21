@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-08-20
 subject: llama.cpp MTP draft head speedup on Qwen3.8-27B
 harness: llama-server driven directly on the pair

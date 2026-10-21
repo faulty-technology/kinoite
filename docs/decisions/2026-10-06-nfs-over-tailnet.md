@@ -1,4 +1,5 @@
 ---
+type: Decision
 date: 2026-10-06
 subject: the NUC mounts Unraid NFS over the tailnet (100.x), not the LAN
 ---

@@ -1,4 +1,5 @@
 ---
+type: Decision
 date: 2026-09-19
 subject: Q8XL gets four slots, paired with a client-side cap of one simultaneous subagent; the two are one decision
 ---

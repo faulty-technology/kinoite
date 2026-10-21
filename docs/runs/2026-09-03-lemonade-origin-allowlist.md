@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-09-03
 subject: lemond CORS origin allowlist behind tailscale serve
 harness: ad-hoc; throwaway `podman run --rm` of the shipped image on a spare port, curl with a forced Origin header

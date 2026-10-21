@@ -1,3 +1,9 @@
+---
+type: Explanation
+title: "GPU power, fans, and why tuning here is hard"
+description: "Three findings shape every tuning decision on this box: the OverDrive karg has to be applied a specific way, nothing in the OverDrive table survives an idle cycle, and the fan floor is firmware."
+---
+
 # GPU power, fans, and why tuning here is hard
 
 Three findings shape every tuning decision on this box: the OverDrive karg has

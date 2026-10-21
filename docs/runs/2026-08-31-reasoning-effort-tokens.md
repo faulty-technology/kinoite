@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-08-31
 subject: prompt-token cost of each reasoning_effort level on Qwen3.8-27B through lemonade
 harness: curl against the running server on :13305, reading usage.prompt_tokens

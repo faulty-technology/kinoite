@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-10-06
 subject: nuc reboot with Unraid NFS off. k3s comes up, mounts fail and stay failed
 harness: none. Unraid Settings → NFS was turned off by the operator, then the NUC was rebooted. Afterwards journalctl, systemd-analyze and findmnt were read over SSH from the laptop.

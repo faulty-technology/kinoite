@@ -1,7 +1,8 @@
 ---
+type: Run
 date: 2026-09-27
 subject: fingerprint reader follow-up — Elan MOC sensor, fprintd aborts, D-Bus claim race; supersedes the missing-driver verdict of 2026-09-27-fingerprint-reader-diagnosis
-harness: none (diagnosis) — commands run by hand on the box: loginctl, systemctl show fprintd, journalctl -u fprintd, busctl list/status + ps mapping
+harness: "none (diagnosis) — commands run by hand on the box: loginctl, systemctl show fprintd, journalctl -u fprintd, busctl list/status + ps mapping"
 box: kinoite (laptop)
 ---
 

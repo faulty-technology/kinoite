@@ -1,4 +1,5 @@
 ---
+type: Decision
 date: 2026-08-30
 subject: LLaMA-Factory replaces Unsloth as the fine-tuning stack
 ---

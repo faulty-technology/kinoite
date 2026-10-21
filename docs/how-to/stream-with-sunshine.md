@@ -1,3 +1,9 @@
+---
+type: How-To
+title: "Stream the north box with Sunshine"
+description: "Streaming the north box over Sunshine: enabled for every user at login, pairing is the only manual step, and the virtual monitor is created on demand at the client's geometry."
+---
+
 # Stream the north box with Sunshine
 
 Sunshine is enabled for every user at login. Pairing is the only manual step.

@@ -1,3 +1,9 @@
+---
+type: How-To
+title: "Manage secrets with SOPS on the NUC"
+description: "Secrets live in the homelab repo encrypted with SOPS against one age key. Flux's kustomize-controller decrypts them at apply time with the private key in Secret `flux-system/sops-age`. Only the `data` and `stringData` values are encrypted. Names, namespaces and key names stay readable."
+---
+
 # Manage secrets with SOPS on the NUC
 
 Secrets live in the homelab repo encrypted with SOPS against one age key. Flux's

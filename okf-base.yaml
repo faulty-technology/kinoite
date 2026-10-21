@@ -1,9 +1,9 @@
-# okflint manifest for the okf/ pointer bundle.
-# Validate with:  okflint validate --manifest okf-base.yaml ./okf/
+# okflint manifest for the docs/ OKF v0.2 bundle (the repo's knowledge base).
+# Validate with:  okflint validate --manifest okf-base.yaml
 base:
   name: kinoite
   roots:
-    - path: ./okf
+    - path: ./docs
   reserved_files:
     index: index.md
     log: log.md

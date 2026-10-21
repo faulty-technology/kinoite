@@ -1,3 +1,9 @@
+---
+type: Reference
+title: "GPU topology"
+description: "AMD 9900X, dual Radeon AI PRO R9700 (Navi 48, RDNA4), ASUS ProArt B850-Creator WiFi Neo. Single NUMA node."
+---
+
 # GPU topology
 
 AMD 9900X, dual Radeon AI PRO R9700 (Navi 48, RDNA4), ASUS ProArt B850-Creator

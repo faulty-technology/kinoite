@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-10-06
 subject: Unraid NFS mounts on nuc over the tailnet. Export rule, NFS rebind, boot ordering
 harness: none — commands run by hand. bash /dev/tcp probes and findmnt/systemctl over SSH from the laptop; a manual mount test run by the operator on the NUC.

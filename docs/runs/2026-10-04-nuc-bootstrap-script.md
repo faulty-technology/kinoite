@@ -1,7 +1,8 @@
 ---
+type: Run
 date: 2026-10-04
 subject: homelab scripts/bootstrap.sh --reinstall rebuilds Flux on nuc end to end in 39 s
-harness: homelab scripts/bootstrap.sh at 239be937, run by the operator from the laptop. Receipts are in ~/.local/state/homelab/bootstrap-20261004T182910Z.log on the laptop. Tools are pinned in the script: flux-cli v2.9.6, kubectl v1.36.4, op 2.40.0.
+harness: "homelab scripts/bootstrap.sh at 239be937, run by the operator from the laptop. Receipts are in ~/.local/state/homelab/bootstrap-20261004T182910Z.log on the laptop. Tools are pinned in the script: flux-cli v2.9.6, kubectl v1.36.4, op 2.40.0."
 box: kinoite-nuc (NUC12WSKi7), k3s v1.36.5+k3s1, SELinux enforcing
 ---
 

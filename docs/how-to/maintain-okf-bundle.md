@@ -1,56 +1,60 @@
+---
+type: How-To
+title: "Maintaining the OKF bundle"
+description: "How to keep docs/ conformant as an OKF v0.2 bundle: give each new doc frontmatter plus a family index line and a log bullet, regenerate indexes with okflint index, and validate with okflint validate."
+---
+
 # Maintaining the OKF bundle
 
-The `okf/` directory is an [OKF v0.2](https://github.com/GoogleCloudPlatform/open-knowledge-format)
-pointer bundle over `docs/`. One thin concept per canonical doc; no content is
-ever copied into it. This is how you keep it in sync. See
-[decisions/2026-10-20-okf-pointer-bundle.md](../decisions/2026-10-20-okf-pointer-bundle.md)
-for why the bundle is a pointer layer rather than a mirror.
+`docs/` **is** the [OKF v0.2](https://github.com/GoogleCloudPlatform/open-knowledge-format)
+bundle — one file per concept, no mirror, no pointer layer. See
+[decisions/2026-10-21-docs-is-the-bundle.md](../decisions/2026-10-21-docs-is-the-bundle.md)
+for why the bundle is `docs/` itself rather than a separate `okf/` layer.
 
 ## The one rule
 
-**The canonical doc is the content; the concept is metadata plus a link.** If a
-fact changes, edit `docs/…` — never `okf/…`. A concept that starts carrying its
-own measurements or prose has become a second source of truth and must be cut
-back to the template below.
+**Append-only protects the body; frontmatter is metadata.** A run or decision's
+body is never edited after it lands. Its YAML frontmatter (`type`, and for some
+families `title`/`description`) is bundle metadata, not content — adding or
+refreshing it does not violate append-only. If a fact changes, edit the body per
+the family's own write rule; never treat frontmatter as a place to restate it.
 
-## Adding a concept (when a new doc lands)
+## Adding a doc
 
-1. Create the canonical doc in `docs/<family>/` first (runs via
-   `scripts/new-run.sh`; decisions by hand, append-only).
-2. Copy the sibling concept's shape — every concept looks like this:
+1. Create the doc in `docs/<family>/` (runs via `scripts/new-run.sh`, which already
+   scaffolds `type: Run`; decisions by hand, append-only).
+2. Give it frontmatter matching its family:
 
    ```markdown
    ---
-   type: Run            # Run | Decision | How-To | Reference | Explanation
-   title: "Short human title"
+   type: How-To            # Run | Decision | How-To | Reference | Explanation
+   title: "Short human title"      # runs/decisions: omit — only `type` is required
    description: "One line, what this doc is about"
-   resource: docs/runs/2026-10-20-example.md
-   generated: { by: human:faultytechnology, at: 2026-10-20T12:00:00Z }
    ---
-
-   # Short human title
-
-   One line, what this doc is about.
-
-   Pointer concept: the canonical record is [docs/runs/2026-10-20-example.md](../../docs/runs/2026-10-20-example.md).
-   Measurements, decision history and errata live there, not here — keep this file
-   to one screen.
    ```
 
-   `type` is the only required field; `title`/`description` are recommended and
-   expected here. If the description contains double quotes, use single quotes
-   inside so the YAML stays valid.
-3. Add one line to the family's `okf/<family>/index.md`:
-   `- [Short human title](./2026-10-20-example.md) - <description>`
-4. Append a bullet under today's date in `okf/log.md` (newest first).
+   `type` is the only required field. For `runs/` and `decisions/` add **only**
+   `type` (plus their existing `date`/`subject`/… fields) — do not invent a
+   `title`/`description`. For `how-to`, `reference` and `explanation`, derive
+   `title` from the first heading and `description` from the first paragraph; if
+   that first paragraph is a blockquote, warning or meta-note rather than a
+   summary, write a short accurate one instead. If a value contains a colon, wrap
+   it in double quotes so the block stays valid YAML.
+3. Add one line to the family's `index.md` (regenerable — see below):
+   `- [Short human title](./2026-10-21-example.md) - <description>`
+4. Append a bullet under today's date in `log.md` (newest first).
 
-## Updating a concept
+## Regenerating indexes
 
-Only its metadata changes: refresh `title`/`description` if the doc's summary
-moved, or add `tags`. Never edit the canonical file from here. If the doc was
-superseded, leave the old concept in place and note it in the new one's
-description — supersession is expressed in `docs/runs/`, not by deleting bundle
-files.
+```bash
+okflint index --manifest okf-base.yaml --apply
+```
+
+This rewrites the five family `index.md` files and the root link list from the
+frontmatter. **The root `docs/index.md` is hand-maintained**: it carries the
+`okf_version: "0.2"` frontmatter and heading, which the generator strips — so after
+an `--apply`, re-add that header (or run the generator only when you will restore
+it). Family indexes need no frontmatter.
 
 ## Validating
 
@@ -58,14 +62,16 @@ files.
 okflint validate --manifest okf-base.yaml
 ```
 
-Exit 0 = conformant. The manifest (`okf-base.yaml`) declares the bundle root
-and the reserved filenames; it needs no per-type profile for this bundle. If a
-file fails E1/E2 (missing frontmatter or `type`), fix the concept, not the
-manifest.
+Exit 0 = conformant. If a file fails F001 (frontmatter absent or unparsable), fix
+the doc's frontmatter — usually an unquoted `:` in a value — not the manifest. The
+manifest (`okf-base.yaml`) declares the bundle root (`./docs`) and the reserved
+filenames; it needs no per-type profile for this bundle.
 
 ## What the bundle is not
 
-- Not a place for new knowledge — answers go in `docs/` per the repo's doc
-  rules, then get a pointer here.
-- Not shipped to any image. It lives in the repo only; `/usr/share/kinoite/`
-  still carries exactly the five self-contained runbooks it always did.
+- Not a second copy of the knowledge. There is exactly one file per concept, in
+  `docs/`; nothing is mirrored or re-copied on append.
+- Not shipped as a whole. No image copies `docs/` wholesale; the five self-contained
+  how-tos (vllm, lemonade, llamafactory, r9v, radiance) are installed individually
+  via `install -D` to `/usr/share/kinoite/`. YAML frontmatter at the top of a
+  markdown file is inert to their readers, so self-containment holds.

@@ -1,3 +1,9 @@
+---
+type: Explanation
+title: "Choosing a quant"
+description: "The seeded recipes are Q6_K with one deliberate IQ4_XS exception. The reasoning is one measurement: **the weight-size axis is flat above ~25 GB** ([runs/2026-08-30-quant-sweep](../runs/2026-08-30-quant-sweep.md))."
+---
+
 # Choosing a quant
 
 The seeded recipes are Q6_K with one deliberate IQ4_XS exception. The reasoning

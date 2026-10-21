@@ -1,4 +1,5 @@
 ---
+type: Decision
 date: 2026-08-23
 subject: run vLLM with strict tool calling disabled rather than bumping to an image that fixes it
 ---

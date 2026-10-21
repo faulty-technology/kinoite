@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-09-20
 subject: "radiance concurrency at depth: why fan-out is free but not faster"
 harness: ~/bench/kvdepth/concdepth2.py (off-repo, on the box), run under systemd-run against the shipped radiance quadlet on :8005; filler calibrated against the server's own /tokenize; preemption read from vllm:num_preemptions_total

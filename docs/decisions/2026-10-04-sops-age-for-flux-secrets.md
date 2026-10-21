@@ -1,4 +1,5 @@
 ---
+type: Decision
 date: 2026-10-04
 subject: secrets for the nuc cluster are SOPS-encrypted in homelab with one age key; External Secrets + 1Password deferred, not rejected
 ---

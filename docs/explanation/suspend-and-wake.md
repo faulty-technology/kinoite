@@ -1,3 +1,9 @@
+---
+type: Explanation
+title: "Suspend, resume, and waking the box"
+description: "Two mechanisms that have to be understood together: the LLM suspend hook exists because S3 with a model loaded hangs the box, and Wake-on-WLAN only recovers a box that suspended *correctly*."
+---
+
 # Suspend, resume, and waking the box
 
 Two mechanisms that have to be understood together: the LLM suspend hook exists

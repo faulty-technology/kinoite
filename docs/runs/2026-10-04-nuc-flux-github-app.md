@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-10-04
 subject: Flux reinstalled on nuc, authenticating as GitHub App faulty-technology-flux
 harness: none. The commands in how-to/bootstrap-flux-on-nuc.md, run by hand from the laptop, using flux-cli ghcr.io/fluxcd/flux-cli@sha256:b1ac18156f227af9a524b842a96f2c20986c7a779ef721df3ba4e4540f449d76 (v2.9.6) and kubectl registry.k8s.io/kubectl:v1.36.4

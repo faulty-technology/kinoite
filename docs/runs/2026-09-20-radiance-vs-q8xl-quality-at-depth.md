@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-09-20
 subject: "radiance MXFP4 against the Q8XL daily driver on GSM8K at 150K, and what the 512-token cap was hiding"
 harness: ~/bench/radiance/quality/gsm8k-deep.py (off-repo, on the box) — quality/gsm8k.py with one shared deep prefix prepended; driven by ~/bench/kvdepth/q8quality.sh for the lemonade arm and ~/bench/radiance/arm-kv.sh (MODE=gsm8k) for radiance. Raw output ~/bench/kvdepth/gsm8k-{q3-q8xl,q-radiance}.jsonl, arm-{q3-q8xl,q-radiance}.log; the superseded 512-cap pair is gsm8k-{q-q8xl,c-fp8}.jsonl

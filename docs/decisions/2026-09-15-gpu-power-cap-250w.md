@@ -1,4 +1,5 @@
 ---
+type: Decision
 date: 2026-09-15
 subject: the per-card power cap is 250 W, and the bench that was meant to justify a cap number is dropped
 ---

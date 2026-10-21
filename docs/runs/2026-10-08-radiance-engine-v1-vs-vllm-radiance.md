@@ -1,7 +1,8 @@
 ---
+type: Run
 date: 2026-10-08
 subject: StillDeadcode's radiance engine 1.3.0 against the shipped vllm-radiance, same window
-harness: ~/bench/radeng/ (off-repo, on the box). radeng-bench.py (OpenAI chat API only, salted filler, server usage counts, thinking off, temperature 0), run-client.sh (sanity, toolcheck-openai.py, thinking-on reply, radeng-bench, gsm8k-deep.py), arm.sh (podman launch of the engine on :8006). Raw: bench-*.jsonl, serve-*.log, stats-*.json, gsm8k-B-tp2.jsonl
+harness: "~/bench/radeng/ (off-repo, on the box). radeng-bench.py (OpenAI chat API only, salted filler, server usage counts, thinking off, temperature 0), run-client.sh (sanity, toolcheck-openai.py, thinking-on reply, radeng-bench, gsm8k-deep.py), arm.sh (podman launch of the engine on :8006). Raw: bench-*.jsonl, serve-*.log, stats-*.json, gsm8k-B-tp2.jsonl"
 box: kinoite-north
 ---
 

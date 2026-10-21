@@ -1,3 +1,7 @@
+---
+type: Run
+---
+
 # Build-comment consolidation (2026-09-05)
 
 Measurements, rejected alternatives, errata, and decision histories moved out

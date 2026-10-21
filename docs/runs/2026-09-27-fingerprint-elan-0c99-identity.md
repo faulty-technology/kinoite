@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-09-27
 subject: sensor identified — USB 04f3:0c99 "ELAN:ARM-M4", zero public coverage; ELANMOC2 community fork is the fix lead
 harness: none (diagnosis continuation) — dmesg on the box; libfprint source archaeology (iafilatov/libfprint elan-github-msg tarball); web search

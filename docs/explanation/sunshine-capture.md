@@ -1,3 +1,9 @@
+---
+type: Explanation
+title: "Why the Sunshine setup looks the way it does"
+description: "Why each non-obvious piece of sunshine.sh exists — e.g. the display cable decides which GPU owns the compositor and VAAPI device, so a dummy plug on the motherboard HDMI made it encode on the iGPU."
+---
+
 # Why the Sunshine setup looks the way it does
 
 Every non-obvious piece of `sunshine.sh` is defending against something that

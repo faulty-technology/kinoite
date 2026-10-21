@@ -1,6 +1,7 @@
 ---
+type: Run
 date: 2026-09-14
-subject: Muse Glimmer 30B UD-Q8_K_XL on lemonade: recipe load, DFlash, tensor vs layer split by depth
+subject: "Muse Glimmer 30B UD-Q8_K_XL on lemonade: recipe load, DFlash, tensor vs layer split by depth"
 harness: ~/bench/glimmer-arms.sh (orchestration), glimmer-seed.py (hand-added recipe) and glimmer-smoke.py (text, vision, tool call), driving ~/bench/depth.sh and ~/bench/depth.py; raw output ~/bench/glimmer/{arms.log,lemonade-load.log}, ~/bench/depth-glimmer-{tensor-dflash,layer-dflash,tensor-nospec}.log and ~/bench/glimmer-pull.log (off-repo, on the box)
 box: kinoite-north
 ---

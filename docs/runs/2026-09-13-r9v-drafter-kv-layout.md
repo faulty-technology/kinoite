@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-09-13
 subject: R9V vLLM depth cost on Qwen3.8-27B-FP8 with the MTP drafter on ROCM_ATTN or TRITON_ATTN and the KV cache in HND or NHD
 harness: ~/bench/r9v/gdnab/gdnab.sh (GDNAB_DRAFT_ATTN, GDNAB_KV_LAYOUT), orchestrated by gdnab-arms.sh and gdnab-arm-retry.sh, driving ~/bench/depth.py; raw output ~/bench/r9v/gdnab/{gdnab3,gdnab4,gdnab5}.log, serve-off-nhd.log, serve-off-hnd.log and their -try1 failed starts (off-repo, on the box)

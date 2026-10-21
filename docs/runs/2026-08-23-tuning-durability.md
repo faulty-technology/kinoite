@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-08-23
 subject: whether the undervolt, power cap and fan curve survive a runtime-suspend cycle
 harness: hand-written sysfs values, lactd stopped

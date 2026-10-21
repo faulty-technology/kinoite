@@ -1,7 +1,8 @@
 ---
+type: Run
 date: 2026-09-19
 subject: "radiance at real operating depth, and whether fp8 KV costs quality at 150K"
-harness: ~/bench/radiance/arm-kv.sh (off-repo, on the box), a derivative of the 09-15 arm.sh, driving ~/bench/depth-deep.py (depth.py with two points added) and ~/bench/radiance/quality/gsm8k-deep.py (quality/gsm8k.py behind a shared deep prefix); pool figures parsed by ~/bench/kvdepth/kvparse.py; orchestrated by ~/bench/kvdepth/all.sh. Raw output on the box: ~/bench/kvdepth/{arm,serve,sampler}-{b,c-fp8,c-bf16}.log, gsm8k-c-{fp8,bf16}.jsonl, kv-*.txt
+harness: "~/bench/radiance/arm-kv.sh (off-repo, on the box), a derivative of the 09-15 arm.sh, driving ~/bench/depth-deep.py (depth.py with two points added) and ~/bench/radiance/quality/gsm8k-deep.py (quality/gsm8k.py behind a shared deep prefix); pool figures parsed by ~/bench/kvdepth/kvparse.py; orchestrated by ~/bench/kvdepth/all.sh. Raw output on the box: ~/bench/kvdepth/{arm,serve,sampler}-{b,c-fp8,c-bf16}.log, gsm8k-c-{fp8,bf16}.jsonl, kv-*.txt"
 box: kinoite-north
 ---
 

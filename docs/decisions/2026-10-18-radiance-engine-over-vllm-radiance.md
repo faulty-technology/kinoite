@@ -1,4 +1,5 @@
 ---
+type: Decision
 date: 2026-10-18
 subject: radiance.container switches from the patched-vLLM stack to StillDeadcode's radiance engine 1.8.1, same weights, on trial in real use
 ---

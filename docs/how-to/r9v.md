@@ -1,3 +1,9 @@
+---
+type: How-To
+title: "kinoite-north: R9V Qwen3.8 Flash Next (rootless Quadlet)"
+description: "Rootless Quadlet serving a 177B MoE (Qwen3.8 Flash Next) via R9V (patched vLLM): IQ4_XS + MTP, TP=2, single request, 131k context; OpenAI API at 127.0.0.1:8004, loopback-only and unauthenticated. Ships at /etc/containers/systemd/users/r9v.container, not enabled."
+---
+
 # kinoite-north: R9V Qwen3.8 Flash Next (rootless Quadlet)
 
 > Paths beginning `docs/` are in the source repo, not on this machine. The

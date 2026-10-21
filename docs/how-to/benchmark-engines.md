@@ -1,3 +1,9 @@
+---
+type: How-To
+title: "Benchmark lemonade against vLLM"
+description: "Run the lemonade-vs-vLLM comparison via the ~/bench/ harnesses on the north box; only one engine can hold the GPUs at a time, so every arm is sequential."
+---
+
 # Benchmark lemonade against vLLM
 
 The harnesses live in `~/bench/` on the north box. They are not in this repo.

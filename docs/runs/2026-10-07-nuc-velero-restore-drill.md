@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-10-07
 subject: Velero to B2 on nuc. Deploy, privilegedFsBackup fix, backup/delete/restore drill, k3s local-path delete bug
 harness: none. A hand-applied drill workload (namespace backup-drill), velero CLI v1.18.4 and kubectl v1.36.4 from pinned containers on the laptop, Flux v2.9.6. Disk grow run by the operator on the NUC.

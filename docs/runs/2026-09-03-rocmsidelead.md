@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-09-03
 subject: rule out the ROCm#6347 spawn-lottery (~33 vs ~26 tok/s band) on this box
 harness: /usr/share/kinoite/vllm/bench.py (baked into the image)

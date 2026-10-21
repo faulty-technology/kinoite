@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-09-20
 subject: "prefill and decode to 170K across four engines: the daily driver, two vLLM backends and radiance"
 harness: ~/bench/kvdepth/pp.py (prefill, new) and ~/bench/depth-deep.py (decode, depth.py with two points added), both off-repo on the box; driven by ~/bench/kvdepth/q8deep.sh for the Q8XL arms, ~/bench/vllm-kvarm/prodab-kv.sh for the vLLM arms and ~/bench/radiance/arm-kv.sh for radiance; orchestrated by ~/bench/kvdepth/all.sh. Raw output ~/bench/kvdepth/{arm,serve,sampler}-{q8xl-deep,q8xl-pp,p-triton-bf16,p-aiter-fp8,p-radiance}.log

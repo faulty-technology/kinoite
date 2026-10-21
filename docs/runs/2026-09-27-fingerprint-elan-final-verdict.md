@@ -1,7 +1,8 @@
 ---
+type: Run
 date: 2026-09-27
 subject: fingerprint reader final verdict — two stacked upstream fprintd/libfprint defects on the Elan MOC sensor; 1Password theory refuted
-harness: none (diagnosis, continuation) — commands run by hand on the box: systemctl restart fprintd, sudo ls (biometric PAM prompt), busctl status, ps
+harness: "none (diagnosis, continuation) — commands run by hand on the box: systemctl restart fprintd, sudo ls (biometric PAM prompt), busctl status, ps"
 box: kinoite (laptop)
 ---
 

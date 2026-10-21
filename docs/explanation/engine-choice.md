@@ -1,3 +1,9 @@
+---
+type: Explanation
+title: "Why llama.cpp is the decode path"
+description: "Two engines are built for this box and only one can run at a time: lemonade (llama.cpp) and vLLM + Open WebUI. lemonade Q8XL holds ~22 GB per card and vLLM FP8 needs ~28 GB of 32 GB, so they cannot coexist — every comparison behind this page is sequential for that reason."
+---
+
 # Why llama.cpp is the decode path
 
 Two engines are built for this box and only one can run at a time: lemonade

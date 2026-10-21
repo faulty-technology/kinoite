@@ -1,6 +1,7 @@
 ---
+type: Run
 date: 2026-08-30
-subject: -sm tensor versus -sm layer on Qwen3.8-27B, with and without the MTP draft head
+subject: "-sm tensor versus -sm layer on Qwen3.8-27B, with and without the MTP draft head"
 harness: ~/bench/tp.sh (off-repo, on the box)
 box: kinoite-north
 ---

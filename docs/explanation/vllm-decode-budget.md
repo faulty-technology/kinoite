@@ -1,3 +1,9 @@
+---
+type: Explanation
+title: "Where vLLM's decode time goes"
+description: "A measured breakdown of where vLLM's decode time goes — the non-speculative baseline is 24.3 tok/s (~41 ms/token), split into FP8 GEMVs, all-reduce and an unexplained remainder."
+---
+
 # Where vLLM's decode time goes
 
 The non-speculative baseline is 24.3 tok/s, or ~41 ms/token, and every line of

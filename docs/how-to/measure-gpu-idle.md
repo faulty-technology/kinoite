@@ -1,3 +1,9 @@
+---
+type: How-To
+title: "Measure GPU idle and power on the north box"
+description: "How to measure GPU idle and power on the north box, with the gotchas that make a reading wrong (e.g. a stray power/control pin forbidding runtime suspend)."
+---
+
 # Measure GPU idle and power on the north box
 
 Every gotcha below cost hours. Read the whole page before trusting a number.

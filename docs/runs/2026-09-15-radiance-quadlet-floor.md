@@ -1,6 +1,7 @@
 ---
+type: Run
 date: 2026-09-15
-subject: radiance as a rootless Quadlet: de-privileged posture against the upstream launcher, a 246K prefill and 8 streams at 38K against the pinned KV cache, and the lowest ceiling that still serves 131K
+subject: "radiance as a rootless Quadlet: de-privileged posture against the upstream launcher, a 246K prefill and 8 streams at 38K against the pinned KV cache, and the lowest ceiling that still serves 131K"
 harness: ~/bench/radiance/unit-test/unit-test.sh (three arms) and probe.py, driving ~/bench/depth.py against a shadow radiance.container; raw output ~/bench/radiance/unit-test/{run.log,sampler.log} (off-repo, on the box)
 box: kinoite-north
 ---

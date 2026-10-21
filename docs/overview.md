@@ -1,3 +1,7 @@
+---
+type: Overview
+---
+
 # kinoite — what's where, and what's open
 
 Disposable and assumed stale. When this conflicts with a file in `docs/runs/`,

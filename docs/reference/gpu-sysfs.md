@@ -1,3 +1,9 @@
+---
+type: Reference
+title: "GPU tuning sysfs"
+description: "The amdgpu sysfs tuning nodes under gpu_od/, which require amdgpu.ppfeaturemask=0xfff7ffff on /proc/cmdline; includes which knobs survive an idle cycle and why the karg goes via rpm-ostree kargs."
+---
+
 # GPU tuning sysfs
 
 Everything here needs `amdgpu.ppfeaturemask=0xfff7ffff` on `/proc/cmdline`.

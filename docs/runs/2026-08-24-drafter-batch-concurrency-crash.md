@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-08-24
 subject: disable_padded_drafter_batch crashes the vLLM engine under concurrency
 harness: four parallel 16K-token prompts, bisected on the box

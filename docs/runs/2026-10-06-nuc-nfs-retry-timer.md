@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-10-06
 subject: kinoite-nfs-retry.timer remounts NFS after a boot-time NAS outage, no operator action
 harness: none. Unraid Settings → NFS was turned off by the operator, the NUC rebooted, and NFS was turned back on. The NUC's state and journal were then read over SSH from the laptop, with no manual mount start.

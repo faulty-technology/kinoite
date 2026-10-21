@@ -12,7 +12,7 @@ Four families, distinguished by what you may do to them:
 | Path                                               | Write rule                                                                                                                                                                                                                                        |
 | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `docs/{tutorials,how-to,reference,explanation}/**` | Rewrite in place, freely. Wrong docs get corrected, not appended to. No errata sections, no "update:" notes.                                                                                                                                      |
-| `docs/{runs,decisions}/**`                         | Append-only. Never edit, never delete. Create via `scripts/new-run.sh`. Supersede by writing a newer entry that links the old one.                                                                                                                |
+| `docs/{runs,decisions}/**`                         | Append-only — the body is never edited or deleted; frontmatter (`type`) is metadata and may be added or refreshed. Create via `scripts/new-run.sh`. Supersede by writing a newer entry that links the old one.                                                                                                                |
 | `build_files/**/*.sh` comments                     | Explain the code below them, and nothing else. Measurements, rejected alternatives and decision history move to `docs/runs/` or `docs/decisions/`; the comment carries a link, not the evidence. No errata, no "an earlier version of this said". |
 | `CLAUDE.md`, `docs/overview.md`, scratch           | Overwrite constantly. Assumed stale. Disposable.                                                                                                                                                                                                  |
 
@@ -46,6 +46,13 @@ operator, not a learner. Do not invent one to fill the slot.
 `docs/how-to/{vllm,lemonade,llamafactory,r9v,radiance}.md` ship to `/usr/share/kinoite/`
 and get read on the box with no repo checked out. They stay self-contained:
 link out for evidence, never for instructions.
+
+`docs/` is an OKF v0.2 bundle (the repo's knowledge base); conformance is
+`okflint validate --manifest okf-base.yaml`. Every doc carries `type:` frontmatter —
+runs and decisions get only `type`; how-to, reference and explanation also get a
+`title`/`description`. A new doc gets its frontmatter, one line in its family
+`index.md`, and a bullet in `log.md`. The rules live in
+docs/how-to/maintain-okf-bundle.md.
 
 Cross-references name a file and a heading, never a line number.
 

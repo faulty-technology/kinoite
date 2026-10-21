@@ -1,7 +1,8 @@
 ---
+type: Run
 date: 2026-09-19
 subject: "which attention backend makes fp8 KV viable on gfx1201, and where it overtakes bf16"
-harness: ~/bench/vllm-kvarm/prodab-kv.sh (off-repo, on the box) driving ~/bench/depth.py for the D arms and ~/bench/depth-deep.py for the E arms, both as `- 512 3 8000`; pool figures parsed by ~/bench/kvdepth/kvparse.py; orchestrated by ~/bench/kvdepth/all.sh. Raw output on the box: ~/bench/kvdepth/{arm,serve,sampler}-{d-triton-bf16,d-rocm-fp8,d-rocm-bf16,d-aiter-fp8,d-aiter-bf16,e-triton-bf16-deep,e-aiter-fp8-deep}.log and kv-*.txt
+harness: "~/bench/vllm-kvarm/prodab-kv.sh (off-repo, on the box) driving ~/bench/depth.py for the D arms and ~/bench/depth-deep.py for the E arms, both as `- 512 3 8000`; pool figures parsed by ~/bench/kvdepth/kvparse.py; orchestrated by ~/bench/kvdepth/all.sh. Raw output on the box: ~/bench/kvdepth/{arm,serve,sampler}-{d-triton-bf16,d-rocm-fp8,d-rocm-bf16,d-aiter-fp8,d-aiter-bf16,e-triton-bf16-deep,e-aiter-fp8-deep}.log and kv-*.txt"
 box: kinoite-north
 ---
 

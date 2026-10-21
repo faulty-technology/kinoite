@@ -1,4 +1,5 @@
 ---
+type: Decision
 date: 2026-08-24
 subject: drop disable_padded_drafter_batch and keep --max-num-seqs 4
 ---

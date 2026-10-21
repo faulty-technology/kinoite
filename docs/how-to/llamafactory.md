@@ -1,3 +1,9 @@
+---
+type: How-To
+title: "kinoite-north: LLaMA-Factory fine-tuning (rootless Quadlet)"
+description: "Rootless Quadlet running LLaMA-Factory — the only local-LLM stack that trains (fine-tunes and exports adapters to GGUF); shares one HuggingFace store with lemonade and vLLM. Ships at /etc/containers/systemd/users/llamafactory.container, not enabled."
+---
+
 # kinoite-north: LLaMA-Factory fine-tuning (rootless Quadlet)
 
 > Paths beginning `docs/` are in the source repo, not on this machine. The

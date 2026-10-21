@@ -1,7 +1,8 @@
 ---
+type: Run
 date: 2026-10-04
 subject: Intel GPU device plugin on nuc via Flux. SELinux connectto fix, bypath=none, workload gets /dev/dri
-harness: none — commands run by hand. From the laptop: flux-cli v2.9.6 and kubectl v1.36.4 pinned containers (as in runs/2026-10-04-nuc-flux-github-app). On the NUC: journalctl -k, semodule. Policy was queried with sesearch in a throwaway kinoite-nuc container.
+harness: "none — commands run by hand. From the laptop: flux-cli v2.9.6 and kubectl v1.36.4 pinned containers (as in runs/2026-10-04-nuc-flux-github-app). On the NUC: journalctl -k, semodule. Policy was queried with sesearch in a throwaway kinoite-nuc container."
 box: kinoite-nuc (NUC12WSKi7, i7-1260P, Iris Xe, i915), k3s v1.36.5+k3s1, SELinux enforcing
 ---
 

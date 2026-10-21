@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-08-24
 subject: VRAM OOM on a single unchunked prefill step, and the per-card memory ledger behind it
 harness: diagnosed from the journal and dump_input after a live failure

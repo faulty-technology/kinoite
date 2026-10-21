@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-09-13
 subject: R9V fused GDN+MTP HIP kernel on and off, Qwen3.8-27B-FP8 in the R9V vLLM image, decode versus depth
 harness: ~/bench/r9v/gdnab/gdnab.sh (one arm), gdnab-all.sh and gdnab-arms.sh (orchestration), patch-wrapper.py (call logger), driving ~/bench/depth.py; raw output ~/bench/r9v/gdnab/{gdnab,gdnab2}.log, serve-*.log, sanity-*.txt, sampler-*.log (off-repo, on the box)

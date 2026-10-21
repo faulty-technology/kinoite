@@ -1,3 +1,9 @@
+---
+type: How-To
+title: "kinoite-north: Lemonade Server (rootless Quadlet)"
+description: "Rootless Quadlet running the Lemonade (llama.cpp) server — Web UI + API on 127.0.0.1:13305, loopback-only and unauthenticated; ships at /etc/containers/systemd/users/lemonade.container, not enabled."
+---
+
 # kinoite-north: Lemonade Server (rootless Quadlet)
 
 > Paths beginning `docs/` are in the source repo, not on this machine. The

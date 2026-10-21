@@ -1,4 +1,5 @@
 ---
+type: Run
 date: 2026-09-13
 subject: Production vLLM (shipped image and launcher) with the MTP drafter on its default attention backend or on TRITON_ATTN, Qwen3.8-27B-FP8 decode versus depth
 harness: ~/bench/prodab/prodab-all.sh (orchestration, one retry on a cold-compile KV-memory failure; not needed) and prodab.sh (one arm), driving ~/bench/depth.py; raw output ~/bench/prodab/prodab.log, serve-{base,triton}.log, sanity-*.txt, sampler-*.log (off-repo, on the box)
