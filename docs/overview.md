@@ -14,12 +14,14 @@ separate Flux GitOps repo, see
     docs/reference/     gpu-topology, gpu-sysfs, sensors
     docs/how-to/        vllm, lemonade, llamafactory, r9v, radiance  <- these SHIP to /usr/share/kinoite
                         benchmark-engines, measure-gpu-idle, stream-with-sunshine,
-                        fix-build-key-drift
+                        fix-build-key-drift, maintain-okf-bundle
     docs/explanation/   engine-choice, quant-selection, llama-cpp-tensor-split,
                         vllm-decode-budget, gpu-power-and-fans, sunshine-capture,
                         quadlets-and-selinux, suspend-and-wake
     docs/runs/          append-only measurements, dated
     docs/decisions/     append-only, alternatives rejected
+    okf/                OKF v0.2 pointer bundle over the above (agent entry point;
+                        maintain per how-to/maintain-okf-bundle)
 
 Start at `docs/explanation/engine-choice.md` for the LLM stack, or
 `docs/reference/gpu-topology.md` for hardware.
@@ -176,9 +178,6 @@ disabled.
       ~/.local/share/models/radiance, AMD's HF release and
       `vllm-radiance:0.9.3`. Delete them once the trial is settled; the
       commands are in [how-to/radiance.md].
-- [ ] **The shadow unit at `~/.config/containers/systemd/users/radiance.container`
-      on north overrides the baked one.** Remove it after booting the image with
-      the engine switch, or the old stack keeps starting.
 
 ### vLLM — `vllm.sh`
 

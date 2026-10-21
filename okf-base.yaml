@@ -1,0 +1,9 @@
+# okflint manifest for the okf/ pointer bundle.
+# Validate with:  okflint validate --manifest okf-base.yaml ./okf/
+base:
+  name: kinoite
+  roots:
+    - path: ./okf
+  reserved_files:
+    index: index.md
+    log: log.md
