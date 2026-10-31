@@ -38,3 +38,26 @@ encrypted. The mounts also keep working if either box moves off the
   the tailnet, toggle Settings → NFS off and on.
 - **WireGuard encryption** costs CPU on both ends for media traffic. This is
   unmeasured.
+
+## Follow-up — k3s as a second NFS client (2026-10-31)
+
+k3s now consumes the same Unraid exports as a **second NFS client**, via the
+`csi-driver-nfs` CSI driver. Its node DaemonSet runs `hostNetwork: true`
+(privileged, bidirectional mountPropagation), so its mounts also happen in the
+node's network namespace — exactly like the host mounts above. Consequences:
+
+- **Unraid sees the NUC tailnet IP for every client** (the host mounts and k3s
+  alike), never a pod IP: csi-driver-nfs mounts in the host netns, and any
+  pod-originated egress to `100.64.0.0/10` is SNAT'd to the node by flannel's
+  default masquerade. A single per-share Unraid allow rule on the NUC tailnet IP
+  covers all of them — no per-pod IPs, no CIDR lock-in, no subnet router needed.
+- **Media is read-only.** The `arrdata` export is `ro`, and the host media mount
+  (`/var/mnt/unraid/media`) is now mounted `ro` to match. k3s reads media through
+  a static read-only PV; it never writes there.
+- **k3s's writable data lives on a separate `k8s` share**, not `appdata`. The
+  dedicated `k8s` share (same SSD pool as `appdata`, so it stays the fast tier)
+  is exported `rw`; Unraid's live Docker app config in `appdata` is never touched
+  by k3s. The host `appdata` mount (`/var/mnt/unraid/fast`) stays `rw` for
+  direct/podman use, unrelated to k3s.
+- Mount options add `proto=tcp` (Tailscale's 1280-byte MTU makes UDP NFS fragile);
+  `rsize`/`wsize` left at defaults to avoid PMTU black-holing.

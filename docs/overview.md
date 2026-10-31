@@ -326,8 +326,10 @@ carried over unchanged — do not re-derive.
       "Failed (signal)" every week because `--apply` reboots it mid-run;
       that's cosmetic [runs/2026-10-11-nuc-first-auto-update-and-weekly.md].
 - [x] **NFS mounts.** Unraid `arrdata` mounts at `/var/mnt/unraid/media`
-      and `appdata` at `/var/mnt/unraid/fast`, over the tailnet
-      (`100.77.22.80`), NFSv4.2, ordered after `tailscale-online.target`
+      (read-only) and `appdata` at `/var/mnt/unraid/fast` (rw), over the tailnet
+      (`100.77.22.80`), NFSv4.2, ordered after `tailscale-online.target`. k3s is a
+      second client of these exports — writable data on the dedicated `k8s` share,
+      media ro on `arrdata`; Unraid sees the NUC tailnet IP for both
       [runs/2026-10-06-nuc-nfs-over-tailnet.md]
       [decisions/2026-10-06-nfs-over-tailnet.md]. With NFS down, k3s still
       comes up (+~30 s boot, +~30 s shutdown)

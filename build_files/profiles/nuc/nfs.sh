@@ -21,8 +21,10 @@ fi
 # Static mounts, not automounts: an autofs trigger bind-mounted into a container
 # does not follow the real mount that lands on it later.
 # hard: an Unraid hiccup stalls I/O rather than handing apps EIO mid-write.
+# $3 = mount options; defaults to the rw set. Media is mounted ro (k3s and
+# direct use are read-only); fast/appdata stays rw for podman.
 write_mount() {
-    local what="$1" where="$2" unit
+    local what="$1" where="$2" opts="${3:-nfsvers=4.2,hard,noatime,_netdev}" unit
     unit="$(systemd-escape --path --suffix=mount "$where")"
     cat > "/usr/lib/systemd/system/${unit}" << UNIT
 [Unit]
@@ -36,7 +38,7 @@ After=network-online.target tailscale-online.target
 What=${UNRAID_HOST}:${what}
 Where=${where}
 Type=nfs
-Options=nfsvers=4.2,hard,noatime,_netdev
+Options=${opts}
 TimeoutSec=30
 
 [Install]
@@ -45,7 +47,8 @@ UNIT
     echo "$unit" >> /usr/share/kinoite/nfs-units
 }
 
-write_mount "$MEDIA_EXPORT" /var/mnt/unraid/media
+# media (arrdata) is read-only for k3s and direct use; fast (appdata) stays rw.
+write_mount "$MEDIA_EXPORT" /var/mnt/unraid/media "nfsvers=4.2,hard,noatime,ro,_netdev"
 write_mount "$FAST_EXPORT"  /var/mnt/unraid/fast
 
 ### Retry failed mounts
