@@ -53,3 +53,5 @@
 - [2026-10-09-vllm-031-depth](2026-10-09-vllm-031-depth.md)
 - [2026-10-11-nuc-first-auto-update-and-weekly](2026-10-11-nuc-first-auto-update-and-weekly.md)
 - [2026-10-18-radiance-engine-181](2026-10-18-radiance-engine-181.md)
+- [2026-10-24-nuc-clef-flash-systemone](2026-10-24-nuc-clef-flash-systemone.md)
+- [2026-10-29-nuc-tev1-systemone](2026-10-29-nuc-tev1-systemone.md)

@@ -71,7 +71,7 @@ StartLimitIntervalSec=1h
 StartLimitBurst=3
 
 [Container]
-Image=docker.io/stilldeadcode/radiance@sha256:d590e300234bf6d2f942a0b8d456d183153fd808f28820e6c2fa69c9389178ed
+Image=docker.io/stilldeadcode/radiance@sha256:c2acbaa373c89272ec47a22befa1cf04d2ddf1de51c2baf534f5273e517f7100
 Pull=never
 ContainerName=radiance
 
@@ -116,7 +116,7 @@ ExecStartPre=/usr/bin/mkdir -p %h/.local/share/models/radiance-engine
 
 # Pre-pulled with plain `podman pull`: the implicit pull inside `podman run` is capped at 5 min
 # under systemd (see vllm.sh).
-ExecStartPre=/bin/sh -c 'podman image exists docker.io/stilldeadcode/radiance@sha256:d590e300234bf6d2f942a0b8d456d183153fd808f28820e6c2fa69c9389178ed || podman pull docker.io/stilldeadcode/radiance@sha256:d590e300234bf6d2f942a0b8d456d183153fd808f28820e6c2fa69c9389178ed'
+ExecStartPre=/bin/sh -c 'podman image exists docker.io/stilldeadcode/radiance@sha256:c2acbaa373c89272ec47a22befa1cf04d2ddf1de51c2baf534f5273e517f7100 || podman pull docker.io/stilldeadcode/radiance@sha256:c2acbaa373c89272ec47a22befa1cf04d2ddf1de51c2baf534f5273e517f7100'
 
 ExecStartPre=/usr/libexec/kinoite-radiance-prepare %h/.local/share/models/radiance-engine
 

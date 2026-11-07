@@ -4,6 +4,18 @@ Newest first. One bullet per change to the bundle's structure or metadata; a new
 doc gets its family `index.md` line and a bullet here (see
 [how-to/maintain-okf-bundle](how-to/maintain-okf-bundle.md)).
 
+## 2026-10-29
+
+- **New run**: [runs/2026-10-29-nuc-tev1-systemone.md](runs/2026-10-29-nuc-tev1-systemone.md) —
+  Tev1 4B on the same six NUC samples as Clef-flash: 6/6 expected answers,
+  1.1–1.6× faster, one scoring pass per question.
+
+## 2026-10-24
+
+- **New run**: [runs/2026-10-24-nuc-clef-flash-systemone.md](runs/2026-10-24-nuc-clef-flash-systemone.md) —
+  six `/v1/systemone` samples against Clef-flash on the NUC from the tailnet: 6/6
+  expected answers, ~100–118 tok/s prefill, 2.5 s for short calls, 89 s at 6,950 tokens.
+
 ## 2026-10-21
 
 - **Migration**: `docs/` became the OKF v0.2 bundle directly. Frontmatter added to

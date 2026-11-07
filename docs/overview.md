@@ -63,8 +63,9 @@ The client now points at radiance and caps at 4, so pointing it back at
 lemonade needs the cap back at 1.
 vLLM ships FP8, MTP k=4, prefix caching on, strict tool calling off.
 
-radiance ships StillDeadcode's standalone radiance engine 1.8.1, on trial since
-2026-10-18 [decisions/2026-10-18-radiance-engine-over-vllm-radiance.md]. It
+radiance ships StillDeadcode's standalone radiance engine 1.17.0, on trial since
+2026-10-18 [decisions/2026-10-18-radiance-engine-over-vllm-radiance.md]. Every
+figure below was measured on 1.8.1; 1.17.0 has not been run here. It
 serves the same AMD Quark MXFP4 weights as the patched-vLLM stack it replaced
 (vllm-radiance `dfdfa38`), at TP2, 262,144 tokens, 8 sequences, fp8 KV, with
 `--checkpoint-slots auto` and an 8 GiB host prefix-cache tier. Against the old
@@ -178,6 +179,12 @@ disabled.
       `store_full` evictions. `auto` holds the snapshot store to 50 slots on
       this box's 59 GiB, below the 64 that fixed turns on 10-08. Revert the
       commit if it feels worse.
+- [ ] **1.17.0 is pinned unmeasured.** It jumped nine minor releases past the
+      benched 1.8.1, and upstream publishes no changelog. Before trusting it, check
+      that every `Exec=` flag still parses, then rerun the 10-18 bench in one
+      window. Cold prefill is the number to watch: `--prefill-interleave` now
+      defaults to `auto:1`. The `.rad` pin is unchanged and needs 1.2.3 or later.
+      To revert, put back digest `d590e300…` (1.8.1).
 - [ ] **The old stack's files are still on north**: ~/.local/share/radiance,
       ~/.local/share/models/radiance, AMD's HF release and
       `vllm-radiance:0.9.3`. Delete them once the trial is settled; the
