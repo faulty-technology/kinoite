@@ -1,7 +1,7 @@
 ---
 type: How-To
 title: "kinoite-north: radiance Qwen3.8-27B MXFP4 (rootless Quadlet)"
-description: "Rootless Quadlet serving Qwen3.8-27B at MXFP4 with a merged DFlash2 drafter via StillDeadcode's radiance engine (C++/HIP, no vLLM): TP=2, up to 8 sequences, 262k context; the model is AMD's Quark/AWQ post-training quantization of the released model. Ships at /etc/containers/systemd/users/radiance.container, not enabled."
+description: "Rootless Quadlet serving Qwen3.8-27B at MXFP4 with a merged DFlash2 drafter via StillDeadcode's radiance engine (C++/HIP, no vLLM): TP=2, up to 8 sequences, 262k context; the model is AMD's Quark/AWQ post-training quantization of the released model. An FP8 twin, radiance-fp8, serves the same port and flags. Ships at /etc/containers/systemd/users/radiance{,-fp8}.container, not enabled."
 ---
 
 # kinoite-north: radiance Qwen3.8-27B MXFP4 (rootless Quadlet)
@@ -85,11 +85,37 @@ request that names a field keeps its own value. `curl -s
 127.0.0.1:8005/server_info` lists every effective default under
 `request_defaults`.
 
+## The FP8 unit
+
+`radiance-fp8` serves StillDeadcode's FP8 build of the same model
+(`qwen3.8-27b-fp8.rad`, with the same DFlash2 drafter). The engine, flags, port
+and model id are the same as `radiance`, so a client needs no change. The two
+units conflict, so starting one stops the other:
+
+    systemctl --user start radiance-fp8      # stops radiance if it is running
+    journalctl --user -u radiance-fp8 -f
+    systemctl --user start radiance          # and back
+
+What differs from MXFP4:
+
+- **The first start downloads 31 GB**, into the same
+  ~/.local/share/models/radiance-engine. The MXFP4 file stays beside it.
+- **Expect slower decode.** StillDeadcode's model cards, on the same harness,
+  give 141 tok/s for one stream against MXFP4's 204, and 314 against 438 for
+  four streams. Nothing here has measured it yet.
+- **The KV pool is smaller.** Each card holds about 5 GiB more weights. Read
+  the size from the startup log; the MXFP4 pool is 1,268,272 tokens.
+- **The FP8 card was tested to 200K.** This unit runs 262,144 like `radiance`.
+
+Delete the FP8 file once you're done with it:
+
+    rm ~/.local/share/models/radiance-engine/qwen3.8-27b-fp8.rad*
+
 ## Switching back to lemonade
 
-The two cannot run at once. Neither is enabled, so either is a command away:
+These cannot run at once. None is enabled, so each is a command away:
 
-    systemctl --user stop radiance && systemctl --user start lemonade
+    systemctl --user stop radiance radiance-fp8 && systemctl --user start lemonade
 
 lemonade serves `127.0.0.1:13305/api/v1` with model id `Qwen3.8-27B-Q8XL`. A
 client configured for one needs its base URL and model id changed for the other.

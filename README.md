@@ -63,6 +63,7 @@ Third-party repo files are removed after install — updates come from CI image 
   | `vllm` | batched tensor-parallel inference | `systemctl --user start north-llm-pod` | `127.0.0.1:8000`, Open WebUI `:3000` | `/usr/share/kinoite/vllm.md` |
   | `llamafactory` | the only one that ***trains*** | `systemctl --user start llamafactory` | LLaMA Board `127.0.0.1:7860`, Jupyter `:8889` | `/usr/share/kinoite/llamafactory.md` |
   | `radiance` | MXFP4 27B with DFlash2 on the radiance engine | `systemctl --user start radiance` | `127.0.0.1:8005` | `/usr/share/kinoite/radiance.md` |
+  | `radiance-fp8` | the same, FP8 27B; conflicts with `radiance` | `systemctl --user start radiance-fp8` | `127.0.0.1:8005` | `/usr/share/kinoite/radiance.md` |
 
   First start is slow for two of them and this is expected, not a hang: `lemonade` **pulls** a multi-GB image (15 min), and `llamafactory` **builds** one against AMD's gfx1201 wheels (90 min) because no prebuilt image for this arch exists. Watch `journalctl --user -u <unit> -f`.
 

@@ -81,6 +81,10 @@ stack in one window [runs/2026-10-18-radiance-engine-181.md]:
 The pool still has to stay big: it is the prefix cache that holds a session's
 conversations [decisions/2026-09-25-radiance-back-to-full-cards.md].
 
+`radiance-fp8` is a second unit with the same engine, flags, port and model id,
+serving StillDeadcode's FP8 build (`qwen3.8-27b-fp8.rad`, 31 GB) for a quality
+A/B. The two units conflict. It has not been started here.
+
 GPU tuning is `kinoite-gpu-tune.service`: a 250 W cap per card at boot, with
 `VOLTAGE_OFFSET_MV` and `FAN_CURVE` knobs shipped unset because the OverDrive
 table does not survive an idle cycle. The cap number is a choice, not a
@@ -185,6 +189,13 @@ disabled.
       window. Cold prefill is the number to watch: `--prefill-interleave` now
       defaults to `auto:1`. The `.rad` pin is unchanged and needs 1.2.3 or later.
       To revert, put back digest `d590e300…` (1.8.1).
+- [ ] **FP8 against MXFP4 is unmeasured.** Upstream's cards put FP8 about 30%
+      behind on decode. The case for it is accuracy on long code and prose,
+      which GSM8K cannot show. Run it on long agentic tasks, judged on whether
+      they finish. Also read its KV pool from the startup log; an estimate from
+      the TP1/TP2 pools is about 900K
+      [runs/2026-10-08-radiance-engine-v1-vs-vllm-radiance.md]. It runs at
+      262,144, past the card's tested 200K.
 - [ ] **The old stack's files are still on north**: ~/.local/share/radiance,
       ~/.local/share/models/radiance, AMD's HF release and
       `vllm-radiance:0.9.3`. Delete them once the trial is settled; the

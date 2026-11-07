@@ -135,7 +135,7 @@ STATE_DIR=/run/kinoite-llm-sleep
 # afterthought: a training run holds VRAM on BOTH R9700s (optimiser state and activations, not
 # just weights), and that is exactly the condition that hangs this box on suspend.
 # See llamafactory.sh.
-STOP_UNITS=(north-llm-pod.service vllm.service open-webui.service lemonade.service llamafactory.service r9v.service radiance.service)
+STOP_UNITS=(north-llm-pod.service vllm.service open-webui.service lemonade.service llamafactory.service r9v.service radiance.service radiance-fp8.service)
 
 # The pod's Wants= starts both members whichever one is started, so vllm.service alone stands for
 # the pod: restoring open-webui by itself would bring vLLM up beside whatever else was running.
@@ -145,7 +145,7 @@ STOP_UNITS=(north-llm-pod.service vllm.service open-webui.service lemonade.servi
 # run — that process was killed with the container and its unsaved progress is gone. For a long
 # fine-tune, hold the box awake instead: `systemd-inhibit --what=sleep --why='fine-tune' sleep inf`
 # (or just don't let it idle-suspend). Documented in /usr/share/kinoite/llamafactory.md.
-RESTORE_UNITS=(vllm.service lemonade.service llamafactory.service r9v.service radiance.service)
+RESTORE_UNITS=(vllm.service lemonade.service llamafactory.service r9v.service radiance.service radiance-fp8.service)
 
 # Above any plausible desktop (idle is tens of MiB per card, more when a dGPU drives the display)
 # and far below the ~28 GiB/card a loaded model holds. Only ever logged, never enforced.
