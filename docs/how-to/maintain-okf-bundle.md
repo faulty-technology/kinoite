@@ -71,7 +71,7 @@ filenames; it needs no per-type profile for this bundle.
 
 - Not a second copy of the knowledge. There is exactly one file per concept, in
   `docs/`; nothing is mirrored or re-copied on append.
-- Not shipped as a whole. No image copies `docs/` wholesale; the five self-contained
-  how-tos (vllm, lemonade, llamafactory, r9v, radiance) are installed individually
+- Not shipped as a whole. No image copies `docs/` wholesale; the four self-contained
+  how-tos (vllm, lemonade, llamafactory, radiance) are installed individually
   via `install -D` to `/usr/share/kinoite/`. YAML frontmatter at the top of a
   markdown file is inert to their readers, so self-containment holds.

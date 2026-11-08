@@ -26,7 +26,7 @@ systemctl --global enable app-dev.lizardbyte.app.Sunshine.service
 systemctl enable lemonade-selinux.service
 
 ### Linger for rootless user services
-# All the LLM stacks (lemonade, vllm, llamafactory, r9v and radiance .container units) are rootless
+# All the LLM stacks (lemonade, vllm, llamafactory and radiance .container units) are rootless
 # user units. Without linger, systemd tears the user manager down at logout and takes a running
 # server with it — including a server started over SSH, the moment that SSH session ends. That
 # is a genuine trap on a headless-ish box: the model unloads mid-request for no visible reason.
@@ -135,7 +135,7 @@ STATE_DIR=/run/kinoite-llm-sleep
 # afterthought: a training run holds VRAM on BOTH R9700s (optimiser state and activations, not
 # just weights), and that is exactly the condition that hangs this box on suspend.
 # See llamafactory.sh.
-STOP_UNITS=(north-llm-pod.service vllm.service open-webui.service lemonade.service llamafactory.service r9v.service radiance.service radiance-fp8.service)
+STOP_UNITS=(north-llm-pod.service vllm.service open-webui.service lemonade.service llamafactory.service radiance.service radiance-fp8.service radiance-flash.service)
 
 # The pod's Wants= starts both members whichever one is started, so vllm.service alone stands for
 # the pod: restoring open-webui by itself would bring vLLM up beside whatever else was running.
@@ -145,7 +145,7 @@ STOP_UNITS=(north-llm-pod.service vllm.service open-webui.service lemonade.servi
 # run — that process was killed with the container and its unsaved progress is gone. For a long
 # fine-tune, hold the box awake instead: `systemd-inhibit --what=sleep --why='fine-tune' sleep inf`
 # (or just don't let it idle-suspend). Documented in /usr/share/kinoite/llamafactory.md.
-RESTORE_UNITS=(vllm.service lemonade.service llamafactory.service r9v.service radiance.service radiance-fp8.service)
+RESTORE_UNITS=(vllm.service lemonade.service llamafactory.service radiance.service radiance-fp8.service radiance-flash.service)
 
 # Above any plausible desktop (idle is tens of MiB per card, more when a dGPU drives the display)
 # and far below the ~28 GiB/card a loaded model holds. Only ever logged, never enforced.
@@ -369,7 +369,6 @@ Description=Stop GPU-holding LLM stacks across suspend, restore them on resume
 Documentation=file:///usr/share/kinoite/vllm.md
 Documentation=file:///usr/share/kinoite/lemonade.md
 Documentation=file:///usr/share/kinoite/llamafactory.md
-Documentation=file:///usr/share/kinoite/r9v.md
 Documentation=file:///usr/share/kinoite/radiance.md
 
 # All four sleep services (suspend, hibernate, hybrid-sleep, suspend-then-hibernate) declare

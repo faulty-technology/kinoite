@@ -16,7 +16,7 @@ separate Flux GitOps repo, see
 ## Map
 
     docs/reference/     gpu-topology, gpu-sysfs, sensors
-    docs/how-to/        vllm, lemonade, llamafactory, r9v, radiance  <- these SHIP to /usr/share/kinoite
+    docs/how-to/        vllm, lemonade, llamafactory, radiance  <- these SHIP to /usr/share/kinoite
                         benchmark-engines, measure-gpu-idle, stream-with-sunshine,
                         fix-build-key-drift, maintain-okf-bundle
     docs/explanation/   engine-choice, quant-selection, llama-cpp-tensor-split,
@@ -32,14 +32,13 @@ Start at `docs/explanation/engine-choice.md` for the LLM stack, or
 
 ## Current state of the LLM stack
 
-Five stacks, none enabled, all hand-started. They cannot run at once — each
+Four stacks, none enabled, all hand-started. They cannot run at once — each
 wants most of both cards.
 
     lemonade    :13305   llama.cpp GGUF, the decode path
     vLLM        :8000    + Open WebUI :3000, the OpenAI surface
     LLaMA-Factory :7860  + Jupyter :8889, the only one that trains
-    R9V         :8004    Qwen3.8 Flash Next 177B MoE on patched vLLM, one request at a time
-    radiance    :8005    Qwen3.8-27B MXFP4 + DFlash2 on the radiance engine, 8 sequences, 262K context
+    radiance    :8005    Qwen3.8 on the radiance engine: 27B MXFP4 or FP8, or Flash Next
 
 lemonade ships Q6_K seeds with MTP and `-sm tensor` on the seven Qwen3.8-27B
 recipes (four stock Unsloth, three DavidAU `-Turbo` uncensored fine-tune), plus
@@ -64,8 +63,7 @@ lemonade needs the cap back at 1.
 vLLM ships FP8, MTP k=4, prefix caching on, strict tool calling off.
 
 radiance ships StillDeadcode's standalone radiance engine 1.17.0, on trial since
-2026-10-18 [decisions/2026-10-18-radiance-engine-over-vllm-radiance.md]. Every
-figure below was measured on 1.8.1; 1.17.0 has not been run here. It
+2026-10-18 [decisions/2026-10-18-radiance-engine-over-vllm-radiance.md]. It
 serves the same AMD Quark MXFP4 weights as the patched-vLLM stack it replaced
 (vllm-radiance `dfdfa38`), at TP2, 262,144 tokens, 8 sequences, fp8 KV, with
 `--checkpoint-slots auto` and an 8 GiB host prefix-cache tier. Against the old
@@ -78,12 +76,44 @@ stack in one window [runs/2026-10-18-radiance-engine-181.md]:
 - Quality is equal: GSM8K at 150K was 478 against 480 of 500.
 - It starts in about 20 s.
 
+1.17.0 against those 1.8.1 numbers, at a 235 W cap against 250 W
+[runs/2026-11-07-radiance-1170-fp8-vs-mxfp4.md]:
+- Cold prefill is 3–11% faster.
+- Decode after a hit is 1–22% faster, and short-prompt decode 4–10% faster.
+- GSM8K at 150K is 480 against 478 of 500, with 99.2% agreement.
+- The KV pool holds 1,375,232 tokens, which is 5.2 full-length sessions.
+
 The pool still has to stay big: it is the prefix cache that holds a session's
 conversations [decisions/2026-09-25-radiance-back-to-full-cards.md].
 
 `radiance-fp8` is a second unit with the same engine, flags, port and model id,
 serving StillDeadcode's FP8 build (`qwen3.8-27b-fp8.rad`, 31 GB) for a quality
-A/B. The two units conflict. It has not been started here.
+A/B. The units conflict. Against MXFP4 on 1.17.0, in one window:
+- Decode after a hit is 17–36% slower, and short-prompt decode 28–38% slower.
+  Prefill is 2–5% slower.
+- The KV pool is 1,025,408 tokens.
+- GSM8K at 150K is 477 against 480 of 500, p = 0.581
+  [runs/2026-11-07-radiance-1170-fp8-vs-mxfp4.md].
+- On code with thinking on, the two score the same. Aider Polyglot after two
+  tries is 67.6% against 66.2%, and LiveCodeBench pass@1 is 66.0% against
+  64.2%. FP8's Polyglot first try is better, 29.8% against 22.2% (p = 0.008),
+  and its LiveCodeBench run took 2 h 42 min against 1 h 52 min
+  [runs/2026-11-07-radiance-1170-code-fp8-vs-mxfp4.md].
+
+`radiance-flash` is a third unit on the same engine, port and model id, serving
+Qwen3.8 Flash Next from StillDeadcode's 122 GB `.rad` with its model card's
+flags. Against
+both 27B builds on 1.17.0 [runs/2026-11-08-radiance-1170-flash-next.md]:
+- It writes better code: Aider Polyglot 87.6% against 66–68% after two tries,
+  and LiveCodeBench 68.6% against 64–66%, all of that gap on hard problems.
+- Single-stream decode is level with MXFP4 at 190–202 tok/s from 8K to 128K, and
+  prefill is 1.4–2.1× faster.
+- With 3–9 long decodes at once each stream drops to 50–60 tok/s, about half
+  MXFP4's combined throughput.
+- It serves 200K, and pins 12 GiB of host RAM for experts.
+
+north's local `/etc/kinoite/gpu-tune.conf` sets `POWER_CAP_W=235` and a
+`FAN_CURVE`, overriding the shipped defaults; both 11-07 runs were at 235 W.
 
 GPU tuning is `kinoite-gpu-tune.service`: a 250 W cap per card at boot, with
 `VOLTAGE_OFFSET_MV` and `FAN_CURVE` knobs shipped unset because the OverDrive
@@ -183,19 +213,13 @@ disabled.
       `store_full` evictions. `auto` holds the snapshot store to 50 slots on
       this box's 59 GiB, below the 64 that fixed turns on 10-08. Revert the
       commit if it feels worse.
-- [ ] **1.17.0 is pinned unmeasured.** It jumped nine minor releases past the
-      benched 1.8.1, and upstream publishes no changelog. Before trusting it, check
-      that every `Exec=` flag still parses, then rerun the 10-18 bench in one
-      window. Cold prefill is the number to watch: `--prefill-interleave` now
-      defaults to `auto:1`. The `.rad` pin is unchanged and needs 1.2.3 or later.
-      To revert, put back digest `d590e300…` (1.8.1).
-- [ ] **FP8 against MXFP4 is unmeasured.** Upstream's cards put FP8 about 30%
-      behind on decode. The case for it is accuracy on long code and prose,
-      which GSM8K cannot show. Run it on long agentic tasks, judged on whether
-      they finish. Also read its KV pool from the startup log; an estimate from
-      the TP1/TP2 pools is about 900K
-      [runs/2026-10-08-radiance-engine-v1-vs-vllm-radiance.md]. It runs at
-      262,144, past the card's tested 200K.
+- [ ] **Which model is the default: Flash Next, FP8 or MXFP4.** Flash Next
+      wins on code by a wide margin and matches single-stream speed, but halves
+      throughput under parallel subagents and needs host RAM
+      [runs/2026-11-08-radiance-1170-flash-next.md]. FP8 and MXFP4 are level on
+      code [runs/2026-11-07-radiance-1170-code-fp8-vs-mxfp4.md]. Judge by real
+      agentic sessions. `radiance-flash` ships the model card's flags; untried
+      are `--tp-wire exact`, a prefix-cache host tier and `--expert-pin-top`.
 - [ ] **The old stack's files are still on north**: ~/.local/share/radiance,
       ~/.local/share/models/radiance, AMD's HF release and
       `vllm-radiance:0.9.3`. Delete them once the trial is settled; the

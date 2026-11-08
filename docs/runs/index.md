@@ -55,3 +55,6 @@
 - [2026-10-18-radiance-engine-181](2026-10-18-radiance-engine-181.md)
 - [2026-10-24-nuc-clef-flash-systemone](2026-10-24-nuc-clef-flash-systemone.md)
 - [2026-10-29-nuc-tev1-systemone](2026-10-29-nuc-tev1-systemone.md)
+- [2026-11-07-radiance-1170-code-fp8-vs-mxfp4](2026-11-07-radiance-1170-code-fp8-vs-mxfp4.md)
+- [2026-11-07-radiance-1170-fp8-vs-mxfp4](2026-11-07-radiance-1170-fp8-vs-mxfp4.md)
+- [2026-11-08-radiance-1170-flash-next](2026-11-08-radiance-1170-flash-next.md)

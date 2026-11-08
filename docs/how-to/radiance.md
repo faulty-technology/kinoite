@@ -1,13 +1,13 @@
 ---
 type: How-To
 title: "kinoite-north: radiance Qwen3.8-27B MXFP4 (rootless Quadlet)"
-description: "Rootless Quadlet serving Qwen3.8-27B at MXFP4 with a merged DFlash2 drafter via StillDeadcode's radiance engine (C++/HIP, no vLLM): TP=2, up to 8 sequences, 262k context; the model is AMD's Quark/AWQ post-training quantization of the released model. An FP8 twin, radiance-fp8, serves the same port and flags. Ships at /etc/containers/systemd/users/radiance{,-fp8}.container, not enabled."
+description: "Rootless Quadlet serving Qwen3.8-27B at MXFP4 with a merged DFlash2 drafter via StillDeadcode's radiance engine (C++/HIP, no vLLM): TP=2, up to 8 sequences, 262k context; the model is AMD's Quark/AWQ post-training quantization of the released model. Two alternates serve the same port and model id: radiance-fp8 (27B FP8) and radiance-flash (Qwen3.8 Flash Next, the 177B MoE, 200k context). Ships at /etc/containers/systemd/users/radiance{,-fp8,-flash}.container, not enabled."
 ---
 
 # kinoite-north: radiance Qwen3.8-27B MXFP4 (rootless Quadlet)
 
 > Paths beginning `docs/` are in the source repo, not on this machine. The
-> runbooks beside this one (`vllm.md`, `lemonade.md`, `llamafactory.md`, `r9v.md`,
+> runbooks beside this one (`vllm.md`, `lemonade.md`, `llamafactory.md`,
 > `radiance.md`) are here in `/usr/share/kinoite/`.
 
 Qwen3.8-27B at MXFP4 with a merged DFlash2 drafter, served by StillDeadcode's
@@ -20,7 +20,7 @@ build_files/profiles/north/radiance.sh.
 The unit ships at /etc/containers/systemd/users/radiance.container and is NOT
 enabled. It cannot share the GPUs with the other stacks.
 
-    systemctl --user stop north-llm-pod lemonade llamafactory r9v   # free the GPUs FIRST
+    systemctl --user stop north-llm-pod lemonade llamafactory   # free the GPUs FIRST
     systemctl --user start radiance
     journalctl --user -u radiance -f
     curl -s http://127.0.0.1:8005/health
@@ -85,37 +85,52 @@ request that names a field keeps its own value. `curl -s
 127.0.0.1:8005/server_info` lists every effective default under
 `request_defaults`.
 
-## The FP8 unit
+## The other two units
 
-`radiance-fp8` serves StillDeadcode's FP8 build of the same model
-(`qwen3.8-27b-fp8.rad`, with the same DFlash2 drafter). The engine, flags, port
-and model id are the same as `radiance`, so a client needs no change. The two
-units conflict, so starting one stops the other:
+Two more units serve the same port and model id `Qwen3.8`, so a client needs no
+change. All three conflict, so starting one stops whichever is running:
 
-    systemctl --user start radiance-fp8      # stops radiance if it is running
+    systemctl --user start radiance-fp8      # or radiance-flash
     journalctl --user -u radiance-fp8 -f
     systemctl --user start radiance          # and back
 
-What differs from MXFP4:
+Each downloads its own file into ~/.local/share/models/radiance-engine on first
+start, beside the others.
 
-- **The first start downloads 31 GB**, into the same
-  ~/.local/share/models/radiance-engine. The MXFP4 file stays beside it.
-- **Expect slower decode.** StillDeadcode's model cards, on the same harness,
-  give 141 tok/s for one stream against MXFP4's 204, and 314 against 438 for
-  four streams. Nothing here has measured it yet.
-- **The KV pool is smaller.** Each card holds about 5 GiB more weights. Read
-  the size from the startup log; the MXFP4 pool is 1,268,272 tokens.
-- **The FP8 card was tested to 200K.** This unit runs 262,144 like `radiance`.
+**`radiance-fp8`**: the 27B at FP8 (`qwen3.8-27b-fp8.rad`), with the same
+DFlash2 drafter and the same flags as `radiance`.
+- **The first start downloads 31 GB.**
+- **Decode is 17–36% slower** than MXFP4.
+- **The KV pool is smaller:** 1,025,408 tokens against 1,375,232.
+- **Code scores are level** with MXFP4. It gets more Polyglot exercises right on
+  the first try (docs/runs/2026-11-07-radiance-1170-code-fp8-vs-mxfp4.md).
 
-Delete the FP8 file once you're done with it:
+**`radiance-flash`**: Qwen3.8 Flash Next, the 177B MoE
+(`qwen3.8-next-flash-fp8-iq4r-moe.rad`), with 4-bit experts, an int8 trunk and
+MTP drafting. Its flags are its model card's.
+- **The first start downloads 122 GB.** Allow about 45 minutes, plus about a
+  minute for the checksum.
+- **It needs host RAM.** 12 GiB of experts stay pinned in host memory. Expect
+  about 20 GiB available while it serves. Don't start it mid-game.
+- **The context is 200,000 tokens,** not 262,144.
+- **One request at a time is as fast as MXFP4,** and does not slow with depth.
+  Prefill is 1.4–2.1× faster.
+- **Several requests at once are slower:** about 50–60 tok/s each, about half
+  of MXFP4's combined throughput.
+- **It wrote better code** in the benches: Aider Polyglot 87.6% against 66–68%
+  (docs/runs/2026-11-08-radiance-1170-flash-next.md).
+- **Thinking, sampling and the API are the same** as `radiance` above.
+
+Delete a file once you're done with that unit:
 
     rm ~/.local/share/models/radiance-engine/qwen3.8-27b-fp8.rad*
+    rm ~/.local/share/models/radiance-engine/qwen3.8-next-flash-fp8-iq4r-moe.rad*
 
 ## Switching back to lemonade
 
 These cannot run at once. None is enabled, so each is a command away:
 
-    systemctl --user stop radiance radiance-fp8 && systemctl --user start lemonade
+    systemctl --user stop radiance radiance-fp8 radiance-flash && systemctl --user start lemonade
 
 lemonade serves `127.0.0.1:13305/api/v1` with model id `Qwen3.8-27B-Q8XL`. A
 client configured for one needs its base URL and model id changed for the other.
@@ -132,7 +147,7 @@ once you're sure you won't go back:
 ## Updating
 
 The image digest and the container's revision and sha256 are pinned in
-build_files/profiles/north/radiance.sh. A new container replaces the old file in
+build_files/profiles/north/radiance.sh, for each unit. A new container replaces the old file in
 ~/.local/share/models/radiance-engine on the next start. Nothing is compiled at
 start, so there is no cache to clear.
 

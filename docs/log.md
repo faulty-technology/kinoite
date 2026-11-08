@@ -4,6 +4,26 @@ Newest first. One bullet per change to the bundle's structure or metadata; a new
 doc gets its family `index.md` line and a bullet here (see
 [how-to/maintain-okf-bundle](how-to/maintain-okf-bundle.md)).
 
+## 2026-11-08
+
+- **New decision**: [decisions/2026-11-08-drop-r9v.md](decisions/2026-11-08-drop-r9v.md) —
+  R9V removed from the north image; `radiance-flash` serves the same model at
+  2×+ the decode, 8 sequences and 200K.
+- **Removed**: `how-to/r9v.md` (shipped runbook) and its `how-to/index.md` line.
+- **New run**: [runs/2026-11-08-radiance-1170-flash-next.md](runs/2026-11-08-radiance-1170-flash-next.md) —
+  Qwen3.8 Flash Next on radiance 1.17.0, ad hoc: Polyglot 87.6% against the 27B's
+  66–68% (p ≤ 2e-11), LiveCodeBench 68.6% against 64–66%; single-stream decode level
+  with the 27B, multi-stream about half.
+
+## 2026-11-07
+
+- **New run**: [runs/2026-11-07-radiance-1170-fp8-vs-mxfp4.md](runs/2026-11-07-radiance-1170-fp8-vs-mxfp4.md) —
+  radiance 1.17.0 against 1.8.1 and FP8 against MXFP4, the 10-18 harness at 235 W:
+  1.17.0 faster everywhere; FP8 decode 17–36% slower, GSM8K 477 against 480 of 500.
+- **New run**: [runs/2026-11-07-radiance-1170-code-fp8-vs-mxfp4.md](runs/2026-11-07-radiance-1170-code-fp8-vs-mxfp4.md) —
+  Aider Polyglot and LiveCodeBench, thinking on: FP8 67.6/66.0% against MXFP4
+  66.2/64.2%, level; FP8's Polyglot first try 29.8% against 22.2% (p = 0.008).
+
 ## 2026-10-29
 
 - **New run**: [runs/2026-10-29-nuc-tev1-systemone.md](runs/2026-10-29-nuc-tev1-systemone.md) —
