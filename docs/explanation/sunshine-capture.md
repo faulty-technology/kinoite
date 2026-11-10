@@ -1,7 +1,7 @@
 ---
 type: Explanation
 title: "Why the Sunshine setup looks the way it does"
-description: "Why each non-obvious piece of sunshine.sh exists — e.g. the display cable decides which GPU owns the compositor and VAAPI device, so a dummy plug on the motherboard HDMI made it encode on the iGPU."
+description: "Why each non-obvious piece of sunshine.sh exists — e.g. the display cable decides which GPU owns the compositor and VAAPI device, so a dummy plug on the motherboard HDMI made it encode on the iGPU; and why pinning WAYLAND_DISPLAY in the unit is a latent bug."
 ---
 
 # Why the Sunshine setup looks the way it does
@@ -40,6 +40,37 @@ Ways to drop the plug, all untested:
   `/usr/lib/firmware/edid/`; may need it in initramfs.
 - A persistent `krfb-virtualmonitor` unit ordered before Sunshine — last resort,
   since krfb holds a render node and pins the GPU awake.
+
+## The Wayland socket is not a stable name
+
+Both Sunshine units need `WAYLAND_DISPLAY`, and neither can inherit it: a systemd user unit
+starts before KWin exists, so something has to say which compositor to capture. It used to be
+a pinned `Environment=WAYLAND_DISPLAY=wayland-0`. Pinning a number was wrong — socket
+numbering depends on what else ran a Wayland compositor first, and the leading candidate for
+what changed in 2026-11 is an SDDM Wayland greeter taking `wayland-0` before the session's
+KWin starts (unconfirmed; see the run). While the session happened to land on socket 0 the pin
+looked correct; once it landed on `wayland-1`, capture failed with
+`[kwingrab] cannot connect to Wayland display: wayland-0`
+while the live socket sat unused in the same runtime directory
+([runs/2026-11-09-north-sunshine-503](../runs/2026-11-09-north-sunshine-503.md)).
+
+Resolving it at exec time is the fix, and `/usr/libexec/sunshine-wayland-env` is that
+resolver — but a glob over `$XDG_RUNTIME_DIR/wayland-*` alone only moves the bug: at boot that
+glob can match a compositor that is about to go away, or come back empty because KWin has not
+started. So it asks KWin which socket it opened (filtered by uid, so a greeter's transient
+compositor cannot win) and requires that the socket be live, retrying to a deadline.
+
+Liveness must not be measured as output count. KWin keeps running with zero outputs on a
+headless box — the state `sunshine-virtual-monitor.service` exists for — so "libkscreen listed
+an output" is the wrong test: it would read that live compositor as dead and leave both units
+with no socket at all. And because a unit resolves once at start while `global_prep_cmd` only
+inherits the result, the helper re-checks its inherited socket per stream; otherwise a
+mid-session KWin restart reproduces this exact 503 with no hard-code left to point at.
+
+That re-check is also why the helper's own enumeration cannot be trusted as evidence: it shells
+out to `kscreen-doctor` with stderr discarded and no exit-status check, so "no compositor
+reachable" and "headless box" produce identical output. That conflation is what made this
+incident look like missing hardware.
 
 ## Why the config is seeded — don't "simplify" it away
 

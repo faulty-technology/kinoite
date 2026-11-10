@@ -4,6 +4,19 @@ Newest first. One bullet per change to the bundle's structure or metadata; a new
 doc gets its family `index.md` line and a bullet here (see
 [how-to/maintain-okf-bundle](how-to/maintain-okf-bundle.md)).
 
+## 2026-11-09
+
+- **New run**: [runs/2026-11-09-north-sunshine-503.md](runs/2026-11-09-north-sunshine-503.md) —
+  Moonlight Error 503 on every codec traced to the image drop-in's hard-coded
+  `WAYLAND_DISPLAY=wayland-0` while KWin runs on `wayland-1`; superseded same day by
+  `/usr/libexec/sunshine-wayland-env`, which resolves a live socket for both Sunshine units.
+- **Build change**: `build_files/profiles/north/sunshine.sh` — the pinned `Environment=WAYLAND_DISPLAY`
+  is gone from the Sunshine drop-in and from `sunshine-virtual-monitor.service`; both now read
+  `EnvironmentFile=-%t/sunshine-wayland.env`.
+- **Updated how-to**: [how-to/stream-with-sunshine.md](how-to/stream-with-sunshine.md) —
+  added an Error 503 section (startup log → `kscreen-doctor -o` → restart → plug on a dGPU
+  port), self-contained for read-on-the-box use.
+
 ## 2026-11-08
 
 - **New decision**: [decisions/2026-11-08-drop-r9v.md](decisions/2026-11-08-drop-r9v.md) —

@@ -118,6 +118,32 @@ CONF="${XDG_CONFIG_HOME:-$HOME/.config}/sunshine/sunshine.conf"
 
 log() { echo "sunshine-virtual-display: $*" >&2; }
 
+# A systemd user unit freezes WAYLAND_DISPLAY when it starts, and global_prep_cmd only ever
+# inherits Sunshine's copy — so if KWin restarts mid-session (crash, display reconfigure) the
+# session can come back on a different socket while Sunshine still points at the dead one.
+# Same Error 503 symptom as the hard-coded socket, with no hard-code left to blame. Prep
+# commands run per stream, so re-resolving here is cheap and self-healing.
+#
+# WAYLAND_DISPLAY is either a bare socket name (the norm, relative to $XDG_RUNTIME_DIR) or an
+# absolute path (allowed by the protocol). Joining a leading '/' onto RUNDIR would test a
+# nonsense path and re-resolve over a perfectly good inherited value, so branch on it.
+socket_live() {
+    case "${WAYLAND_DISPLAY:-}" in
+        '') return 1 ;;
+        /*) [ -S "$WAYLAND_DISPLAY" ] ;;
+        *) [ -S "${RUNDIR}/${WAYLAND_DISPLAY}" ] ;;
+    esac
+}
+if [ -n "${XDG_RUNTIME_DIR:-}" ] && ! socket_live; then
+    log "inherited WAYLAND_DISPLAY=[${WAYLAND_DISPLAY:-unset}] is not a live socket; re-resolving"
+    if /usr/libexec/sunshine-wayland-env 5 && [ -r "${RUNDIR}/sunshine-wayland.env" ]; then
+        . "${RUNDIR}/sunshine-wayland.env" && export WAYLAND_DISPLAY
+        log "re-resolved to ${WAYLAND_DISPLAY}"
+    else
+        log "could not re-resolve a Wayland socket"
+    fi
+fi
+
 is_dim() {
     case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac
     [ "$1" -ge "$2" ] && [ "$1" -le "$3" ]
@@ -378,6 +404,84 @@ esac
 EOF
 chmod +x /usr/libexec/sunshine-virtual-display
 
+### Wayland socket resolver
+# Both units need WAYLAND_DISPLAY, and neither can hard-code it or inherit it: a user unit
+# starts before KWin exists, and the socket *number* is not stable — whatever compositor ran
+# first in $XDG_RUNTIME_DIR takes wayland-0, so the session KWin can land on wayland-1.
+# Pinning `wayland-0` produced Moonlight Error 503 on every codec once a rebase changed which
+# socket the session got: kwin_grab could not connect, so no display and no encoder survived
+# the startup probe. Evidence: docs/runs/2026-11-09-north-sunshine-503.md
+#
+# Globbing $XDG_RUNTIME_DIR/wayland-* is NOT sufficient — at boot that glob can match a
+# compositor that is about to go away, or come back empty because KWin has not started yet.
+# So: ask KWin which socket it opened (its own cmdline, which only the session's KWin owns),
+# then require that something actually answers on it. Fall back to probing every candidate.
+cat > /usr/libexec/sunshine-wayland-env << 'EOF'
+#!/bin/bash
+# Write WAYLAND_DISPLAY=<live socket> to ${XDG_RUNTIME_DIR}/sunshine-wayland.env for the
+# Sunshine units' EnvironmentFile=. Retries until a compositor answers, then exits 0.
+# Usage: sunshine-wayland-env [DEADLINE_SECONDS]
+set -uo pipefail
+
+timeout="${1:-60}"
+rundir="${XDG_RUNTIME_DIR:?sunshine-wayland-env: XDG_RUNTIME_DIR is unset}"
+out="$rundir/sunshine-wayland.env"
+from_kwin() {
+    # The session KWin prints its own socket; the greeter's KWin runs as another user, so
+    # filtering by uid is what keeps a transient greeter socket from being chosen.
+    local pid args
+    for pid in $(pgrep -u "$(id -u)" -x kwin_wayland 2>/dev/null); do
+        args=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
+        printf '%s\n' "$args" | sed -n 's/.*--socket \(wayland-[0-9]\+\).*/\1/p'
+    done | head -1
+}
+# Liveness, NOT output count. KWin keeps running with zero outputs on a headless box (see
+# docs/explanation/sunshine-capture.md), and that is the exact state
+# sunshine-virtual-monitor.service exists to serve. Requiring an enumerated output here would
+# spin to the deadline, exit 1, and leave both units with no WAYLAND_DISPLAY — foreclosing the
+# headless path while fixing the stale-socket one.
+alive() {
+    [ -S "$rundir/$1" ] || return 1
+    if WAYLAND_DISPLAY="$1" kscreen-doctor -o >/dev/null 2>&1; then
+        return 0
+    fi
+    # libkscreen failed. Still alive if a KWin we own sits on that socket — a tool's exit
+    # status is never the only proof that a compositor exists.
+    local owner
+    owner="$(from_kwin)"
+    [ -n "$owner" ] && [ "$owner" = "$1" ]
+}
+
+deadline=$(( $(date +%s) + timeout ))
+found=""
+while :; do
+    kwin="$(from_kwin)"
+    if [ -n "$kwin" ] && alive "$kwin"; then
+        found="$kwin"
+        break
+    fi
+    # No usable KWin cmdline: probe every socket, highest number first, so a session socket
+    # that superseded an earlier one wins the tie-break.
+    for sock in $(ls "$rundir" 2>/dev/null | grep -oE '^wayland-[0-9]+$' | sort -V -r); do
+        [ "$sock" = "$kwin" ] && continue
+        if alive "$sock"; then found="$sock"; break; fi
+    done
+    [ -n "$found" ] && break
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+        echo "sunshine-wayland-env: no live compositor socket in ${rundir} within ${timeout}s" >&2
+        exit 1
+    fi
+    sleep 1
+done
+
+# Zero outputs is a valid answer, but say it out loud: the socket works and the display side
+# is what is missing.
+count=$(WAYLAND_DISPLAY="$found" kscreen-doctor -o 2>/dev/null | grep -c '^Output:' || true)
+printf 'WAYLAND_DISPLAY=%s\n' "$found" > "$out.tmp" && mv "$out.tmp" "$out"
+echo "sunshine-wayland-env: using ${found} (${count:-0} output(s))"
+EOF
+chmod +x /usr/libexec/sunshine-wayland-env
+
 ### Service drop-in
 # ExecStopPost is the crash net: it runs when a stream's `undo` never did (SIGKILL,
 # session teardown), restoring physical outputs and dropping the monitor.
@@ -390,9 +494,15 @@ chmod +x /usr/libexec/sunshine-virtual-display
 mkdir -p /usr/lib/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d
 cat > /usr/lib/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/10-kinoite-north.conf << 'EOF'
 [Service]
+# The resolver must run before any Exec* line that reads EnvironmentFile, and systemd
+# reads EnvironmentFile per command, so ExecStartPre's output is seen by ExecStart.
+# `-` on the resolver: if nothing ever answers, start Sunshine anyway so the failure shows
+# up in its own log instead of the unit silently never starting.
+ExecStartPre=-/usr/libexec/sunshine-wayland-env
 ExecStartPre=-/usr/libexec/sunshine-config-defaults
-# Needed so global_prep_cmd's kscreen-doctor calls reach the compositor
-Environment=WAYLAND_DISPLAY=wayland-0
+EnvironmentFile=-%t/sunshine-wayland.env
+# global_prep_cmd's kscreen-doctor calls inherit this environment, so the helper is fixed
+# by the same line — it never sets WAYLAND_DISPLAY itself.
 ExecStopPost=-/usr/libexec/sunshine-virtual-display down
 EOF
 
@@ -423,7 +533,11 @@ Type=oneshot
 RemainAfterExit=yes
 # RemainAfterExit=yes is required: without it the cgroup (and thus the backgrounded krfb)
 # is torn down immediately when ExecStart's parent exits.
-Environment=DISPLAY=:0 WAYLAND_DISPLAY=wayland-0
+# Same resolver as Sunshine's unit — this one used to hard-code wayland-0 too, so enabling
+# it on a genuinely headless box hit the identical Error 503.
+ExecStartPre=-/usr/libexec/sunshine-wayland-env
+EnvironmentFile=-%t/sunshine-wayland.env
+Environment=DISPLAY=:0
 ExecStart=/usr/libexec/sunshine-virtual-display up --persistent 2560 1440 60
 
 [Install]

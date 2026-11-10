@@ -58,3 +58,4 @@
 - [2026-11-07-radiance-1170-code-fp8-vs-mxfp4](2026-11-07-radiance-1170-code-fp8-vs-mxfp4.md)
 - [2026-11-07-radiance-1170-fp8-vs-mxfp4](2026-11-07-radiance-1170-fp8-vs-mxfp4.md)
 - [2026-11-08-radiance-1170-flash-next](2026-11-08-radiance-1170-flash-next.md)
+- [2026-11-09-north-sunshine-503](2026-11-09-north-sunshine-503.md)
