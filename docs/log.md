@@ -4,6 +4,14 @@ Newest first. One bullet per change to the bundle's structure or metadata; a new
 doc gets its family `index.md` line and a bullet here (see
 [how-to/maintain-okf-bundle](how-to/maintain-okf-bundle.md)).
 
+## 2026-11-14
+
+- **New decision**: [decisions/2026-11-14-north-telemetry-alloy-otlp.md](decisions/2026-11-14-north-telemetry-alloy-otlp.md) —
+  north pushes radiance `/metrics` and its journal to the nuc's OTel collector from an Alloy agent.
+- **Build change**: `build_files/profiles/north/telemetry.sh` ships `/etc/alloy/config.alloy` and
+  the enabled system Quadlet `alloy.container`; [how-to/radiance.md](how-to/radiance.md) gains
+  "Metrics and logs".
+
 ## 2026-11-09
 
 - **New run**: [runs/2026-11-09-north-sunshine-503.md](runs/2026-11-09-north-sunshine-503.md) —

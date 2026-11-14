@@ -60,6 +60,23 @@ The unit allows two hours for all of it.
 - **Cache expiry:** a conversation no request has used for an hour leaves the
   cache (`--prefix-cache-ttl`, default 3600).
 
+## Metrics and logs
+
+`alloy.service` (a system unit, enabled) scrapes `/metrics` every 15 s and
+tails the journal, then pushes both to the nuc's collector at `http://nuc:31432`.
+Nothing to start. In the nuc's Grafana:
+
+- **Metrics:** the radiance dashboard, or `{job="radiance", instance="north"}`
+  in Prometheus. `up` is 0 while no radiance unit runs.
+- **Logs:** `{service_namespace="north", service_name="radiance.service"}` in
+  Loki. Swap in `radiance-fp8.service` or `radiance-flash.service` for the others.
+
+Check the agent:
+
+    systemctl status alloy
+    journalctl -u alloy -f
+    curl -s http://127.0.0.1:12345/-/ready
+
 ## Thinking, and what clients may send
 
 Thinking is controlled per request. When a request sets nothing, the unit defaults

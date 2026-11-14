@@ -435,6 +435,11 @@ carried over unchanged — do not re-derive.
 
 ### Unverified
 
+- [ ] **north's Alloy agent has not run on north yet.** The pipeline was
+      checked on the workstation with the pinned images
+      [decisions/2026-11-14-north-telemetry-alloy-otlp.md]. Still to confirm on
+      north: the system container reads the user journals, `nuc` resolves
+      inside it, and the radiance dashboard fills.
 - [x] Fedora ships `/dev/kfd` world-accessible (`SUBSYSTEM=="kfd", GROUP="render",
       MODE="0666"` in systemd-udev's `50-udev-default.rules`). The custom udev
       rule is already removed from `amdgpu.sh` — it was a net loss, tightening
