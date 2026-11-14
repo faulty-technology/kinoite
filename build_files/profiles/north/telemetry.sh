@@ -49,7 +49,7 @@ prometheus.exporter.unix "host" {
 
   set_collectors = ["cpu", "cpufreq", "meminfo", "loadavg", "pressure",
                     "vmstat", "diskstats", "netdev", "filesystem",
-                    "hwmon", "thermal_zone", "time", "uname"]
+                    "hwmon", "thermal_zone", "time", "uname", "textfile"]
 
   textfile { directory = "/var/lib/alloy/textfile" }
 }
