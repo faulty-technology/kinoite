@@ -34,6 +34,7 @@ SHARED="$(cd "$PROFILE_DIR/../../scripts" && pwd)"
 "$PROFILE_DIR/llamafactory.sh"
 "$PROFILE_DIR/radiance.sh"
 "$PROFILE_DIR/telemetry.sh"
+"$PROFILE_DIR/gpu-metrics.sh"
 
 # Shared runtime setup + finalization
 "$SHARED/nix.sh"

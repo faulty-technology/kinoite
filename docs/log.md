@@ -6,6 +6,15 @@ doc gets its family `index.md` line and a bullet here (see
 
 ## 2026-11-14
 
+- **New decisions**: [decisions/2026-11-14-north-host-metrics-alloy-unix-exporter.md](decisions/2026-11-14-north-host-metrics-alloy-unix-exporter.md)
+  (north host telemetry via Alloy's built-in `prometheus.exporter.unix` + read-only `/host/*`
+  mounts) and [decisions/2026-11-14-north-gpu-metrics.md](decisions/2026-11-14-north-gpu-metrics.md)
+  (R9700 gauges from a `runtime_status`-gated timer; clocks via hwmon `freq1/freq2`, not pp_dpm).
+- **Build change**: `alloy.sh` bakes `/proc`, `/sys` and `/` read-only into the quadlet as
+  `/host/*`; north's `telemetry.sh` adds `/etc/alloy/host.alloy` (`node_*` + textfile),
+  `gpu-metrics.sh` installs `kinoite-gpu-metrics.{service,timer}`; nuc gains
+  `igpu-metrics.sh` (i915 `gt_*` freq gauges into node-exporter's textfile dir) and its timer
+  enablement in `services-nuc.sh`.
 - **New run**: [runs/2026-11-14-nuc-nfs-boot-race.md](runs/2026-11-14-nuc-nfs-boot-race.md) —
   on one nuc boot the Unraid mounts timed out 30 s after `tailscale-online.target`, while CSI NFS to the
   same server worked 16 s later.

@@ -25,6 +25,7 @@ export UPDATE_POLICY=apply
 "$PROFILE_DIR/k3s.sh"
 "$PROFILE_DIR/nfs.sh"
 "$PROFILE_DIR/host.sh"
+"$PROFILE_DIR/igpu-metrics.sh"
 ALLOY_HOST=nuc ALLOY_ENDPOINT=http://127.0.0.1:31432 ALLOY_AFTER=k3s.service "$SHARED/alloy.sh"
 
 # Shared runtime setup + finalization

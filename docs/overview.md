@@ -444,6 +444,18 @@ carried over unchanged — do not re-derive.
 
 ### Unverified
 
+- [ ] **north's host + GPU gauges reach Prometheus.** After the image carrying
+      `host.alloy` and `kinoite-gpu-metrics.timer` is deployed: `up{job="node",instance="north"}`
+      is 1, `north_gpu_awake` exists for both R9700s, and a suspended card has no
+      `north_gpu_temp_celsius` series [decisions/2026-11-14-north-host-metrics-alloy-unix-exporter.md].
+- [ ] **nuc's iGPU freq gauges reach Prometheus.** After the image carrying
+      `kinoite-igpu-metrics.timer` and the node-exporter textfile args are deployed:
+      `nuc_igpu_cur_freq_mhz` is present.
+- [ ] **north's nct6799 is not probing (2026-11-14).** The module exists
+      (`/lib/modules/7.3.3-200.fc44.x86_64/kernel/drivers/hwmon/nct6775.ko.xz`) but is not
+      loaded; `/sys/class/hwmon` holds amdgpu/k10temp/spd5118/asus/nvme/r8169 and no nct6799,
+      although [reference/sensors.md](reference/sensors.md) describes it as working out of the
+      box. Motherboard fan-RPM panels show "no data" until this is fixed.
 - [x] **north's Alloy agent works on north (2026-11-14).** The system container
       reads the user journals: `radiance-fp8.service`, `pipewire.service` and
       the `plasma-*` units are in Loki. `nuc` resolves inside it. With radiance

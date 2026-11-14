@@ -104,6 +104,9 @@ sed -i -e "s|@ALLOY_HOST@|${ALLOY_HOST}|g" -e "s|@ALLOY_ENDPOINT@|${ALLOY_ENDPOI
 # /var/log/journal. Alloy loads every *.alloy file in /etc/alloy/. The UI binds loopback only.
 # /var/lib/alloy holds the journal cursor, so a restart resumes where it stopped instead of
 # re-sending.
+# The /host/* mounts are a privilege increase over a journal tailer (host rootfs read-only
+# into a SecurityLabelDisable=true rootful container); they exist for prometheus.exporter.unix
+# (north's host.alloy). docs/decisions/2026-11-14-north-host-metrics-alloy-unix-exporter.md
 install -D -m 0644 /dev/stdin /etc/containers/systemd/alloy.container << QUADLETEOF
 [Unit]
 Description=Grafana Alloy: ${ALLOY_HOST} telemetry to the nuc over OTLP
@@ -118,6 +121,10 @@ SecurityLabelDisable=true
 Volume=/etc/alloy:/etc/alloy:ro
 Volume=/var/log/journal:/var/log/journal:ro
 Volume=/etc/machine-id:/etc/machine-id:ro
+# Read-only host views for prometheus.exporter.unix; the exporter reads /host/{proc,sys,root}.
+Volume=/proc:/host/proc:ro
+Volume=/sys:/host/sys:ro
+Volume=/:/host/root:ro,rslave
 Volume=/var/lib/alloy:/var/lib/alloy
 Exec=run --server.http.listen-addr=127.0.0.1:12345 --storage.path=/var/lib/alloy /etc/alloy
 
