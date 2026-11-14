@@ -18,6 +18,7 @@ set -euo pipefail
 OUT_DIR=/var/lib/alloy/textfile
 OUT="$OUT_DIR/amdgpu.prom"
 TMP="$OUT.tmp"
+mkdir -p "$OUT_DIR"
 
 # Radeon AI PRO R9700 (gfx1201). The 610M iGPU is pinned power/control=on by the display
 # manager and reports desktop compositing, not LLM workload — excluded on purpose.
