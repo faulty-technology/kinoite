@@ -93,8 +93,8 @@ for dev in /sys/class/drm/card[0-9]*/device; do
         metric "north_gpu_power_watts{pci=\"$pci\"}" "$hw/power1_average" 1000000
         metric "north_gpu_power_cap_watts{pci=\"$pci\"}" "$hw/power1_cap" 1000000
         metric "north_gpu_fan_rpm{pci=\"$pci\"}" "$hw/fan1_input"
-        if [ -n "$sclk" ]; then metric "north_gpu_sclk_mhz{pci=\"$pci\"}" "$sclk"; fi
-        if [ -n "$mclk" ]; then metric "north_gpu_mclk_mhz{pci=\"$pci\"}" "$mclk"; fi
+        if [ -n "$sclk" ]; then metric "north_gpu_sclk_mhz{pci=\"$pci\"}" "$sclk" 1000000; fi
+        if [ -n "$mclk" ]; then metric "north_gpu_mclk_mhz{pci=\"$pci\"}" "$mclk" 1000000; fi
     } >> "$TMP"
 done
 
