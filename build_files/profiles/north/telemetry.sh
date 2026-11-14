@@ -64,7 +64,7 @@ discovery.relabel "host" {
 }
 
 prometheus.scrape "host" {
-  targets         = discovery.relabel.host.outputs
+  targets         = discovery.relabel.host.output
   job_name        = "node"
   scrape_interval = "30s"
   scrape_timeout  = "15s"
