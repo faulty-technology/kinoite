@@ -113,7 +113,6 @@ Description=Emit R9700 GPU gauges to the Alloy textfile directory (runtime_statu
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/kinoite-gpu-metrics
-RemainAfterExit=yes
 TimeoutStartSec=30
 EOF
 

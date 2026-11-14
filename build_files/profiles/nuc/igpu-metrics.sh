@@ -72,7 +72,6 @@ Description=Emit i915 frequency gauges to the node-exporter textfile directory
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/kinoite-igpu-metrics
-RemainAfterExit=yes
 TimeoutStartSec=30
 EOF
 
