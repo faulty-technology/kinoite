@@ -6,6 +6,11 @@ doc gets its family `index.md` line and a bullet here (see
 
 ## 2026-11-14
 
+- **New run**: [runs/2026-11-14-nuc-nfs-boot-race.md](runs/2026-11-14-nuc-nfs-boot-race.md) —
+  on one nuc boot the Unraid mounts timed out 30 s after `tailscale-online.target`, while CSI NFS to the
+  same server worked 16 s later.
+- **Build change**: `build_files/profiles/nuc/nfs.sh` adds `kinoite-nfs-wait.service`, which holds both
+  Unraid mounts until 100.77.22.80:2049 accepts TCP, for up to 90 s.
 - **New decision**: [decisions/2026-11-14-nuc-journal-alloy-quadlet.md](decisions/2026-11-14-nuc-journal-alloy-quadlet.md) —
   the nuc's host journal ships from an image-baked Alloy Quadlet, not the privileged DaemonSet.
 - **Build change**: the Alloy agent moves to shared `build_files/scripts/alloy.sh`

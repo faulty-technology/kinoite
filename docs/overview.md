@@ -377,6 +377,10 @@ carried over unchanged — do not re-derive.
       comes up (+~30 s boot, +~30 s shutdown)
       [runs/2026-10-06-nuc-boot-with-nfs-down.md]. Still untested: Unraid's
       NFS on the tailnet after an Unraid reboot.
+- [ ] **The Unraid mounts wait for the NFS port at boot.** On one boot they timed out
+      30 s after `tailscale-online.target`, while the server was up
+      [runs/2026-11-14-nuc-nfs-boot-race.md]. `kinoite-nfs-wait.service` now holds
+      them until 100.77.22.80:2049 answers, for up to 90 s. Unverified on the NUC.
 - [x] **Failed NFS mounts retry themselves.** `kinoite-nfs-retry.timer`
       starts any failed mount every 5 min. After an outage spanning a boot,
       the media paths came back with no operator action

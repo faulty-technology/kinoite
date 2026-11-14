@@ -18,6 +18,40 @@ if [ -z "$UNRAID_HOST" ] || [ -z "$MEDIA_EXPORT" ] || [ -z "$FAST_EXPORT" ]; the
     exit 0
 fi
 
+### Wait for Unraid's NFS port
+# Holds the mounts until ${UNRAID_HOST}:2049 accepts a TCP connection, for up to 90 s, then exits
+# either way. Evidence: docs/runs/2026-11-14-nuc-nfs-boot-race.md
+install -D -m 0755 /dev/stdin /usr/libexec/kinoite-nfs-wait << 'SCRIPT'
+#!/bin/bash
+# usage: kinoite-nfs-wait <host> <port> <seconds>
+set -uo pipefail
+host="$1" port="$2" limit="$3"
+start=$SECONDS
+while (( SECONDS - start < limit )); do
+    if timeout 3 bash -c "exec 3<>/dev/tcp/$host/$port" 2>/dev/null; then
+        echo "$host:$port reachable after $(( SECONDS - start ))s"
+        exit 0
+    fi
+    sleep 2
+done
+echo "$host:$port not reachable after ${limit}s; mounting anyway" >&2
+exit 1
+SCRIPT
+bash -n /usr/libexec/kinoite-nfs-wait
+
+cat > /usr/lib/systemd/system/kinoite-nfs-wait.service << UNIT
+[Unit]
+Description=Wait for Unraid NFS (${UNRAID_HOST}:2049)
+Wants=network-online.target tailscale-online.target
+After=network-online.target tailscale-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/kinoite-nfs-wait ${UNRAID_HOST} 2049 90
+TimeoutStartSec=120
+UNIT
+
 # Static mounts, not automounts: an autofs trigger bind-mounted into a container
 # does not follow the real mount that lands on it later.
 # hard: an Unraid hiccup stalls I/O rather than handing apps EIO mid-write.
@@ -31,8 +65,10 @@ write_mount() {
 Description=Unraid NFS ${where}
 # tailscale-online.target (shipped by the tailscale package) runs 'tailscale wait':
 # tailscaled.service alone reports ready before the interface has its IP.
-Wants=network-online.target tailscale-online.target
-After=network-online.target tailscale-online.target
+# kinoite-nfs-wait: tailscale-online.target can be reached before the path to Unraid carries
+# traffic. Wants=, not Requires=, so a NAS that never answers still gets a mount attempt.
+Wants=network-online.target tailscale-online.target kinoite-nfs-wait.service
+After=network-online.target tailscale-online.target kinoite-nfs-wait.service
 
 [Mount]
 What=${UNRAID_HOST}:${what}
