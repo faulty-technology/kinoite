@@ -435,11 +435,15 @@ carried over unchanged — do not re-derive.
 
 ### Unverified
 
-- [ ] **north's Alloy agent has not run on north yet.** The pipeline was
-      checked on the workstation with the pinned images
-      [decisions/2026-11-14-north-telemetry-alloy-otlp.md]. Still to confirm on
-      north: the system container reads the user journals, `nuc` resolves
-      inside it, and the radiance dashboard fills.
+- [x] **north's Alloy agent works on north (2026-11-14).** The system container
+      reads the user journals: `radiance-fp8.service`, `pipewire.service` and
+      the `plasma-*` units are in Loki. `nuc` resolves inside it. With radiance
+      running, `up{job="radiance", instance="north"}` is 1 and 42 of the 44
+      metric names the dashboard queries are present
+      [decisions/2026-11-14-north-telemetry-alloy-otlp.md]. The other two,
+      `radiance:draft_depth_adaptive` and `radiance:draft_verify_depth_total`,
+      are absent, so their two panels are empty. Unverified: that radiance
+      only exports them with adaptive draft depth on.
 - [x] Fedora ships `/dev/kfd` world-accessible (`SUBSYSTEM=="kfd", GROUP="render",
       MODE="0666"` in systemd-udev's `50-udev-default.rules`). The custom udev
       rule is already removed from `amdgpu.sh` — it was a net loss, tightening
