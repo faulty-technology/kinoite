@@ -6,6 +6,10 @@ doc gets its family `index.md` line and a bullet here (see
 
 ## 2026-11-14
 
+- **New decision**: [decisions/2026-11-14-nuc-journal-alloy-quadlet.md](decisions/2026-11-14-nuc-journal-alloy-quadlet.md) —
+  the nuc's host journal ships from an image-baked Alloy Quadlet, not the privileged DaemonSet.
+- **Build change**: the Alloy agent moves to shared `build_files/scripts/alloy.sh`
+  (`/etc/alloy/journal.alloy`); north adds `/etc/alloy/radiance.alloy`; the nuc image ships it too.
 - **New decision**: [decisions/2026-11-14-north-telemetry-alloy-otlp.md](decisions/2026-11-14-north-telemetry-alloy-otlp.md) —
   north pushes radiance `/metrics` and its journal to the nuc's OTel collector from an Alloy agent.
 - **Build change**: `build_files/profiles/north/telemetry.sh` ships `/etc/alloy/config.alloy` and

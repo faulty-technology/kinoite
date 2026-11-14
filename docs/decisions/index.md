@@ -19,3 +19,4 @@
 - [2026-10-21-drop-libfprint-moc2-custom-build](2026-10-21-drop-libfprint-moc2-custom-build.md)
 - [2026-11-08-drop-r9v](2026-11-08-drop-r9v.md)
 - [2026-11-14-north-telemetry-alloy-otlp](2026-11-14-north-telemetry-alloy-otlp.md)
+- [2026-11-14-nuc-journal-alloy-quadlet](2026-11-14-nuc-journal-alloy-quadlet.md)

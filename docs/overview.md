@@ -427,6 +427,11 @@ carried over unchanged — do not re-derive.
       own DB backup to daily.
 - [ ] **I225-V link drops** are a known igc issue on some revisions. Nothing is
       baked for them; add `pcie_aspm=off` or disable EEE only if drops are seen.
+- [ ] **nuc's Alloy Quadlet ships its journal.** `systemctl status alloy` on the
+      nuc, and `{service_namespace="nuc"}` in Loki shows `k3s.service`. Unverified:
+      that the collector NodePort answers on `127.0.0.1:31432`. After that, strip
+      the journal and `privileged` from homelab's Alloy DaemonSet
+      [decisions/2026-11-14-nuc-journal-alloy-quadlet.md].
 
 ### Sunshine
 
