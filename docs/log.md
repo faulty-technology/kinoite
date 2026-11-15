@@ -6,6 +6,11 @@ doc gets its family `index.md` line and a bullet here (see
 
 ## 2026-11-14
 
+- **Build fix**: `gpu-metrics.sh` emitted invalid `# TYPE` values (`bytes`, `celsius`,
+  `watts`, `rpm`) — the Prometheus text parser rejects unknown types and drops the whole
+  file, so `north_gpu_*` never reached Alloy's textfile collector
+  (`node_textfile_scrape_error=1`). All gauges now declare `gauge`; units stay in the
+  metric names. Verified against `prometheus/common/expfmt/text_parse.go`.
 - **New decisions**: [decisions/2026-11-14-north-host-metrics-alloy-unix-exporter.md](decisions/2026-11-14-north-host-metrics-alloy-unix-exporter.md)
   (north host telemetry via Alloy's built-in `prometheus.exporter.unix` + read-only `/host/*`
   mounts) and [decisions/2026-11-14-north-gpu-metrics.md](decisions/2026-11-14-north-gpu-metrics.md)
