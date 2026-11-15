@@ -48,7 +48,7 @@ prometheus.exporter.unix "host" {
   rootfs_path = "/host/root"
 
   set_collectors = ["cpu", "cpufreq", "meminfo", "loadavg", "pressure",
-                    "vmstat", "diskstats", "netdev", "filesystem",
+                    "stat", "vmstat", "diskstats", "netdev", "filesystem",
                     "hwmon", "thermal_zone", "time", "uname", "textfile"]
 
   textfile { directory = "/var/lib/alloy/textfile" }

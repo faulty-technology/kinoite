@@ -6,6 +6,10 @@ doc gets its family `index.md` line and a bullet here (see
 
 ## 2026-11-14
 
+- **Build fix**: north's `host.alloy` `set_collectors` lacked `stat`, so
+  `node_boot_time_seconds` was never exported and the dashboard uptime panel
+  had no data. Added (Linux boot time comes from the `stat` collector per
+  node_exporter's README, not a separate boottime collector).
 - **Build fix**: `gpu-metrics.sh` emitted invalid `# TYPE` values (`bytes`, `celsius`,
   `watts`, `rpm`) — the Prometheus text parser rejects unknown types and drops the whole
   file, so `north_gpu_*` never reached Alloy's textfile collector
