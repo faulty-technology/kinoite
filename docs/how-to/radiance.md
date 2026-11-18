@@ -1,7 +1,7 @@
 ---
 type: How-To
 title: "kinoite-north: radiance Qwen3.8-27B MXFP4 (rootless Quadlet)"
-description: "Rootless Quadlet serving Qwen3.8-27B at MXFP4 with a merged DFlash2 drafter via StillDeadcode's radiance engine (C++/HIP, no vLLM): TP=2, up to 8 sequences, 262k context; the model is AMD's Quark/AWQ post-training quantization of the released model. Two alternates serve the same port and model id: radiance-fp8 (27B FP8) and radiance-flash (Qwen3.8 Flash Next, the 177B MoE, 200k context). Ships at /etc/containers/systemd/users/radiance{,-fp8,-flash}.container, not enabled."
+description: "Rootless Quadlet serving Qwen3.8-27B at MXFP4 with a merged DFlash2 drafter via StillDeadcode's radiance engine (C++/HIP, no vLLM): TP=2, up to 8 sequences, 262k context; the model is AMD's Quark/AWQ post-training quantization of the released model. Three alternates serve the same port and model id: radiance-fp8 (27B FP8), radiance-flash (Qwen3.8 Flash Next, the 177B MoE, 200k context) and radiance-flash2 (Flash Next as IQR-V4 on radiance 2.1.0). Ships at /etc/containers/systemd/users/radiance{,-fp8,-flash,-flash2}.container, not enabled."
 ---
 
 # kinoite-north: radiance Qwen3.8-27B MXFP4 (rootless Quadlet)
@@ -67,9 +67,12 @@ tails the journal, then pushes both to the nuc's collector at `http://nuc:31432`
 Nothing to start. In the nuc's Grafana:
 
 - **Metrics:** the radiance dashboard, or `{job="radiance", instance="north"}`
-  in Prometheus. `up` is 0 while no radiance unit runs.
+  in Prometheus. `up` is 0 while no radiance unit runs. The series carry no
+  unit label: every unit is `job="radiance"`, so tell them apart by time, or by
+  `radiance:kv_cache_max_tokens`, which differs per unit.
 - **Logs:** `{service_namespace="north", service_name="radiance.service"}` in
-  Loki. Swap in `radiance-fp8.service` or `radiance-flash.service` for the others.
+  Loki. Swap in `radiance-fp8.service`, `radiance-flash.service` or
+  `radiance-flash2.service` for the others.
 
 Check the agent:
 
@@ -102,12 +105,12 @@ request that names a field keeps its own value. `curl -s
 127.0.0.1:8005/server_info` lists every effective default under
 `request_defaults`.
 
-## The other two units
+## The other three units
 
-Two more units serve the same port and model id `Qwen3.8`, so a client needs no
-change. All three conflict, so starting one stops whichever is running:
+Three more units serve the same port and model id `Qwen3.8`, so a client needs no
+change. All four conflict, so starting one stops whichever is running:
 
-    systemctl --user start radiance-fp8      # or radiance-flash
+    systemctl --user start radiance-fp8      # or radiance-flash, radiance-flash2
     journalctl --user -u radiance-fp8 -f
     systemctl --user start radiance          # and back
 
@@ -138,28 +141,34 @@ MTP drafting. Its flags are its model card's.
   (docs/runs/2026-11-08-radiance-1170-flash-next.md).
 - **Thinking, sampling and the API are the same** as `radiance` above.
 
+**`radiance-flash2`**: the same Flash Next on radiance 2.1.0, as
+`qwen3.8-next-flash-iqr-v4.rad` (IQR-V4 experts). 2.x refuses the other units'
+files, so this unit has its own image and file.
+- **The first start downloads 122 GB,** as `radiance-flash`, and it needs the
+  same 12 GiB of pinned host RAM.
+- **Its settings are a YAML file,** `/etc/radiance/radiance-flash2.yaml`, not
+  flags: `radiance-flash`'s, with the int8 KV cache (2.x has no fp8 one) and a
+  4 GiB host tier for the prefix cache.
+- **Its KV pool is smaller than `radiance-flash`'s.** The engine prints it at
+  start: `journalctl --user -u radiance-flash2 | grep 'kv: the pool'`.
+- **Thinking, sampling and the API are the same** as `radiance` above.
+- **Not benched.** It is there to switch to in real use; compare it with
+  `radiance-flash` in the metrics over the hours each served.
+
 Delete a file once you're done with that unit:
 
     rm ~/.local/share/models/radiance-engine/qwen3.8-27b-fp8.rad*
     rm ~/.local/share/models/radiance-engine/qwen3.8-next-flash-fp8-iq4r-moe.rad*
+    rm ~/.local/share/models/radiance-engine/qwen3.8-next-flash-iqr-v4.rad*
 
 ## Switching back to lemonade
 
 These cannot run at once. None is enabled, so each is a command away:
 
-    systemctl --user stop radiance radiance-fp8 radiance-flash && systemctl --user start lemonade
+    systemctl --user stop radiance radiance-fp8 radiance-flash radiance-flash2 && systemctl --user start lemonade
 
 lemonade serves `127.0.0.1:13305/api/v1` with model id `Qwen3.8-27B-Q8XL`. A
 client configured for one needs its base URL and model id changed for the other.
-
-## Freeing disk
-
-The patched-vLLM stack this unit replaced left its files behind. Delete them
-once you're sure you won't go back:
-
-    rm -rf ~/.local/share/radiance ~/.local/share/models/radiance
-    rm -rf ~/.local/share/models/huggingface/hub/models--amd--Qwen3.8-27B-Quark-AWQ-MXFP4
-    podman rmi docker.io/stilldeadcode/vllm-radiance:0.9.3
 
 ## Updating
 

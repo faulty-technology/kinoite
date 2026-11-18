@@ -2,18 +2,22 @@
 set -ouex pipefail
 
 # radiance: Qwen3.8 on StillDeadcode's standalone radiance engine (C++/HIP, no vLLM). A
-# hand-started LLM stack beside lemonade, vLLM and LLaMA-Factory, on :8005. Three units serve
-# the same engine, port and model id with different models, and any one can be started:
-#   radiance        27B MXFP4 with a merged DFlash2 drafter: AMD's post-training quant (Quark with
-#                   AWQ), byte for byte, not a 4-bit-trained model.
-#   radiance-fp8    27B FP8 with the same drafter.
-#   radiance-flash  Flash Next, the 177B MoE: 4-bit experts, int8 trunk, MTP drafting.
-# They conflict, so starting one stops the others. Why this engine replaced the patched-vLLM stack:
-# docs/decisions/2026-10-18-radiance-engine-over-vllm-radiance.md. The three compared:
+# hand-started LLM stack beside lemonade, vLLM and LLaMA-Factory, on :8005. Four units serve
+# the same port and model id with different models, and any one can be started:
+#   radiance         27B MXFP4 with a merged DFlash2 drafter: AMD's post-training quant (Quark with
+#                    AWQ), byte for byte, not a 4-bit-trained model. Engine 1.17.0.
+#   radiance-fp8     27B FP8 with the same drafter. Engine 1.17.0.
+#   radiance-flash   Flash Next, the 177B MoE: 4-bit experts, int8 trunk, MTP drafting. Engine 1.17.0.
+#   radiance-flash2  Flash Next as IQR-V4 on engine 2.1.0, which refuses the other units' files.
+# They conflict, so starting one stops the others. 1.17.0 takes its settings as flags; 2.x reads
+# one YAML file, written to /etc/radiance/<unit>.yaml and mounted where the engine is told to read
+# it. Why this engine replaced the patched-vLLM stack:
+# docs/decisions/2026-10-18-radiance-engine-over-vllm-radiance.md. The 1.17.0 units compared:
 # docs/runs/2026-11-07-radiance-1170-code-fp8-vs-mxfp4.md, docs/runs/2026-11-08-radiance-1170-flash-next.md.
 command -v podman >/dev/null || { echo "radiance.sh: missing podman" >&2; exit 1; }
 
 IMAGE=docker.io/stilldeadcode/radiance@sha256:c2acbaa373c89272ec47a22befa1cf04d2ddf1de51c2baf534f5273e517f7100
+IMAGE2=docker.io/stilldeadcode/radiance@sha256:c9affc489e4388a7ebca932355e7a22483dca6e06a6ea2fc034bdd5ad434c990
 
 ### 1. Host-side prepare
 install -D -m 0755 /dev/stdin /usr/libexec/kinoite-radiance-prepare << 'PREPAREEOF'
@@ -66,15 +70,48 @@ bash -n /usr/libexec/kinoite-radiance-prepare
 ### 2. Rootless Quadlet units
 # /etc/containers/systemd/users, same as the other stacks: podman 5.8.4 scans nothing else for
 # rootless units.
-mkdir -p /etc/containers/systemd/users
+mkdir -p /etc/containers/systemd/users /etc/radiance
 
-UNITS=(radiance radiance-fp8 radiance-flash)
+UNITS=(radiance radiance-fp8 radiance-flash radiance-flash2)
 
-# write_unit <unit> <model> <name> <rev> <sha256> <size> <shape>
-# <shape> is the model's own serving flags; the rest of Exec= is shared.
+# Sampling and reasoning defaults, shared by every unit, match the stack this replaced: a request
+# that names its own wins.
+SHARED_FLAGS='--temp 0.7 --top-p 0.95 --top-k 20 \
+    --reasoning-effort medium --reasoning-effort-map high=xhigh,max=xhigh,minimal=low'
+SHARED_YAML='    temp: 0.7
+    top-p: 0.95
+    top-k: 20
+    reasoning-effort: medium
+    reasoning-effort-map: {high: xhigh, max: xhigh, minimal: low}'
+
+# write_unit <unit> <model> <image> <name> <rev> <sha256> <size> <shape>
+# <shape> is the model's own settings: flags for $IMAGE, YAML lines of its model entry for
+# $IMAGE2. Same model id on every unit, so a client switches by starting another.
 write_unit() {
-    local unit=$1 model=$2 name=$3 rev=$4 sha=$5 size=$6 shape=$7 others=() u
+    local unit=$1 model=$2 image=$3 name=$4 rev=$5 sha=$6 size=$7 shape=$8 others=() u
+    local config='' exec
     for u in "${UNITS[@]}"; do [ "$u" = "$unit" ] || others+=("$u.service"); done
+
+    if [ "$image" = "$IMAGE2" ]; then
+        cat > "/etc/radiance/$unit.yaml" << YAMLEOF
+server:
+  host: 127.0.0.1
+  port: 8005
+models:
+  Qwen3.8:
+    model: /models/$name.rad
+$shape
+$SHARED_YAML
+YAMLEOF
+        config="Volume=/etc/radiance/$unit.yaml:/etc/radiance/radiance.yaml:ro"
+        exec='--config /etc/radiance/radiance.yaml'
+    else
+        exec="--model /models/$name.rad --served-model-name Qwen3.8 \\
+    --host 127.0.0.1 --port 8005 \\
+    $shape \\
+    $SHARED_FLAGS"
+    fi
+
     cat > "/etc/containers/systemd/users/$unit.container" << QUADLETEOF
 [Unit]
 Description=radiance Qwen3.8 $model (radiance engine, dual R9700)
@@ -90,7 +127,7 @@ StartLimitIntervalSec=1h
 StartLimitBurst=3
 
 [Container]
-Image=$IMAGE
+Image=$image
 Pull=never
 ContainerName=$unit
 
@@ -110,15 +147,9 @@ RunInit=true
 Network=host
 
 Volume=%h/.local/share/models/radiance-engine:/models:ro
+$config
 
-# The model's shape, then defaults shared by every unit. Sampling and reasoning defaults match the
-# stack this replaced: a request that names its own wins. Same model id on every unit, so a client
-# switches by starting another.
-Exec=--model /models/$name.rad --served-model-name Qwen3.8 \\
-    --host 127.0.0.1 --port 8005 \\
-    $shape \\
-    --temp 0.7 --top-p 0.95 --top-k 20 \\
-    --reasoning-effort medium --reasoning-effort-map high=xhigh,max=xhigh,minimal=low
+Exec=$exec
 
 [Service]
 # always, as vllm.container: an engine death exits cleanly, so on-failure would not recover it.
@@ -133,7 +164,7 @@ ExecStartPre=/usr/bin/mkdir -p %h/.local/share/models/radiance-engine
 
 # Pre-pulled with plain \`podman pull\`: the implicit pull inside \`podman run\` is capped at 5 min
 # under systemd (see vllm.sh).
-ExecStartPre=/bin/sh -c 'podman image exists $IMAGE || podman pull $IMAGE'
+ExecStartPre=/bin/sh -c 'podman image exists $image || podman pull $image'
 
 ExecStartPre=/usr/libexec/kinoite-radiance-prepare %h/.local/share/models/radiance-engine $name $rev $sha
 
@@ -152,15 +183,33 @@ DENSE='--tp 2 --max-model-len 262144 --max-num-seqs 8 --kv-cache-dtype fp8 --pre
 # the cross-card all-reduce a lossy 6-bit payload. Evidence: docs/runs/2026-11-08-radiance-1170-flash-next.md.
 FLASH='--tp 2 --tp-wire wht6 --max-model-len 200000 --max-num-seqs 8 --kv-cache-dtype fp8 --placement expert_tiered --host-pool-mib 12288 --gpu-headroom-mib 96 --num-speculative-tokens 3 --max-num-batched-tokens 2048 --ngram-placement disk'
 
-write_unit radiance 27B-MXFP4 qwen3.8-27b-mxfp4 \
+# The same shape in 2.x keys. 2.x has no fp8 KV cache, so it is the int8 one. gpu-headroom-mib
+# moved under memory: and 96 MiB is its default, so it is not repeated. prefix-cache-mib gives the
+# prefix cache a 4 GiB host tier.
+FLASH2='    tp: 2
+    tp-wire: wht6
+    max-model-len: 200000
+    max-num-seqs: 8
+    kv-cache-dtype: i8
+    placement: expert_tiered
+    host-pool-mib: 12288
+    prefix-cache-mib: 4096
+    num-speculative-tokens: 3
+    max-num-batched-tokens: 2048
+    ngram-placement: disk'
+
+write_unit radiance 27B-MXFP4 "$IMAGE" qwen3.8-27b-mxfp4 \
     60bd4139f335205fbc120e5534329c30b691af0e \
     a4908940c568f5f9dd24e88f46aefe9ac2ae07dfec023a2eaa1d14dcaa3df4f8 "19 GB" "$DENSE"
-write_unit radiance-fp8 27B-FP8 qwen3.8-27b-fp8 \
+write_unit radiance-fp8 27B-FP8 "$IMAGE" qwen3.8-27b-fp8 \
     edd43fda378af6b3b5e8981b6e936145be9608fd \
     626ab844a8b45ddd5fcbb7b093700a73ed0fe0a7913a27e0eea6e72fb3f6cb1d "31 GB" "$DENSE"
-write_unit radiance-flash Flash-Next qwen3.8-next-flash-fp8-iq4r-moe \
+write_unit radiance-flash Flash-Next "$IMAGE" qwen3.8-next-flash-fp8-iq4r-moe \
     8267a67384583f6be309981baf878b09ff900a9a \
     0af5e96244e80c21ac8edca1719dae49b8a201b94a2f3994c3e24026ceaa4d20 "122 GB" "$FLASH"
+write_unit radiance-flash2 Flash-Next-IQR-V4 "$IMAGE2" qwen3.8-next-flash-iqr-v4 \
+    679c943216e5a33da5f458b5da378586219e874b \
+    25aff8c950f4b823bc8b77c8184ed48827cb47058ffce08ae2c83b12e021fea0 "122 GB" "$FLASH2"
 
 ### 3. On-box runbook
 # Source is docs/how-to/radiance.md.

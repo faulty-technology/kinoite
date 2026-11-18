@@ -4,6 +4,16 @@ Newest first. One bullet per change to the bundle's structure or metadata; a new
 doc gets its family `index.md` line and a bullet here (see
 [how-to/maintain-okf-bundle](how-to/maintain-okf-bundle.md)).
 
+## 2026-11-18
+
+- **Build change**: `build_files/profiles/north/radiance.sh` adds `radiance-flash2`, Flash Next
+  IQR-V4 on radiance 2.1.0 (its own image pin and `/etc/radiance/radiance-flash2.yaml`), beside
+  the three 1.17.0 units. `services-north.sh` stops and restores it across suspend;
+  [how-to/radiance.md](how-to/radiance.md) covers it.
+- **New run**: [runs/2026-11-18-radiance-210-iqr-vs-1170-mxfp4.md](runs/2026-11-18-radiance-210-iqr-vs-1170-mxfp4.md) —
+  radiance 2.1.0 with IQ4R-L-V4 and IQ8R-dflash against 1.17.0 MXFP4 in one night; both
+  IQR arms are slower everywhere and level on GSM8K at 150K.
+
 ## 2026-11-14
 
 - **Build fix**: north's `host.alloy` `set_collectors` lacked `stat`, so

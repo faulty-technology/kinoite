@@ -220,10 +220,16 @@ disabled.
       code [runs/2026-11-07-radiance-1170-code-fp8-vs-mxfp4.md]. Judge by real
       agentic sessions. `radiance-flash` ships the model card's flags; untried
       are `--tp-wire exact`, a prefix-cache host tier and `--expert-pin-top`.
-- [ ] **The old stack's files are still on north**: ~/.local/share/radiance,
-      ~/.local/share/models/radiance, AMD's HF release and
-      `vllm-radiance:0.9.3`. Delete them once the trial is settled; the
-      commands are in [how-to/radiance.md].
+- [ ] **radiance 2.1.0 Flash Next runs beside the 1.17.0 units, for real use.**
+      `radiance-flash2` (Flash IQR-V4 on 2.1.0) ships next to `radiance-flash`
+      and the 27B units, and all four conflict, so either Flash can be switched
+      to. Judge it from real-use metrics, not the bench. Its KV pool at start
+      is 387,428 tokens; `radiance-flash` reported 5.5 full 200K sessions to its
+      1.9 (startup logs, 2026-11-17/18, unrecorded). On the 27B, 2.1.0's IQR
+      files were slower than 1.17.0 MXFP4 and level on GSM8K
+      [runs/2026-11-18-radiance-210-iqr-vs-1170-mxfp4.md]. That harness spends
+      most of its time on prefill, while real use is about 80% decode
+      (Prometheus, 2026-11-14 to 17, unrecorded).
 
 ### vLLM — `vllm.sh`
 
