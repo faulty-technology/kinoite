@@ -77,6 +77,36 @@ unit and the box cannot suspend at all.
   `disk`, and logind logs `Lockdown: … hibernation is restricted`. Secure Boot
   lockdown, not configuration.
 
+## Idle suspend waits for the LLM to go quiet
+
+PowerDevil's idle suspend (`AutoSuspendIdleTimeoutSec` in `~/.config/powerdevilrc`)
+counts only keyboard and mouse input at the box. A client working over the
+tailnet never resets it, so the box would suspend in the middle of a remote
+session, and the hook above would then stop the stack serving it.
+
+`kinoite-llm-awake.timer`, a user timer, reads `/metrics` on :8005 (radiance)
+and :8000 (vLLM) every minute. When a request is running, or the finished count
+has moved, `kinoite-llm-awake-hold.service` holds a KDE power inhibition
+(`kde-inhibit --power`) until 30 minutes after the last sighting. lemonade has
+no such endpoint and is not covered.
+
+- **KDE's inhibition, not logind's.** A logind `sleep` inhibitor needs root and
+  also blocks a suspend the user asks for. A logind `idle` one does register
+  with PowerDevil, but it also keeps the screens on. KDE's blocks only the
+  automatic suspend.
+- **The hold is extended, never restarted.** PowerDevil applies a new
+  inhibition about 5 s after it appears, so a restart would leave a gap in
+  which an overdue idle suspend could fire.
+- **Releasing it lets a due suspend go ahead.** With no local input for longer
+  than the timeout, the box suspends within moments of the hold ending, and the
+  hook then stops the stack as usual.
+
+To see it: `systemctl --user status kinoite-llm-awake-hold`. While it is
+active, PowerDevil reports the block:
+
+    busctl --user call org.kde.Solid.PowerManagement /org/kde/Solid/PowerManagement/PolicyAgent \
+        org.kde.Solid.PowerManagement.PolicyAgent HasInhibition u 1    # b true
+
 ## Wake-on-WLAN
 
 Works end to end. The trigger is armed (`iw phy0 wowlan show` → `wake up on magic

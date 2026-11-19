@@ -6,6 +6,11 @@ doc gets its family `index.md` line and a bullet here (see
 
 ## 2026-11-18
 
+- **Build change**: `services-north.sh` adds `kinoite-llm-awake.{service,timer}` and
+  `kinoite-llm-awake-hold.service` (user units, timer enabled globally): a KDE power inhibition
+  while :8005 or :8000 has served a request in the last 30 minutes, so idle suspend no longer
+  fires during remote sessions. [explanation/suspend-and-wake.md](explanation/suspend-and-wake.md)
+  covers it.
 - **Build change**: `build_files/profiles/north/radiance.sh` adds `radiance-flash2`, Flash Next
   IQR-V4 on radiance 2.1.0 (its own image pin and `/etc/radiance/radiance-flash2.yaml`), beside
   the three 1.17.0 units. `services-north.sh` stops and restores it across suspend;

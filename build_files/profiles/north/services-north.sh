@@ -408,15 +408,114 @@ TimeoutStopSec=180
 RequiredBy=sleep.target
 EOF
 
+### Hold off idle suspend while an LLM serves
+# PowerDevil's idle suspend counts only local keyboard and mouse input, so it suspends the box in
+# the middle of a remote session, and the hook above then stops the stack serving it. Every
+# minute, a user timer reads the OpenAI-compatible servers' /metrics. While a request runs, or the
+# finished count has moved since the last look, a KDE power inhibition is held until 30 minutes
+# after the last such sighting. It is KDE's inhibition rather than a logind one: it blocks
+# PowerDevil's automatic suspend only, so the screens still turn off and a suspend the user asks
+# for still happens. Once it is released, an idle suspend that was due goes ahead.
+install -D -m 0755 /dev/stdin /usr/libexec/kinoite-llm-awake << 'EOF'
+#!/bin/bash
+# kinoite-llm-awake check  — run by kinoite-llm-awake.timer; notes activity, starts the hold.
+# kinoite-llm-awake hold   — run under kde-inhibit by kinoite-llm-awake-hold.service; returns,
+#                            releasing the inhibition, once no activity was seen for HOLD_SEC.
+set -u
+
+# radiance's port, then vllm.container's. Both serve vLLM's metric names.
+PORTS=(8005 8000)
+HOLD_SEC=1800
+dir=${XDG_RUNTIME_DIR:?}
+count_file=$dir/kinoite-llm-awake.count
+seen_file=$dir/kinoite-llm-awake.seen
+
+case ${1:-} in
+check)
+    total=0 running=0 up=0
+    for port in "${PORTS[@]}"; do
+        m=$(curl -sf -m 3 "http://127.0.0.1:$port/metrics") || continue
+        up=1
+        read -r c r < <(awk '
+            /^vllm:request_success_total/ { c += $NF }
+            /^vllm:num_requests_running/  { r += $NF }
+            END { printf "%d %d\n", c, r }' <<< "$m")
+        total=$((total + c)) running=$((running + r))
+    done
+    [ "$up" = 1 ] || exit 0
+    last=$(cat "$count_file" 2>/dev/null || echo none)
+    echo "$total" > "$count_file"
+    # A first look has nothing to compare against; only a running request counts then.
+    if [ "$running" -gt 0 ] || { [ "$last" != none ] && [ "$total" != "$last" ]; }; then
+        touch "$seen_file"
+        # start, never restart: a restart would drop the inhibition, and PowerDevil takes
+        # about 5 s to apply a new one, long enough for an overdue idle suspend to fire.
+        systemctl --user start kinoite-llm-awake-hold.service
+    fi
+    ;;
+hold)
+    while seen=$(stat -c %Y "$seen_file" 2>/dev/null) && [ $(( $(date +%s) - seen )) -lt "$HOLD_SEC" ]; do
+        sleep 30
+    done
+    ;;
+*)
+    echo "usage: kinoite-llm-awake check|hold" >&2
+    exit 2
+    ;;
+esac
+EOF
+bash -n /usr/libexec/kinoite-llm-awake
+
+mkdir -p /usr/lib/systemd/user
+cat > /usr/lib/systemd/user/kinoite-llm-awake.service << 'EOF'
+[Unit]
+Description=Note LLM requests on :8005 and :8000, and hold off idle suspend while they come
+Documentation=file:///usr/share/kinoite/radiance.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/kinoite-llm-awake check
+TimeoutStartSec=30
+EOF
+
+cat > /usr/lib/systemd/user/kinoite-llm-awake.timer << 'EOF'
+[Unit]
+Description=Look for LLM requests every minute
+
+[Timer]
+OnStartupSec=60s
+OnUnitActiveSec=60s
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target
+EOF
+
+cat > /usr/lib/systemd/user/kinoite-llm-awake-hold.service << 'EOF'
+[Unit]
+Description=Hold off idle suspend until 30 minutes after the last LLM request
+Documentation=file:///usr/share/kinoite/radiance.md
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/kde-inhibit --power /usr/libexec/kinoite-llm-awake hold
+EOF
+
+systemctl --global enable kinoite-llm-awake.timer
+
 # Unit-file gate, the [Unit]-vs-[Service] counterpart to `bash -n`. Greps for the misplaced-key
 # class rather than trusting the exit status, which also trips on units absent in a build
 # container. A key in the wrong section is accepted silently by systemd and breaks the restore.
 if command -v systemd-analyze >/dev/null 2>&1; then
-    if systemd-analyze verify /usr/lib/systemd/system/kinoite-llm-sleep.service 2>&1 \
-        | grep -E 'Unknown key name|Unknown section'; then
-        echo "services-north.sh: bad key in kinoite-llm-sleep.service (see above)" >&2
-        exit 1
-    fi
+    for u in /usr/lib/systemd/system/kinoite-llm-sleep.service \
+        /usr/lib/systemd/user/kinoite-llm-awake.service \
+        /usr/lib/systemd/user/kinoite-llm-awake.timer \
+        /usr/lib/systemd/user/kinoite-llm-awake-hold.service; do
+        if systemd-analyze verify "$u" 2>&1 | grep -E 'Unknown key name|Unknown section'; then
+            echo "services-north.sh: bad key in $u (see above)" >&2
+            exit 1
+        fi
+    done
 fi
 
 systemctl enable kinoite-llm-sleep.service
