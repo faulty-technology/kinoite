@@ -4,6 +4,12 @@ Newest first. One bullet per change to the bundle's structure or metadata; a new
 doc gets its family `index.md` line and a bullet here (see
 [how-to/maintain-okf-bundle](how-to/maintain-okf-bundle.md)).
 
+## 2026-11-21
+
+- **Build change**: `build_files/profiles/north/radiance.sh` moves `IMAGE2` from radiance 2.1.0 to
+  2.2.0 (`sha256:a7000897…`), so `radiance-flash2` and `radiance-iq8` run 2.2.0; the 1.17.0 units
+  are unchanged.
+
 ## 2026-11-19
 
 - **Build change**: `build_files/profiles/north/radiance.sh` adds `radiance-iq8`, the 27B as

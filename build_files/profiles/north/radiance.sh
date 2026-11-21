@@ -8,8 +8,8 @@ set -ouex pipefail
 #                    AWQ), byte for byte, not a 4-bit-trained model. Engine 1.17.0.
 #   radiance-fp8     27B FP8 with the same drafter. Engine 1.17.0.
 #   radiance-flash   Flash Next, the 177B MoE: 4-bit experts, int8 trunk, MTP drafting. Engine 1.17.0.
-#   radiance-flash2  Flash Next as IQR-V4 on engine 2.1.0, which refuses the other units' files.
-#   radiance-iq8     27B as IQ8R, a rotated int8 trunk with an int8 DFlash2 drafter. Engine 2.1.0.
+#   radiance-flash2  Flash Next as IQR-V4 on engine 2.2.0, which refuses the other units' files.
+#   radiance-iq8     27B as IQ8R, a rotated int8 trunk with an int8 DFlash2 drafter. Engine 2.2.0.
 # They conflict, so starting one stops the others. 1.17.0 takes its settings as flags; 2.x reads
 # one YAML file, written to /etc/radiance/<unit>.yaml and mounted where the engine is told to read
 # it. Why this engine replaced the patched-vLLM stack:
@@ -18,7 +18,7 @@ set -ouex pipefail
 command -v podman >/dev/null || { echo "radiance.sh: missing podman" >&2; exit 1; }
 
 IMAGE=docker.io/stilldeadcode/radiance@sha256:c2acbaa373c89272ec47a22befa1cf04d2ddf1de51c2baf534f5273e517f7100
-IMAGE2=docker.io/stilldeadcode/radiance@sha256:c9affc489e4388a7ebca932355e7a22483dca6e06a6ea2fc034bdd5ad434c990
+IMAGE2=docker.io/stilldeadcode/radiance@sha256:a70008971617b615ab01cca61d856003160b52c1d73866b0b88420af634cefa2
 
 ### 1. Host-side prepare
 install -D -m 0755 /dev/stdin /usr/libexec/kinoite-radiance-prepare << 'PREPAREEOF'

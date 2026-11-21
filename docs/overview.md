@@ -222,9 +222,11 @@ disabled.
       code [runs/2026-11-07-radiance-1170-code-fp8-vs-mxfp4.md]. Judge by real
       agentic sessions. `radiance-flash` ships the model card's flags; untried
       are `--tp-wire exact`, a prefix-cache host tier and `--expert-pin-top`.
-- [ ] **Whether `radiance-flash2` replaces `radiance-flash`.** Flash IQR-V4 on
-      2.1.0 ships beside the 1.17.0 units, and all four conflict, so either
-      Flash can be switched to. On code it is level with 1.17.0 Flash:
+- [ ] **Whether `radiance-flash2` replaces `radiance-flash`.** Flash IQR-V4
+      ships on 2.2.0 beside the 1.17.0 units, and all five conflict, so either
+      Flash can be switched to. 2.2.0 is unmeasured here; upstream's notes
+      claim 8–11% faster decode steps for this file at TP 2 on two R9700s. On
+      2.1.0, on code it was level with 1.17.0 Flash:
       Polyglot 85.8% against 87.6% (p = 0.48), LiveCodeBench 72.1% against
       68.6% (p = 0.10). It decodes faster: in real use about 1.8× per stream and
       about 2× with two or more requests running, with mean request time 13.8 s

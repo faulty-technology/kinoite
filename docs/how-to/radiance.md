@@ -1,7 +1,7 @@
 ---
 type: How-To
 title: "kinoite-north: radiance Qwen3.8-27B MXFP4 (rootless Quadlet)"
-description: "Rootless Quadlet serving Qwen3.8-27B at MXFP4 with a merged DFlash2 drafter via StillDeadcode's radiance engine (C++/HIP, no vLLM): TP=2, up to 8 sequences, 262k context; the model is AMD's Quark/AWQ post-training quantization of the released model. Four alternates serve the same port and model id: radiance-fp8 (27B FP8), radiance-flash (Qwen3.8 Flash Next, the 177B MoE, 200k context), radiance-flash2 (Flash Next as IQR-V4 on radiance 2.1.0) and radiance-iq8 (27B as IQ8R on radiance 2.1.0). Ships at /etc/containers/systemd/users/radiance{,-fp8,-flash,-flash2,-iq8}.container, not enabled."
+description: "Rootless Quadlet serving Qwen3.8-27B at MXFP4 with a merged DFlash2 drafter via StillDeadcode's radiance engine (C++/HIP, no vLLM): TP=2, up to 8 sequences, 262k context; the model is AMD's Quark/AWQ post-training quantization of the released model. Four alternates serve the same port and model id: radiance-fp8 (27B FP8), radiance-flash (Qwen3.8 Flash Next, the 177B MoE, 200k context), radiance-flash2 (Flash Next as IQR-V4 on radiance 2.2.0) and radiance-iq8 (27B as IQ8R on radiance 2.2.0). Ships at /etc/containers/systemd/users/radiance{,-fp8,-flash,-flash2,-iq8}.container, not enabled."
 ---
 
 # kinoite-north: radiance Qwen3.8-27B MXFP4 (rootless Quadlet)
@@ -141,7 +141,7 @@ MTP drafting. Its flags are its model card's.
   (docs/runs/2026-11-08-radiance-1170-flash-next.md).
 - **Thinking, sampling and the API are the same** as `radiance` above.
 
-**`radiance-flash2`**: the same Flash Next on radiance 2.1.0, as
+**`radiance-flash2`**: the same Flash Next on radiance 2.2.0, as
 `qwen3.8-next-flash-iqr-v4.rad` (IQR-V4 experts). 2.x refuses the other units'
 files, so this unit has its own image and file.
 - **The first start downloads 122 GB,** as `radiance-flash`, and it needs the
@@ -151,21 +151,22 @@ files, so this unit has its own image and file.
   4 GiB host tier for the prefix cache.
 - **Its KV pool is smaller than `radiance-flash`'s.** The engine prints it at
   start: `journalctl --user -u radiance-flash2 | grep 'kv: the pool'`.
-- **Code scores are level** with `radiance-flash`, and it decodes about 1.8×
-  faster per stream in real use
-  (docs/runs/2026-11-19-radiance-210-flash-iqr-code.md).
+- **Code scores are level** with `radiance-flash`, and it decoded about 1.8×
+  faster per stream in real use, both measured on 2.1.0
+  (docs/runs/2026-11-19-radiance-210-flash-iqr-code.md). 2.2.0 is not
+  measured here.
 - **Thinking, sampling and the API are the same** as `radiance` above, except
   that 2.x answers only to the model id `Qwen3.8`; 1.17.0 accepts any name.
 
-**`radiance-iq8`**: the 27B on radiance 2.1.0, as
+**`radiance-iq8`**: the 27B on radiance 2.2.0, as
 `qwen3.8-27b-iq8r-dflash.rad`: a rotated int8 trunk with an int8 DFlash2
 drafter. It is the 2.x counterpart of `radiance-fp8`, which 2.x cannot load.
 - **The first start downloads 31 GB.**
 - **Its settings are a YAML file,** `/etc/radiance/radiance-iq8.yaml`:
   `radiance`'s window and sequences, the int8 KV cache and an 8448 MiB host
   tier for the prefix cache.
-- **It is slower than MXFP4 on 1.17.0:** prefill 7–12% and decode 20–38%.
-  GSM8K is level (docs/runs/2026-11-18-radiance-210-iqr-vs-1170-mxfp4.md).
+- **On 2.1.0 it was slower than MXFP4 on 1.17.0:** prefill 7–12% and decode
+  20–38%. GSM8K was level (docs/runs/2026-11-18-radiance-210-iqr-vs-1170-mxfp4.md).
   Code is not benched.
 - **Thinking, sampling and the API are the same** as `radiance-flash2`.
 
