@@ -214,22 +214,26 @@ disabled.
       this box's 59 GiB, below the 64 that fixed turns on 10-08. Revert the
       commit if it feels worse.
 - [ ] **Which model is the default: Flash Next, FP8 or MXFP4.** Flash Next
-      wins on code by a wide margin and matches single-stream speed, but halves
-      throughput under parallel subagents and needs host RAM
-      [runs/2026-11-08-radiance-1170-flash-next.md]. FP8 and MXFP4 are level on
+      wins on code by a wide margin and matches single-stream speed. On 1.17.0
+      it halves throughput under parallel subagents and needs host RAM
+      [runs/2026-11-08-radiance-1170-flash-next.md]; on 2.1.0 multi-stream
+      decode is about 1.6× faster and more host RAM stays free
+      [runs/2026-11-19-radiance-210-flash-iqr-code.md]. FP8 and MXFP4 are level on
       code [runs/2026-11-07-radiance-1170-code-fp8-vs-mxfp4.md]. Judge by real
       agentic sessions. `radiance-flash` ships the model card's flags; untried
       are `--tp-wire exact`, a prefix-cache host tier and `--expert-pin-top`.
-- [ ] **radiance 2.1.0 Flash Next runs beside the 1.17.0 units, for real use.**
-      `radiance-flash2` (Flash IQR-V4 on 2.1.0) ships next to `radiance-flash`
-      and the 27B units, and all four conflict, so either Flash can be switched
-      to. Judge it from real-use metrics, not the bench. Its KV pool at start
-      is 387,428 tokens; `radiance-flash` reported 5.5 full 200K sessions to its
-      1.9 (startup logs, 2026-11-17/18, unrecorded). On the 27B, 2.1.0's IQR
+- [ ] **Whether `radiance-flash2` replaces `radiance-flash`.** Flash IQR-V4 on
+      2.1.0 ships beside the 1.17.0 units, and all four conflict, so either
+      Flash can be switched to. On code it is level with 1.17.0 Flash:
+      Polyglot 85.8% against 87.6% (p = 0.48), LiveCodeBench 72.1% against
+      68.6% (p = 0.10). It decodes faster: in real use about 1.8× per stream and
+      about 2× with two or more requests running, with mean request time 13.8 s
+      against 21.3 s. Time to first token is 2.38 s against 1.96 s, and its KV
+      pool is 387,428 tokens, about a third of 1.17.0's
+      [runs/2026-11-19-radiance-210-flash-iqr-code.md]. On the 27B, 2.1.0's IQR
       files were slower than 1.17.0 MXFP4 and level on GSM8K
-      [runs/2026-11-18-radiance-210-iqr-vs-1170-mxfp4.md]. That harness spends
-      most of its time on prefill, while real use is about 80% decode
-      (Prometheus, 2026-11-14 to 17, unrecorded).
+      [runs/2026-11-18-radiance-210-iqr-vs-1170-mxfp4.md]. Each code arm ran
+      once; GSM8K and code at depth are unmeasured on flash2.
 
 ### vLLM — `vllm.sh`
 

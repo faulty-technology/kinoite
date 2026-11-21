@@ -61,3 +61,4 @@
 - [2026-11-09-north-sunshine-503](2026-11-09-north-sunshine-503.md)
 - [2026-11-14-nuc-nfs-boot-race](2026-11-14-nuc-nfs-boot-race.md)
 - [2026-11-18-radiance-210-iqr-vs-1170-mxfp4](2026-11-18-radiance-210-iqr-vs-1170-mxfp4.md)
+- [2026-11-19-radiance-210-flash-iqr-code](2026-11-19-radiance-210-flash-iqr-code.md)

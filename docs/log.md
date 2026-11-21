@@ -4,6 +4,12 @@ Newest first. One bullet per change to the bundle's structure or metadata; a new
 doc gets its family `index.md` line and a bullet here (see
 [how-to/maintain-okf-bundle](how-to/maintain-okf-bundle.md)).
 
+## 2026-11-19
+
+- **New run**: [runs/2026-11-19-radiance-210-flash-iqr-code.md](runs/2026-11-19-radiance-210-flash-iqr-code.md) —
+  `radiance-flash2` (Flash Next IQR-V4 on 2.1.0) against 1.17.0 Flash Next: level on Polyglot and
+  LiveCodeBench, about 1.8× the per-stream decode in real use.
+
 ## 2026-11-18
 
 - **Build change**: `services-north.sh` adds `kinoite-llm-awake.{service,timer}` and
