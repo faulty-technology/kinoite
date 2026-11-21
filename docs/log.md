@@ -6,6 +6,10 @@ doc gets its family `index.md` line and a bullet here (see
 
 ## 2026-11-19
 
+- **Build change**: `build_files/profiles/north/radiance.sh` adds `radiance-iq8`, the 27B as
+  IQR 8-bit on radiance 2.1.0 with the 11-18 run's settings (`/etc/radiance/radiance-iq8.yaml`);
+  `services-north.sh` stops and restores it across suspend; [how-to/radiance.md](how-to/radiance.md)
+  covers it.
 - **New run**: [runs/2026-11-19-radiance-210-flash-iqr-code.md](runs/2026-11-19-radiance-210-flash-iqr-code.md) —
   `radiance-flash2` (Flash Next IQR-V4 on 2.1.0) against 1.17.0 Flash Next: level on Polyglot and
   LiveCodeBench, about 1.8× the per-stream decode in real use.

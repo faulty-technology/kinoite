@@ -2,13 +2,14 @@
 set -ouex pipefail
 
 # radiance: Qwen3.8 on StillDeadcode's standalone radiance engine (C++/HIP, no vLLM). A
-# hand-started LLM stack beside lemonade, vLLM and LLaMA-Factory, on :8005. Four units serve
+# hand-started LLM stack beside lemonade, vLLM and LLaMA-Factory, on :8005. Five units serve
 # the same port and model id with different models, and any one can be started:
 #   radiance         27B MXFP4 with a merged DFlash2 drafter: AMD's post-training quant (Quark with
 #                    AWQ), byte for byte, not a 4-bit-trained model. Engine 1.17.0.
 #   radiance-fp8     27B FP8 with the same drafter. Engine 1.17.0.
 #   radiance-flash   Flash Next, the 177B MoE: 4-bit experts, int8 trunk, MTP drafting. Engine 1.17.0.
 #   radiance-flash2  Flash Next as IQR-V4 on engine 2.1.0, which refuses the other units' files.
+#   radiance-iq8     27B as IQ8R, a rotated int8 trunk with an int8 DFlash2 drafter. Engine 2.1.0.
 # They conflict, so starting one stops the others. 1.17.0 takes its settings as flags; 2.x reads
 # one YAML file, written to /etc/radiance/<unit>.yaml and mounted where the engine is told to read
 # it. Why this engine replaced the patched-vLLM stack:
@@ -72,7 +73,7 @@ bash -n /usr/libexec/kinoite-radiance-prepare
 # rootless units.
 mkdir -p /etc/containers/systemd/users /etc/radiance
 
-UNITS=(radiance radiance-fp8 radiance-flash radiance-flash2)
+UNITS=(radiance radiance-fp8 radiance-flash radiance-flash2 radiance-iq8)
 
 # Sampling and reasoning defaults, shared by every unit, match the stack this replaced: a request
 # that names its own wins.
@@ -198,6 +199,14 @@ FLASH2='    tp: 2
     max-num-batched-tokens: 2048
     ngram-placement: disk'
 
+# The 27B shape in 2.x keys, as measured: int8 KV, and an 8448 MiB host tier for the prefix cache.
+# Evidence: docs/runs/2026-11-18-radiance-210-iqr-vs-1170-mxfp4.md.
+DENSE2='    tp: 2
+    max-model-len: 262144
+    max-num-seqs: 8
+    kv-cache-dtype: i8
+    prefix-cache-mib: 8448'
+
 write_unit radiance 27B-MXFP4 "$IMAGE" qwen3.8-27b-mxfp4 \
     60bd4139f335205fbc120e5534329c30b691af0e \
     a4908940c568f5f9dd24e88f46aefe9ac2ae07dfec023a2eaa1d14dcaa3df4f8 "19 GB" "$DENSE"
@@ -210,6 +219,9 @@ write_unit radiance-flash Flash-Next "$IMAGE" qwen3.8-next-flash-fp8-iq4r-moe \
 write_unit radiance-flash2 Flash-Next-IQR-V4 "$IMAGE2" qwen3.8-next-flash-iqr-v4 \
     679c943216e5a33da5f458b5da378586219e874b \
     25aff8c950f4b823bc8b77c8184ed48827cb47058ffce08ae2c83b12e021fea0 "122 GB" "$FLASH2"
+write_unit radiance-iq8 27B-IQ8R "$IMAGE2" qwen3.8-27b-iq8r-dflash \
+    c127a34140e4cbc5c7c1a1925810f323b3f10920 \
+    9388f4c0d1a050b1254f5a9c0e47b7fbf753248792a29b5072f9698957badfcc "31 GB" "$DENSE2"
 
 ### 3. On-box runbook
 # Source is docs/how-to/radiance.md.
