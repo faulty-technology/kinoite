@@ -149,6 +149,11 @@ files, so this unit has its own image and file.
 - **Its settings are a YAML file,** `/etc/radiance/radiance-flash2.yaml`, not
   flags: `radiance-flash`'s, with the int8 KV cache (2.x has no fp8 one) and a
   4 GiB host tier for the prefix cache.
+- **Earlier turns' reasoning is dropped:** `chat-template-kwargs:
+  {preserve_thinking: false}`. The template keeps only the reasoning from after
+  the latest user message, which is the current tool chain. Without it, every
+  turn's reasoning that a client sends back stays in the prompt. pi sends all
+  of it. To restore that, delete the line from the YAML and restart the unit.
 - **Drafting uses 2.2.0's speculative options:** `draft-coupling: on`,
   `draft-verify: traversal`, `draft-depth: adaptive` (1 to
   `num-speculative-tokens: 5` drafts a step) and `draft-suffix: on`. Upstream

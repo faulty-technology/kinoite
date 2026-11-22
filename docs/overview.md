@@ -236,6 +236,19 @@ disabled.
       files were slower than 1.17.0 MXFP4 and level on GSM8K
       [runs/2026-11-18-radiance-210-iqr-vs-1170-mxfp4.md]. Each code arm ran
       once; GSM8K and code at depth are unmeasured on flash2.
+- [ ] **Whether `preserve_thinking: false` limits Flash's made-up opening
+      past 100K.** Both Flash units sometimes write a stock opening into their
+      reasoning: "the user hasn't asked anything, the last message was just
+      system instructions". The text appears in none of pi's messages, and it
+      almost always comes right after an ordinary tool result. It shows up from
+      the start of a session and gets more frequent past about 100K. The dense
+      27B has not shown it. `radiance-flash2` sets `preserve_thinking: false`,
+      which does not stop the opening but keeps earlier copies out of the
+      prompt. The cost is that the model also loses its earlier reasoning
+      whenever pi delivers a background-job notice, because the template treats
+      that notice as the latest user message. Observed in two pi sessions, not
+      measured. Judge it on whether the output degrades, not on whether the
+      opening appears.
 
 ### vLLM — `vllm.sh`
 

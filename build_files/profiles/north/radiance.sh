@@ -194,6 +194,9 @@ FLASH='--tp 2 --tp-wire wht6 --max-model-len 200000 --max-num-seqs 8 --kv-cache-
 # deepest chain, not a fixed one; draft-suffix verifies what followed an earlier occurrence of the
 # sequence's last tokens in its own history in place of the head's draft. Each keeps the output
 # distribution; greedy rows bypass coupling and the verify modes.
+# preserve_thinking false makes the chat template drop the reasoning of assistant turns before the
+# latest user message; the current tool chain's reasoning stays. Unset, the template keeps every
+# turn's reasoning a client sends back, and pi sends all of it.
 FLASH2='    tp: 2
     tp-wire: wht6
     max-model-len: 200000
@@ -208,7 +211,8 @@ FLASH2='    tp: 2
     draft-depth: adaptive
     draft-suffix: on
     max-num-batched-tokens: 2048
-    ngram-placement: disk'
+    ngram-placement: disk
+    chat-template-kwargs: {preserve_thinking: false}'
 
 # The 27B shape in 2.x keys, as measured: int8 KV, and an 8448 MiB host tier for the prefix cache.
 # Evidence: docs/runs/2026-11-18-radiance-210-iqr-vs-1170-mxfp4.md.
