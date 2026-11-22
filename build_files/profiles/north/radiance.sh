@@ -187,6 +187,13 @@ FLASH='--tp 2 --tp-wire wht6 --max-model-len 200000 --max-num-seqs 8 --kv-cache-
 # The same shape in 2.x keys. 2.x has no fp8 KV cache, so it is the int8 one. gpu-headroom-mib
 # moved under memory: and 96 MiB is its default, so it is not repeated. prefix-cache-mib gives the
 # prefix cache a 4 GiB host tier.
+# Drafting, upstream's speculative options for this model's MTP head (radiance docs, GUIDE §4.6):
+# draft-coupling samples each draft from the head's reranked top 8, coupled to the target's draw;
+# traversal verifies the coupled chain bottom-up; draft-depth adaptive stops the chain inside a
+# step once its confidence falls under draft-depth-stop (0.85), so num-speculative-tokens is the
+# deepest chain, not a fixed one; draft-suffix verifies what followed an earlier occurrence of the
+# sequence's last tokens in its own history in place of the head's draft. Each keeps the output
+# distribution; greedy rows bypass coupling and the verify modes.
 FLASH2='    tp: 2
     tp-wire: wht6
     max-model-len: 200000
@@ -195,7 +202,11 @@ FLASH2='    tp: 2
     placement: expert_tiered
     host-pool-mib: 12288
     prefix-cache-mib: 4096
-    num-speculative-tokens: 3
+    num-speculative-tokens: 5
+    draft-coupling: on
+    draft-verify: traversal
+    draft-depth: adaptive
+    draft-suffix: on
     max-num-batched-tokens: 2048
     ngram-placement: disk'
 

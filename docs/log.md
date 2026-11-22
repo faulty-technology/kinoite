@@ -4,6 +4,13 @@ Newest first. One bullet per change to the bundle's structure or metadata; a new
 doc gets its family `index.md` line and a bullet here (see
 [how-to/maintain-okf-bundle](how-to/maintain-okf-bundle.md)).
 
+## 2026-11-22
+
+- **Build change**: `build_files/profiles/north/radiance.sh` turns on radiance 2.2.0's drafting
+  options for `radiance-flash2`: `draft-coupling: on`, `draft-verify: traversal`,
+  `draft-depth: adaptive` with `num-speculative-tokens` 3 → 5, and `draft-suffix: on`.
+  Unmeasured beyond a six-prompt smoke test (chat, unrecorded).
+
 ## 2026-11-21
 
 - **Build change**: `build_files/profiles/north/radiance.sh` moves `IMAGE2` from radiance 2.1.0 to

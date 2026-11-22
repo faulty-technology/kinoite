@@ -149,6 +149,13 @@ files, so this unit has its own image and file.
 - **Its settings are a YAML file,** `/etc/radiance/radiance-flash2.yaml`, not
   flags: `radiance-flash`'s, with the int8 KV cache (2.x has no fp8 one) and a
   4 GiB host tier for the prefix cache.
+- **Drafting uses 2.2.0's speculative options:** `draft-coupling: on`,
+  `draft-verify: traversal`, `draft-depth: adaptive` (1 to
+  `num-speculative-tokens: 5` drafts a step) and `draft-suffix: on`. Upstream
+  says none changes the output distribution. Requests at temperature 0 bypass
+  coupling and the verify modes. Draft acceptance in the metrics is not
+  comparable with the earlier fixed chain of 3. The startup log shows what
+  runs: `journalctl --user -u radiance-flash2 | grep -iE 'coupled|draft depth|draft suffix'`.
 - **Its KV pool is smaller than `radiance-flash`'s.** The engine prints it at
   start: `journalctl --user -u radiance-flash2 | grep 'kv: the pool'`.
 - **Code scores are level** with `radiance-flash`, and it decoded about 1.8×
